@@ -20,8 +20,9 @@ running xaq in production, scripting it, and understanding what it does.
 - **One place for credentials.** Connect Gmail and Google Workspace accounts once. Refresh tokens are encrypted at rest.
   Agents only ever see an `aib_…` key.
 - **MCP for every agent.** Streamable HTTP at `/mcp`: `search_threads`, `get_thread`, `reply`, `send_message`,
-  `modify_labels`, `wait_for_events` and more. Each agent sees only the tools its grants allow. Drafts, replies and new
-  messages can carry files the agent attaches (see [Attachments](#attachments)).
+  `modify_labels`, `wait_for_events` and more. Each agent sees only the tools its grants allow. Drafts, replies, forwards
+  and new messages can carry files: bytes the agent has, a file from a directory you allow on xaq's machine, another
+  message's attachment, or a Google Drive file (see [Attachments](#attachments)).
 - **Real-time delivery.** New mail, replies to threads you sent into, and label changes arrive within seconds through
   Gmail push via a Pub/Sub *pull* subscription (no public URL needed), or within the poll interval (30 seconds by
   default) by polling with zero extra setup.
@@ -184,6 +185,7 @@ xaq skill install [--target claude|codex|agents|<dir>] [--url <public url>]
 xaq skill print [--url <public url>]
 xaq connections add|list|reconnect|rename|disable|remove …   # see Connections
 xaq ext add|list|update|remove …                             # see Extensions
+xaq settings attachment-dirs list|add <dir>|remove <dir>     # see Attachments
 xaq connect <url> … / setup-mcp / listen …   # on agent machines, see listen.md
 ```
 
@@ -200,7 +202,7 @@ xaq connect <url> … / setup-mcp / listen …   # on agent machines, see listen
 | `--url` | `XAQ_URL` | the xaq running on this machine, else `http://localhost:8425` | `skill` commands only: the server URL written into SKILL.md |
 
 Everything else (public URL, ingest mode, poll interval, body size limit, retention, approval expiry, webhook allowlist,
-agent pairing) is set in the console under **Settings**.
+agent pairing, the directories agents may attach files from) is set in the console under **Settings**.
 
 <!-- rename-xaq: keep-start -->
 Installs from before the rename to xaq keep working unchanged: every `XAQ_*` variable is also read under its old
@@ -447,21 +449,49 @@ use allowlists for anything that sends directly.
 
 ### Attachments
 
-`create_draft`, `reply` and `send_message` take an optional `attachments` array of
-`{filename, mime_type, content_base64}`; the file travels base64-encoded inside the MCP tool call. Attachments are
-checked before anything reaches Google, and the agent gets a plain-words error otherwise:
+`create_draft`, `reply`, `send_message` and `forward` take an optional `attachments` array. Each item is exactly one
+of four sources:
+
+| Item | Source |
+|---|---|
+| `{content_base64, filename, mime_type?}` | The bytes, base64-encoded inside the MCP tool call |
+| `{path, filename?, mime_type?}` | A file on xaq's own machine, inside a directory the owner allowed (below). Off by default |
+| `{message_id, attachment_id}` | An attachment of another message in the same account, with the ids `get_message` / `get_thread` show. Needs `read` on the grant, and the message must be in its label scope |
+| `{drive_file_id, export_as?}` | A Google Drive file of the account. Google Docs, Sheets, Slides and Drawings are exported, as PDF unless `export_as` says otherwise (Docs: `pdf`, `docx`, `txt`, `md`; Sheets: `pdf`, `xlsx`, `csv` (first sheet); Slides: `pdf`, `pptx`, `txt`; Drawings: `pdf`); other files are attached as they are. Needs the account to have granted Drive read access (`drive.readonly`, through the Google Workspace extension's Drive opt-in); otherwise the agent is told "Drive isn't enabled for <account>: install the google-workspace extension and enable Drive in xaq (Connections → Google Workspace)" |
+
+`forward` keeps `include_attachments` (the original's files) and can add new ones next to them. Every file is checked
+before anything is sent, and the agent gets a plain-words error otherwise:
 
 | Check | |
 |---|---|
-| Count | At most 10 files per message |
-| Size | 25 MB per message, body and files together, before encoding: Gmail's sending limit ([Gmail help](https://support.google.com/mail/answer/6584)). As a backstop the encoded message must fit the 35 MB (`36700160` bytes) Gmail's upload endpoint accepts |
+| Count | At most 10 files per message (a forward's original files don't count) |
+| Size | 25 MB per message, body and files together, counted after the base64 MIME encoding: Gmail's sending limit ([Gmail help](https://support.google.com/mail/answer/6584)). Files grow by about a third when encoded, so about 18 MB of files fit. Sizes are checked before downloading wherever the source says (base64 length, the file's size on disk, Gmail's part size, Drive's `size`), and each download is cut off at what still fits, so nothing larger is ever held in memory. The error names the file and the sizes; for a Drive file it gives the file's Drive link to put in the body instead, and on accounts with Drive it suggests sharing from Drive |
 | Content | Standard or url-safe base64; empty files are refused |
-| Type | `mime_type` must be `type/subtype` (default: from the extension, else `application/octet-stream`); [file types Gmail blocks](https://support.google.com/mail/answer/6590) (`.exe`, `.js`, `.bat`, `.msi`, `.iso`, …, also gzipped) are refused. Gmail may still refuse archives that contain them |
+| Type | `mime_type` must be `type/subtype` (default: the source's type, else from the extension, else `application/octet-stream`); [file types Gmail blocks](https://support.google.com/mail/answer/6590) (`.exe`, `.js`, `.bat`, `.msi`, `.iso`, …, also gzipped) are refused, whatever the source. Gmail may still refuse archives that contain them |
 | Filename | Path removed; control, zero-width, bidi and tag characters stripped; delimiter tags defused; at most 120 characters with the extension kept; `attachment` (plus the type's extension) when nothing is left |
 
+**Files from a path** are a security boundary: an agent must never be able to mail xaq's own secrets or arbitrary
+files.
+
+- Off until the owner lists directories under **Settings → Attachments from files**, or with
+  `npx xaq-cli settings attachment-dirs add <dir>` (`list`, `remove`) on xaq's machine. Only the admin can change the
+  list (it's the `attachmentDirs` setting of `PATCH /api/settings`); no agent tool can. A directory must exist when it's
+  added and can't be inside xaq's own directories.
+- The path must be absolute and inside an allowed directory, both as given and after resolving symlinks and `..`
+  (a symlink is followed only when it stays inside).
+- xaq's own directories are refused even inside an allowed one: the data directory (and `~/.xaq`, `~/.agentinbox`) and
+  the CLI's config, state and data directories. So are files named `master.key`, `*.db` (and SQLite's `-wal`, `-shm`,
+  `-journal`), `.env` (`.env.*`), `id_*`, `*.pem` and `*.key`, anywhere, and hard links to xaq's own files.
+- Regular files only: no directories, FIFOs or devices. The file is opened without following a final symlink and
+  without blocking; the open file must be the very file that was checked (same device and inode), and on Linux its
+  actual path (`/proc/self/fd`) must still pass every check, so swapping it between the check and the open fails.
+- Errors name paths and sizes, never contents.
+
 The grant applies unchanged: a draft needs `draft`, a send needs `send` and goes through its send mode, recipient
-allowlist, reply-only rule and caps. An approval card lists each file's name, type and size, and approving sends the
-draft that carries them. The audit log records each file's name, type, size and SHA-256, never its content.
+allowlist, reply-only rule and caps. An approval card lists each file's name, type, size and source (the path that was
+read, the source message, or the Drive file's name and id and the export format), and approving sends the draft that
+carries them. The audit log records the same plus each file's SHA-256, never its content; a refused attempt records
+what was asked for (the path, message or Drive id).
 
 Messages whose raw form is over 512 KB are sent to Gmail through its `/upload/` endpoint (`uploadType=media`, or
 `multipart` with the `threadId` for replies), since Google documents no size limit for the JSON `raw` field and has

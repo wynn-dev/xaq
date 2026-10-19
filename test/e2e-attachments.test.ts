@@ -4,6 +4,9 @@
 // (names, types, sizes and hashes, never content) and the /mcp body limit (4 MB unless the agent key is valid).
 
 import { createHash } from "node:crypto";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Account, AgentWithKey, Approval, AuditEntry, GrantInput, Page } from "../shared/types.ts";
 import type { GmailMessage } from "../server/google/types.ts";
@@ -137,8 +140,8 @@ describe.runIf(HAS_AGENTS)("MCP attachments", () => {
 
     const approval = await s.admin.get<Approval>(`/api/approvals/${r.approvalId}`);
     expect(approval.attachments).toEqual([
-      { filename: "application.pdf", mimeType: "application/pdf", size: 2048 },
-      { filename: "notes.txt", mimeType: "text/plain", size: 14 },
+      { filename: "application.pdf", mimeType: "application/pdf", size: 2048, source: { kind: "upload" } },
+      { filename: "notes.txt", mimeType: "text/plain", size: 14, source: { kind: "upload" } },
     ]);
     expect(JSON.stringify(approval)).not.toContain(form.toString("base64").slice(0, 40));
     const draft = s.fake.drafts(email).find((d) => d.id === approval.draftId)!;
@@ -206,6 +209,37 @@ describe.runIf(HAS_AGENTS)("MCP attachments", () => {
         ["create_draft", "error", "invalid_attachment"],
       ]),
     );
+  });
+
+  it("files by path: the admin allows a directory (agents can't), the approval card shows the path", async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "xaq-e2e-docs-")));
+    try {
+      writeFileSync(join(dir, "lease.pdf"), pdf(1500));
+      const { id, mcp, key } = await agentWith("path-sender", { capabilities: ["read", "send"], sendMode: "approval" });
+      const args = { to: "leasing@offices.test", subject: "Lease", body: "Attached.", attachments: [{ path: join(dir, "lease.pdf") }] };
+      expect((await mcp.call("send_message", args)).text).toMatch(/Attaching files from a path is off/);
+
+      // The setting is admin-only: an agent key gets nowhere near /api/settings.
+      const asAgent = await fetch(`${s.url}/api/settings`, {
+        method: "PATCH",
+        headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "x-agentinbox-csrf": "1" },
+        body: JSON.stringify({ attachmentDirs: [dir] }),
+      });
+      expect(asAgent.status).toBe(401);
+      expect((await s.admin.get<{ attachmentDirs: string[] }>("/api/settings")).attachmentDirs).toEqual([]);
+
+      await s.admin.patch("/api/settings", { attachmentDirs: [dir] });
+      const r = await mcp.json<{ status: string; approvalId: string }>("send_message", args);
+      expect(r.status).toBe("pending_approval");
+      const approval = await s.admin.get<Approval>(`/api/approvals/${r.approvalId}`);
+      expect(approval.attachments).toEqual([{ filename: "lease.pdf", mimeType: "application/pdf", size: 1500, source: { kind: "path", path: join(dir, "lease.pdf") } }]);
+      expect((await audit(id)).find((e) => e.action === "send_message" && e.outcome === "ok")?.detail).toMatchObject({
+        attachments: [{ filename: "lease.pdf", source: { kind: "path", path: join(dir, "lease.pdf") }, sha256: sha256(pdf(1500)) }],
+      });
+    } finally {
+      await s.admin.patch("/api/settings", { attachmentDirs: [] });
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("/mcp buffers more than 4 MB only for a valid agent key", async () => {

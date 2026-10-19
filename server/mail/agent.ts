@@ -5,8 +5,8 @@
 import type { Account, Address, Approval, Capability, GmailLabel, GoogleApproval, Grant, MessageSummary } from "../../shared/types.ts";
 import type { AppContext } from "../context.ts";
 import type { GmailClient, GmailMessage, GmailPart, GmailThread, ParsedMessage } from "../google/types.ts";
-import { UPLOAD_MAX_BYTES } from "../google/gmail.ts";
-import { isOutcomeUnknown, rejectedBeforeProcessing } from "../google/http.ts";
+import { canReadDrive, createDriveClient } from "../google/drive.ts";
+import { isOutcomeUnknown, rejectedBeforeProcessing, ResponseTooLargeError } from "../google/http.ts";
 import { AccountNeedsReauthError, GoogleApiError } from "../google/types.ts";
 import {
   assertRecipientsAllowed,
@@ -22,7 +22,17 @@ import type { AgentPrincipal } from "../policy/types.ts";
 import { PolicyDenied } from "../util/errors.ts";
 import { matchesGlob } from "../util/glob.ts";
 import { Approvals, type ApprovalPayload, draftFingerprint } from "./approvals.ts";
-import { AttachmentError, type AttachmentInput, attachmentMeta, type OutgoingAttachment, prepareAttachments } from "./attachments.ts";
+import { checkAttachmentInputs, type MessagePart, requestedSources, resolveAttachments } from "./attach-sources.ts";
+import {
+  AttachmentError,
+  type AttachmentInput,
+  attachmentMeta,
+  MAX_FILES_HINT,
+  MAX_MESSAGE_BYTES,
+  mb,
+  type OutgoingAttachment,
+  SMALLER_FILES_HINT,
+} from "./attachments.ts";
 import { type BuiltContent, formatAddresses } from "./content.ts";
 import { contentPool } from "./pool.ts";
 
@@ -78,7 +88,7 @@ export interface ComposeArgs {
   bcc?: string | string[];
   subject: string;
   body: string;
-  /** Files to attach (validated by prepareAttachments). */
+  /** Files to attach, from any source (checked and fetched by resolveAttachments). */
   attachments?: AttachmentInput[];
 }
 
@@ -87,8 +97,6 @@ type Target = { threadId?: string; messageId?: string };
 export const MAX_RECIPIENTS = 50;
 /** Binary attachments larger than this are not returned inline. */
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
-/** Total size of original attachments carried by a forward. */
-const MAX_FORWARD_BYTES = 20 * 1024 * 1024;
 /** System labels agents may not add/remove via modify_labels (trash has its own capability; the rest are Gmail-managed). */
 const PROTECTED_LABELS = new Set(["TRASH", "SPAM", "DRAFT", "SENT", "CHAT"]);
 /** System labels shown to label-scoped agents (they're needed for search and organizing). */
@@ -154,6 +162,21 @@ function attachmentParts(msg: GmailMessage): AttachmentPart[] {
   };
   walk(msg.payload);
   return out;
+}
+
+/**
+ * Like get_attachment's lookup: `attachmentId` is the part id shown by get_message/get_thread (or an attachment id
+ * Gmail lists for this message right now). Anything else is not found: unlisted ids are never passed to Gmail.
+ */
+function findPart(msg: GmailMessage, messageId: string, attachmentId: string): AttachmentPart {
+  const parts = attachmentParts(msg);
+  const part = parts.find((p) => p.partId === attachmentId) ?? parts.find((p) => p.attachmentId === attachmentId);
+  if (part) return part;
+  const listed = parts.map((p) => `${p.partId} (${p.filename})`).join(", ");
+  throw new ToolError(
+    "not_found",
+    listed ? `Message ${messageId} has no attachment ${attachmentId}. Its attachments: ${listed}.` : `Message ${messageId} has no attachments.`,
+  );
 }
 
 const header = (m: GmailMessage | undefined, name: string): string | null =>
@@ -486,10 +509,12 @@ export class AgentMail {
     const to = this.recipients(args.to, "to");
     const cc = this.recipients(args.cc, "cc");
     const bcc = this.recipients(args.bcc, "bcc");
-    const files = this.attachments(args.attachments, args.body);
+    this.checkAttachments(args.attachments);
     const threading = args.threadId ? await this.threadingHeaders(a, args.threadId) : { inReplyTo: null, references: [] };
+    const files = await this.attachments(a, args.attachments, args.body);
     const raw = this.checkEncodedSize(
       await this.ctx.google.mime.compose({ from: this.from(a), to, cc, bcc, subject: args.subject, text: args.body, ...threading, attachments: files }),
+      a,
     );
     const draft = await a.gmail.createDraft(raw, args.threadId ?? null);
     this.trace.target = draft.id;
@@ -497,21 +522,87 @@ export class AgentMail {
     return { draftId: draft.id, threadId: draft.message?.threadId ?? args.threadId ?? null };
   }
 
-  /** The agent's files, checked and decoded (nothing reaches Google when one is refused). */
-  private attachments(input: AttachmentInput[] | undefined, body: string): OutgoingAttachment[] {
+  /** The cheap checks on the agent's files (count, shape, base64), before anything is loaded. */
+  private checkAttachments(input: AttachmentInput[] | undefined): void {
     try {
-      return prepareAttachments(input, Buffer.byteLength(body));
+      checkAttachmentInputs(input);
     } catch (err) {
       if (err instanceof AttachmentError) throw new ToolError(err.code, err.message);
       throw err;
     }
   }
 
-  /** Backstop for the encoded message: Gmail's upload endpoint takes at most 35 MB (the 25 MB check comes first). */
-  private checkEncodedSize(raw: string): string {
+  /**
+   * The agent's files from every source (and a forward's originals), checked and fetched within Gmail's 25 MB.
+   * Nothing reaches Google's mail APIs when one is refused.
+   */
+  private async attachments(a: Access, input: AttachmentInput[] | undefined, body: string, originals?: MessagePart[]): Promise<OutgoingAttachment[]> {
+    if (!input?.length && !originals?.length) return [];
+    const drive = canReadDrive(a.account.grantedScopes) ? createDriveClient(this.ctx, a.account.id) : null;
+    // What was asked for, so a refused attempt (a path outside the allowed directories, say) is audited too.
+    // Replaced by the files' own records (attachmentMeta) once they're all fetched.
+    if (input?.length) this.trace.detail.attachmentsRequested = requestedSources(input);
+    try {
+      const files = await resolveAttachments(input, {
+        accountEmail: a.account.email,
+        bodyBytes: Buffer.byteLength(body),
+        messagePart: (messageId, attachmentId) => this.messagePart(a, messageId, attachmentId),
+        drive,
+        paths: { allowedDirs: this.ctx.settings.get().attachmentDirs ?? [], dataDir: this.ctx.config.dataDir },
+        originals,
+      });
+      delete this.trace.detail.attachmentsRequested;
+      return files;
+    } catch (err) {
+      if (err instanceof AttachmentError) throw new ToolError(err.code, err.message);
+      throw err;
+    }
+  }
+
+  /** Another message's attachment, as a source: needs read access, and the message must be in the grant's label scope. */
+  private async messagePart(a: Access, messageId: string, attachmentId: string): Promise<MessagePart> {
+    if (!a.grant.capabilities.includes("read")) {
+      throw new PolicyDenied("capability", `Attaching another message's file needs permission to ${CAPABILITY_HELP.read} on ${a.account.email}.`);
+    }
+    const msg = await this.loadMessage(a, messageId, "full");
+    const part = findPart(msg, messageId, attachmentId);
+    return {
+      messageId,
+      partId: part.partId,
+      filename: part.filename,
+      mimeType: part.mimeType,
+      size: part.size,
+      fetch: (max) => this.fetchPart(a, messageId, part.attachmentId, part.data, max),
+    };
+  }
+
+  /** A part's bytes (inline, or through attachments.get with a cap); null when there are more than `max`. */
+  private async fetchPart(a: Access, messageId: string, attachmentId: string | null, inline: string | null, max: number): Promise<Buffer | null> {
+    let data: string;
+    if (attachmentId) {
+      try {
+        data = (await this.fetchById("Message", messageId, () => a.gmail.getAttachment(messageId, attachmentId, { maxBytes: max }))).data;
+      } catch (err) {
+        if (err instanceof ResponseTooLargeError) return null;
+        throw err;
+      }
+    } else data = inline ?? "";
+    const bytes = Buffer.from(data, "base64url");
+    return bytes.length > max ? null : bytes;
+  }
+
+  /**
+   * The composed message against Gmail's 25 MB (after encoding). The sources were sized before fetching with
+   * an estimate of the encoding; this is the exact count.
+   */
+  private checkEncodedSize(raw: string, a: Access): string {
     const bytes = Math.floor((raw.length * 3) / 4);
-    if (bytes > UPLOAD_MAX_BYTES) {
-      throw new ToolError("too_large", `The message is ${(bytes / 1048576).toFixed(1)} MB once encoded; Gmail accepts at most 35 MB. Send fewer or smaller files.`);
+    if (bytes > MAX_MESSAGE_BYTES) {
+      const hint = canReadDrive(a.account.grantedScopes) ? "Share large files from Google Drive and put the link in the body instead." : SMALLER_FILES_HINT;
+      throw new ToolError(
+        "too_large",
+        `The message is ${mb(bytes)} once encoded for email; Gmail sends at most 25 MB per message, body and files together after encoding (${MAX_FILES_HINT}). ${hint}`,
+      );
     }
     return raw;
   }
@@ -530,7 +621,7 @@ export class AgentMail {
     const to = this.recipients(args.to, "to");
     const cc = this.recipients(args.cc, "cc");
     const bcc = this.recipients(args.bcc, "bcc");
-    const files = this.attachments(args.attachments, args.body);
+    this.checkAttachments(args.attachments);
     return this.deliver(a, "send", {
       to,
       cc,
@@ -539,7 +630,7 @@ export class AgentMail {
       body: args.body,
       threadId: null,
       reason: args.reason ?? null,
-      attachments: files.length ? async () => files : undefined,
+      attachments: args.attachments?.length ? () => this.attachments(a, args.attachments, args.body) : undefined,
     });
   }
 
@@ -550,7 +641,7 @@ export class AgentMail {
     const a = this.resolve(account, "send");
     this.trace.target = args.messageId;
     // Cheap checks before loading the original.
-    const files = this.attachments(args.attachments, args.body);
+    this.checkAttachments(args.attachments);
     const src = await this.loadMessage(a, args.messageId, "full");
     // A draft isn't a message anyone sent: replying to one would let an agent pick arbitrary recipients.
     if (src.labelIds?.includes("DRAFT")) throw new ToolError("draft_source", "That message is a draft; reply to a message that was actually sent or received.");
@@ -593,13 +684,13 @@ export class AgentMail {
       inReplyTo: p.messageId,
       references: p.messageId ? [...p.references.filter((r) => r !== p.messageId), p.messageId] : p.references,
       reason: args.reason ?? null,
-      attachments: files.length ? async () => files : undefined,
+      attachments: args.attachments?.length ? () => this.attachments(a, args.attachments, args.body) : undefined,
     });
   }
 
   async forward(
     account: string | undefined,
-    args: { messageId: string; to: string | string[]; body?: string; includeAttachments?: boolean; reason?: string },
+    args: { messageId: string; to: string | string[]; body?: string; includeAttachments?: boolean; attachments?: AttachmentInput[]; reason?: string },
   ): Promise<SendOutcome> {
     const a = this.resolve(account, "send");
     if (a.grant.replyOnly) this.denyReplyOnly(a);
@@ -607,6 +698,7 @@ export class AgentMail {
     const to = this.recipients(args.to, "to");
     // Cheap checks before loading the original.
     assertRecipientsAllowed(a.grant, to.map((x) => x.email));
+    this.checkAttachments(args.attachments);
     const src = await this.loadMessage(a, args.messageId, "full");
     const p = this.ctx.google.mime.parse(src);
     const original = await contentPool(this.ctx).content(p, { accountEmail: a.account.email, maxChars: 0 });
@@ -629,19 +721,23 @@ export class AgentMail {
       body,
       threadId: null,
       reason: args.reason ?? null,
-      attachments: args.includeAttachments ? () => this.loadAttachments(a, p) : undefined,
+      attachments:
+        args.includeAttachments || args.attachments?.length
+          ? () => this.attachments(a, args.attachments, body, args.includeAttachments ? this.originals(a, p) : undefined)
+          : undefined,
     });
   }
 
-  private async loadAttachments(a: Access, p: ParsedMessage) {
-    const total = p.attachments.reduce((n, x) => n + x.size, 0);
-    if (total > MAX_FORWARD_BYTES) {
-      throw new ToolError("too_large", `The original attachments total ${Math.round(total / 1048576)} MB; forwards can carry at most 20 MB. Forward without include_attachments.`);
-    }
-    return mapLimit(p.attachments, 3, async (x) => {
-      const r = await a.gmail.getAttachment(p.summary.id, x.id);
-      return { filename: x.filename || "attachment", contentType: x.mimeType, content: Buffer.from(r.data, "base64url") };
-    });
+  /** The files of the message being forwarded (include_attachments), as sources sized by Gmail. */
+  private originals(a: Access, p: ParsedMessage): MessagePart[] {
+    return p.attachments.map((x) => ({
+      messageId: p.summary.id,
+      partId: x.id,
+      filename: x.filename,
+      mimeType: x.mimeType,
+      size: x.size,
+      fetch: (max: number) => this.fetchPart(a, p.summary.id, x.id, null, max),
+    }));
   }
 
   /** Recipient allowlist, send caps, then the grant's send mode. */
@@ -658,7 +754,7 @@ export class AgentMail {
       inReplyTo?: string | null;
       references?: string[];
       reason: string | null;
-      attachments?: () => Promise<{ filename: string; contentType?: string; content: Buffer }[]>;
+      attachments?: () => Promise<OutgoingAttachment[]>;
     },
   ): Promise<SendOutcome> {
     const all = [...m.to, ...m.cc, ...m.bcc];
@@ -688,7 +784,7 @@ export class AgentMail {
       inReplyTo: m.inReplyTo ?? null,
       references: m.references ?? [],
       attachments,
-    }));
+    }), a);
 
     if (a.grant.sendMode === "direct") {
       const sent = await this.uncertain(() => a.gmail.send(raw, m.threadId), "sent");

@@ -1,8 +1,11 @@
+import { realpathSync, statSync } from "node:fs";
+import { isAbsolute, resolve } from "node:path";
 import type { GoogleAppType, GoogleClientCheck as ClientCheck, IngestMode, PubsubState, Settings } from "../shared/types.ts";
 import type { Bus } from "./bus.ts";
 import type { Config } from "./config.ts";
 import { type Db, json } from "./db/index.ts";
-import { badRequest } from "./util/errors.ts";
+import { badRequest, HttpError } from "./util/errors.ts";
+import { ownDirs, within } from "./util/own-dirs.ts";
 
 /**
  * Internal key/value state kept in the `settings` table next to the user-facing Settings.
@@ -97,6 +100,7 @@ export class SettingsStore {
       pairingEnabled: true,
       brokerUpstreams: true,
       calendarPollSeconds: 60,
+      attachmentDirs: [],
     };
   }
 
@@ -126,7 +130,10 @@ export class SettingsStore {
 
   /** Validates, persists and broadcasts. Throws HttpError(400) on invalid input. */
   update(patch: Partial<Settings>): Settings {
-    const next = validate({ ...this.get(), ...stripUndefined(patch) });
+    const before = this.get();
+    const next = validate({ ...before, ...stripUndefined(patch) });
+    // Directories added now must exist and be xaq's to share (ones saved earlier may be gone, e.g. an unmounted disk).
+    for (const dir of next.attachmentDirs.filter((d) => !before.attachmentDirs.includes(d))) checkNewAttachmentDir(dir, this.config.dataDir);
     this.write(USER_KEY, next);
     this.bus.emit("settings", next);
     return next;
@@ -190,7 +197,44 @@ function validate(s: Settings): Settings {
     pairingEnabled: s.pairingEnabled !== false,
     brokerUpstreams: s.brokerUpstreams !== false,
     calendarPollSeconds: int(s.calendarPollSeconds, "Calendar poll interval", 15, 3600),
+    attachmentDirs: attachmentDirs(s.attachmentDirs),
   };
+}
+
+/** At most this many attachment directories. */
+const MAX_ATTACHMENT_DIRS = 50;
+
+/** Settings.attachmentDirs: absolute paths, normalised (no trailing slash, no ".."), without duplicates. */
+function attachmentDirs(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > MAX_ATTACHMENT_DIRS) {
+    throw badRequest(`Attachment directories must be a list of at most ${MAX_ATTACHMENT_DIRS} absolute paths`);
+  }
+  const out: string[] = [];
+  for (const raw of value) {
+    const dir = typeof raw === "string" ? raw.trim() : "";
+    // oxlint-disable-next-line no-control-regex -- refusing control characters is the point here
+    if (!dir || dir.length > 4096 || /[\u0000-\u001f\u007f]/.test(dir) || !isAbsolute(dir)) {
+      throw badRequest(`"${String(raw).slice(0, 200)}" isn't an absolute directory path`, "Use a full path such as /home/me/Documents/outgoing.");
+    }
+    const norm = resolve(dir);
+    if (!out.includes(norm)) out.push(norm);
+  }
+  return out;
+}
+
+/** A directory being added to attachmentDirs: it exists, is a directory, and isn't inside xaq's own directories. */
+function checkNewAttachmentDir(dir: string, dataDir: string): void {
+  let real: string;
+  try {
+    real = realpathSync(dir);
+    if (!statSync(real).isDirectory()) throw badRequest(`${dir} isn't a directory`);
+  } catch (err) {
+    if (err instanceof HttpError) throw err;
+    throw badRequest(`${dir} doesn't exist (or xaq can't open it)`, "Create it first, as the user xaq runs as.");
+  }
+  const own = ownDirs(dataDir).find((d) => within(d, dir) || within(d, real));
+  if (own) throw badRequest(`${dir} is inside xaq's own directory ${own}`, "Its files (keys, database, agent keys) can never be attached; pick a directory of your own.");
 }
 
 function stripUndefined<T extends object>(o: T): Partial<T> {

@@ -143,6 +143,45 @@ export function hasReason(err: GoogleApiError, ...reasons: string[]): boolean {
   return reasons.some((r) => all.includes(r));
 }
 
+/** A successful response longer than the caller's limit: nothing past the limit was read. Never retried. */
+export class ResponseTooLargeError extends Error {
+  constructor(
+    readonly limit: number,
+    readonly declared: number | null,
+  ) {
+    super(`Google's response is larger than ${limit} bytes`);
+    this.name = "ResponseTooLargeError";
+  }
+}
+
+/**
+ * Reads a response body, at most `max` bytes: a longer one (by its Content-Length, or once that many bytes
+ * have arrived) is cancelled and refused with ResponseTooLargeError, so nothing larger is ever buffered.
+ */
+export async function readBodyCapped(res: Response, max = Infinity): Promise<Buffer> {
+  const declared = Number(res.headers.get("content-length") ?? Number.NaN);
+  const known = Number.isFinite(declared) ? declared : null;
+  if (known !== null && known > max) {
+    await res.body?.cancel().catch(() => {});
+    throw new ResponseTooLargeError(max, known);
+  }
+  if (!res.body) return Buffer.alloc(0);
+  const chunks: Buffer[] = [];
+  let total = 0;
+  const reader = res.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      throw new ResponseTooLargeError(max, known);
+    }
+    chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+  }
+  return Buffer.concat(chunks, total);
+}
+
 export const isAbortError = (err: unknown): boolean =>
   err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError");
 
