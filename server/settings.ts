@@ -1,3 +1,4 @@
+import { isAbsolute, resolve } from "node:path";
 import type { GoogleAppType, GoogleClientCheck as ClientCheck, IngestMode, PubsubState, Settings } from "../shared/types.ts";
 import type { Bus } from "./bus.ts";
 import type { Config } from "./config.ts";
@@ -97,6 +98,7 @@ export class SettingsStore {
       pairingEnabled: true,
       brokerUpstreams: true,
       calendarPollSeconds: 60,
+      attachmentSaveDir: "",
     };
   }
 
@@ -179,6 +181,10 @@ function validate(s: Settings): Settings {
   if (!allowlist || allowlist.length > 100 || allowlist.some((h) => h.length > 253 || /\s/.test(h))) {
     throw badRequest("Webhook allowlist must be a list of hostnames, IPs or CIDRs");
   }
+  const saveDir = typeof s.attachmentSaveDir === "string" ? s.attachmentSaveDir.trim() : "";
+  if (saveDir && (!isAbsolute(saveDir) || saveDir.length > 1024 || saveDir.includes("\0"))) {
+    throw badRequest("Attachment folder must be an absolute path", "For example /home/me/xaq-attachments; leave it empty for the default inside the data directory");
+  }
   return {
     publicUrl: url.origin + url.pathname.replace(/\/+$/, ""),
     ingestMode: s.ingestMode,
@@ -190,6 +196,7 @@ function validate(s: Settings): Settings {
     pairingEnabled: s.pairingEnabled !== false,
     brokerUpstreams: s.brokerUpstreams !== false,
     calendarPollSeconds: int(s.calendarPollSeconds, "Calendar poll interval", 15, 3600),
+    attachmentSaveDir: saveDir ? resolve(saveDir) : "",
   };
 }
 

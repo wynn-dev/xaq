@@ -312,6 +312,12 @@ export interface Settings {
    * `mcp.call` approvals and first run with Google optional. On by default since the console shipped (M1 PR 8).
    */
   brokerUpstreams: boolean;
+  /**
+   * Where get_attachment saves files it can't show (and files an agent asks for as a file): `<dir>/<message id>/<name>`.
+   * Absolute path; "" (default) = `attachments/` in the data directory. Saved files are deleted after
+   * ATTACHMENT_RETENTION_DAYS (7), only in a directory xaq created (server/mail/saved-attachments.ts).
+   */
+  attachmentSaveDir: string;
 }
 
 export interface GoogleClientConfig {

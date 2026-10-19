@@ -21,7 +21,8 @@ running xaq in production, scripting it, and understanding what it does.
   Agents only ever see an `aib_…` key.
 - **MCP for every agent.** Streamable HTTP at `/mcp`: `search_threads`, `get_thread`, `reply`, `send_message`,
   `modify_labels`, `wait_for_events` and more. Each agent sees only the tools its grants allow. Drafts, replies and new
-  messages can carry files the agent attaches (see [Attachments](#attachments)).
+  messages can carry files the agent attaches (see [Attachments](#attachments)), and received PDFs, Office documents
+  and spreadsheets come back as text and tables (see [Reading attachments](#reading-attachments)).
 - **Real-time delivery.** New mail, replies to threads you sent into, and label changes arrive within seconds through
   Gmail push via a Pub/Sub *pull* subscription (no public URL needed), or within the poll interval (30 seconds by
   default) by polling with zero extra setup.
@@ -200,7 +201,7 @@ xaq connect <url> … / setup-mcp / listen …   # on agent machines, see listen
 | `--url` | `XAQ_URL` | the xaq running on this machine, else `http://localhost:8425` | `skill` commands only: the server URL written into SKILL.md |
 
 Everything else (public URL, ingest mode, poll interval, body size limit, retention, approval expiry, webhook allowlist,
-agent pairing) is set in the console under **Settings**.
+agent pairing, the folder for saved attachments) is set in the console under **Settings**.
 
 <!-- rename-xaq: keep-start -->
 Installs from before the rename to xaq keep working unchanged: every `XAQ_*` variable is also read under its old
@@ -470,6 +471,64 @@ refused such bodies at 1 MB. This also applies to forwards with their original a
 `/mcp` reads at most 4 MB of request body, except for requests whose `Authorization` header carries a valid agent key
 (checked before the body is read), which may send up to 36 MB, enough for 25 MB of files in base64.
 
+### Reading attachments
+
+`list_attachments` lists the files on a message (`message_id`) or on every message of a thread (`thread_id`): name,
+type, size, the `attachment_id` and the message each belongs to (also as `structuredContent`). `get_attachment`
+returns an attachment as content an agent can use, wrapped as untrusted like a mail body:
+
+| Type | Answer |
+|---|---|
+| PDF | Text, page by page (`--- Page 3 of 12 ---`); at most 500 pages are read |
+| Word (`.docx`, `.docm`) | Markdown: headings, bullet and numbered lists, tables, links, bold and italic |
+| Excel (`.xlsx`, `.xlsm`), CSV, TSV | A markdown table per sheet (`## Sheet 2 of 3: Costs (40 rows × 6 columns)`); dates shown as dates; hidden sheets marked. Small ones (up to 2,000 cells) also as `structuredContent` rows. At most 50 sheets and 10,000 rows × 200 columns per sheet |
+| PowerPoint (`.pptx`, `.pptm`) | Text per slide, in presentation order, with speaker notes |
+| Text, HTML | Cleaned text, as before |
+| PNG, JPEG, GIF, WebP | MCP image content, up to 5 MB (not decoded or resized) |
+| Anything else | Name, type, size and id, plus the path of a saved copy |
+
+Long content comes in parts: `max_chars` sets the size (default and maximum: the **Max body length** setting, never
+over 100,000), and every answer ends with what it showed and how to get the next part, by `offset` or by `page` (PDF),
+`slide` (PowerPoint) or `sheet` (name or number). `format: "file"` saves any attachment and returns the path;
+`format: "base64"` returns the raw bytes of a file up to 5 MB as an embedded resource, as `get_attachment` used to for
+non-text files.
+
+**Saved files.** Files that aren't shown as text, files too large to read (images over 5 MB, documents over 25 MB) and
+files that couldn't be read ("Couldn't read this PDF: reading it took too long. Saved at: …") are saved on the xaq
+server as `<folder>/<message id>/<file name>`, the name cleaned like an outgoing attachment's (no path, no hidden or
+control characters, no leading dot). The folder is **Settings → Attachment folder** (`attachmentSaveDir`, an absolute
+path), by default `attachments/` in the data directory. A folder xaq creates (or finds empty) is made private (0700)
+and marked with a `.xaq-attachments` file; files are 0600, created without following symlinks, and a different file
+already under a name is never overwritten (the new one becomes `name (2).ext`). Saved files are deleted **7 days**
+after they were last saved, and only from a folder xaq created: a folder that already held other files is used as it
+is and never cleaned up. At most 50 MB per file. The path is on the machine xaq runs on, so it's useful to agents
+running there.
+
+**Parsing runs out of process.** Every attachment is written by a third party, so documents are parsed in a
+short-lived child `node` started for each file, never in xaq itself:
+
+- `node --permission --no-experimental-sqlite --disallow-code-generation-from-strings --max-old-space-size=256
+  --import <signal preload> --input-type=module -e <bootstrap>`, with no `--allow-*` flag: the child can't read or
+  write any file (not even its own code: xaq reads `dist/attachment-parser.js` and sends it over stdin), start
+  processes or workers, load addons, open SQLite, evaluate strings as code or signal other processes. Its environment
+  is empty and it runs in `/`. The network is closed by Node itself on Node 25+, and on 22 and 24 by the bootstrap
+  (fetch, sockets, HTTP and DNS replaced before the parser loads).
+- A hard 20-second deadline from the moment the file is queued (then SIGKILL), at most 16 MB of output, at most two
+  children at once and eight waiting; a file that timed out isn't tried again for a while. A crash, a timeout or an
+  out-of-memory child only ends that one read, with the saved path in the answer.
+- Zip packages (DOCX, XLSX, PPTX) are read from their central directory, at most 2,000 entries, refused whole for an
+  entry outside the archive, encryption or ZIP64; each entry is inflated with a hard output cap (32 MB, 64 MB in total)
+  and a compression ratio over 200:1 is refused as a zip bomb. XML with a DOCTYPE or entity declaration is refused
+  (no XXE, no entity expansion). PDFs: 500 pages and 2,000,000 characters of text; nothing is fetched (fonts, CMaps).
+  CSV: 10,000 rows, 200 columns, 2,000 characters per cell.
+- Extracted text gets the same cleaning as mail: control characters, zero-width and other invisible characters
+  removed (the answer says how many).
+- Libraries, bundled into the child: [`unpdf`](https://github.com/unjs/unpdf) (PDF.js's serverless build, MIT) and
+  [`@xmldom/xmldom`](https://github.com/xmldom/xmldom) (MIT); zip and CSV reading are xaq's own code on `node:zlib`.
+
+On a Node release below the code-extension floor (≥ 22.23.2, 24.18.1 or 26.5.1) the permission model has known
+bypasses; parsing still runs in the child, with weaker isolation, and xaq logs a warning.
+
 ## Data and backups
 
 Everything lives in the data directory (`~/.xaq` by default):
@@ -485,6 +544,7 @@ Everything lives in the data directory (`~/.xaq` by default):
 | `app/` | The service's own install (`service install` only) |
 | `extensions/` | Installed extensions, one read-only directory per pinned version |
 | `extension-state/<extension>/<connection>/` | A code extension's own files for one connection (mode 0700), deleted with the connection |
+| `attachments/<message id>/` | Attachments `get_attachment` saved for agents (mode 0700, files 0600), deleted after 7 days; see [Reading attachments](#reading-attachments) |
 
 <!-- rename-xaq: keep-start -->
 A data directory created before the rename keeps its file names: `agentinbox.db`, `agentinbox.lock` and

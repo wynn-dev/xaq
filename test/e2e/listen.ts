@@ -243,17 +243,18 @@ export function buildCli(): string {
   const config = join(root, "tsdown.e2e.config.mjs");
   writeFileSync(
     config,
-    `import base from ${JSON.stringify(pathToFileURL(join(REPO_ROOT, "tsdown.config.mjs")).href)};
+    `import configs from ${JSON.stringify(pathToFileURL(join(REPO_ROOT, "tsdown.config.mjs")).href)};
 const repo = ${JSON.stringify(REPO_ROOT)};
-// The repo's config with paths made absolute (tsdown resolves relative ones from this config's dir).
-export default {
+// The repo's configs (server, attachment parser) with paths made absolute (tsdown resolves relative ones from
+// this config's dir). Only the first cleans; only the one that copies SKILL.md copies it.
+export default (Array.isArray(configs) ? configs : [configs]).map((base, i) => ({
   ...base,
   cwd: repo,
   entry: Object.fromEntries(Object.entries(base.entry).map(([k, v]) => [k, repo + "/" + v])),
   outDir: ${JSON.stringify(outDir)},
-  clean: true,
-  copy: [{ from: repo + "/server/skill/SKILL.md", to: ${JSON.stringify(join(outDir, "skill"))} }],
-};
+  clean: i === 0,
+  ...(base.copy ? { copy: [{ from: repo + "/server/skill/SKILL.md", to: ${JSON.stringify(join(outDir, "skill"))} }] } : {}),
+}));
 `,
   );
   execFileSync("pnpm", ["exec", "tsdown", "--config", config, "--config-loader", "native"], { cwd: REPO_ROOT, stdio: "pipe", env: { ...process.env, CI: "1" } });

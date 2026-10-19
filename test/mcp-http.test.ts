@@ -112,7 +112,7 @@ describe("MCP over HTTP", () => {
     const names = async (key: string) => (await (await mcpClient(http, key)).listTools()).tools.map((t) => t.name).sort();
 
     expect(await names(reader.apiKey)).toEqual(
-      ["ack_events", "get_attachment", "get_message", "get_thread", "list_accounts", "list_events", "list_labels", "search_threads", "wait_for_events"].sort(),
+      ["ack_events", "get_attachment", "get_message", "get_thread", "list_accounts", "list_attachments", "list_events", "list_labels", "search_threads", "wait_for_events"].sort(),
     );
     expect(await names(sender.apiKey)).toEqual(["archive", "get_send_status", "list_accounts", "list_labels", "mark_read", "modify_labels", "reply"].sort());
     expect(await names(full.apiKey)).toEqual(
@@ -126,6 +126,7 @@ describe("MCP over HTTP", () => {
         "get_send_status",
         "get_thread",
         "list_accounts",
+        "list_attachments",
         "list_events",
         "list_labels",
         "mark_read",
@@ -301,7 +302,7 @@ describe("console API", () => {
     const ok = (await (await http.request(`/api/agents/${agent.id}/test`, { method: "POST" })).json()) as AgentTestResult;
     expect(ok.ok).toBe(true);
     expect(ok.tools).toContain("search_threads");
-    expect(ok.message).toMatch(/9 tools available/);
+    expect(ok.message).toMatch(/10 tools available/);
 
     const bare = addAgent("bare", []);
     const none = (await (await http.request(`/api/agents/${bare.agent.id}/test`, { method: "POST" })).json()) as AgentTestResult;

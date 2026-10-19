@@ -2,6 +2,7 @@ import { sweepPairings } from "./agentapi/index.ts";
 import { adminAuth } from "./auth/index.ts";
 import { KEEP_ENDED_MS, pruneEventStates } from "./calendar/state.ts";
 import type { AppContext } from "./context.ts";
+import { pruneSavedAttachments } from "./mail/saved-attachments.ts";
 import { errorMessage } from "./util/errors.ts";
 
 const INTERVAL_MS = 3600_000;
@@ -39,7 +40,9 @@ export function runMaintenance(ctx: AppContext): MaintenanceResult {
   const approvals = step("approvals", () => ctx.mail.prune(before));
   // Calendar sync state is only needed until an event has been over for a day (not a retention setting).
   const calendarEvents = step("calendar sync state", () => pruneEventStates(ctx.db, new Date(Date.now() - KEEP_ENDED_MS).toISOString()));
-  if (approvals > 0 || calendarEvents > 0 || Object.values(result).some((n) => n > 0)) log.info("Pruned old data", { ...result, approvals, calendarEvents });
+  // Files get_attachment saved for agents: their own fixed retention (ATTACHMENT_RETENTION_DAYS).
+  const savedFiles = step("saved attachments", () => pruneSavedAttachments(ctx));
+  if (approvals > 0 || calendarEvents > 0 || savedFiles > 0 || Object.values(result).some((n) => n > 0)) log.info("Pruned old data", { ...result, approvals, calendarEvents, savedFiles });
   return result;
 }
 

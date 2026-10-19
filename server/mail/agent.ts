@@ -2,7 +2,7 @@
 // action-side guardrails (capabilities, label scope, send rules) and returns structured data that
 // server/mcp formats for the agent. Denials throw PolicyDenied; bad input throws ToolError.
 
-import type { Account, Address, Approval, Capability, GmailLabel, GoogleApproval, Grant, MessageSummary } from "../../shared/types.ts";
+import type { Account, Address, Approval, Attachment, Capability, GmailLabel, GoogleApproval, Grant, MessageSummary } from "../../shared/types.ts";
 import type { AppContext } from "../context.ts";
 import type { GmailClient, GmailMessage, GmailPart, GmailThread, ParsedMessage } from "../google/types.ts";
 import { UPLOAD_MAX_BYTES } from "../google/gmail.ts";
@@ -154,6 +154,12 @@ function attachmentParts(msg: GmailMessage): AttachmentPart[] {
   };
   walk(msg.payload);
   return out;
+}
+
+/** A message's attachments as agents see them: Gmail's per-fetch attachment ids replaced by stable part ids. */
+function listedAttachments(msg: GmailMessage, list: Attachment[]): Attachment[] {
+  const parts = attachmentParts(msg);
+  return list.map((x) => ({ ...x, id: parts.find((p) => p.attachmentId === x.id)?.partId ?? x.id }));
 }
 
 const header = (m: GmailMessage | undefined, name: string): string | null =>
@@ -395,9 +401,7 @@ export class AgentMail {
   private async render(a: Access, msg: GmailMessage): Promise<RenderedMessage> {
     const parsed = this.ctx.google.mime.parse(msg);
     const content = await contentPool(this.ctx).content(parsed, { accountEmail: a.account.email, maxChars: this.maxChars() });
-    // Show stable part ids to agents; get_attachment maps them back to Gmail's current attachment id.
-    const parts = attachmentParts(msg);
-    content.attachments = content.attachments.map((x) => ({ ...x, id: parts.find((p) => p.attachmentId === x.id)?.partId ?? x.id }));
+    content.attachments = listedAttachments(msg, content.attachments);
     return { summary: parsed.summary, content };
   }
 
@@ -416,6 +420,32 @@ export class AgentMail {
     this.trace.target = messageId;
     const msg = await this.loadMessage(a, messageId, "full");
     return { account: a.account, message: await this.render(a, msg), labels: await this.labelsSafe(a), maxChars: this.maxChars() };
+  }
+
+  /**
+   * The attachments of one message or of every message in a thread (exactly one of the two ids): the same files and
+   * attachment ids get_message/get_thread list, with the message each belongs to. Metadata only, never content.
+   */
+  async listAttachments(account: string | undefined, target: { messageId?: string; threadId?: string }) {
+    const a = this.resolve(account, "read");
+    if (!!target.threadId === !!target.messageId) throw new ToolError("invalid_arguments", "Pass exactly one of thread_id or message_id.");
+    let messages: GmailMessage[];
+    if (target.threadId) {
+      const threadId = target.threadId;
+      this.trace.target = threadId;
+      const thread = await this.fetchById("Thread", threadId, () => a.gmail.getThread(threadId, "full"));
+      this.assertThreadLabels(a, threadLabels(thread), "Thread", threadId);
+      messages = thread.messages ?? [];
+    } else {
+      this.trace.target = target.messageId!;
+      messages = [await this.loadMessage(a, target.messageId!, "full")];
+    }
+    const items = messages.flatMap((msg) => {
+      const summary = this.ctx.google.mime.summarize(msg);
+      return listedAttachments(msg, this.ctx.google.mime.parse(msg).attachments).map((x) => ({ ...x, messageId: msg.id, from: summary.from, date: summary.date }));
+    });
+    this.trace.detail = { messages: messages.length, attachments: items.length };
+    return { account: a.account, threadId: target.threadId ?? null, messageId: target.messageId ?? null, messageCount: messages.length, attachments: items };
   }
 
   /**
