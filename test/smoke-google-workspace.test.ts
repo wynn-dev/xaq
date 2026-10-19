@@ -207,6 +207,12 @@ describe.runIf(HAS_AGENTS)("xaq smoke google-workspace", () => {
     expect(report.steps.find((s) => s.tool === "slides_delete_slide")!.detail).toMatch(/^pending, approved \(apr_/);
     expect(report.steps.find((s) => s.tool === "drive_trash")!.detail).toMatch(/^pending, approved \(apr_/);
     expect(run.ledger.approvals).toHaveLength(2);
+    // The private PNG is refused (never shared), the public image goes in.
+    expect(report.steps.filter((s) => s.tool === "slides_insert_image").map((s) => `${s.step}: ${s.status} ${s.detail}`)).toEqual([
+      "Drive image (private): PASS refused as expected",
+      expect.stringMatching(/^insert a public https image: PASS image img/),
+    ]);
+    expect([...w.ws.files.values()].some((f) => f.shared)).toBe(false);
     // The draft was real: two attachments, to the account itself, then deleted.
     expect(report.steps.find((s) => /check the draft/.test(s.step))!.detail).toMatch(/xaq-smoke-\d{8}T\d{6}Z\.txt" \d+ B, "xaq-smoke-\d{8}T\d{6}Z doc\.pdf" \d+ B/);
     // Prints only names, the subject, kinds and sizes.
@@ -234,6 +240,20 @@ describe.runIf(HAS_AGENTS)("xaq smoke google-workspace", () => {
     expect(report.ok).toBe(false);
     expect(report.leftBehind).toEqual([]);
     await expectClean(w, run);
+  });
+
+  it("a private Drive image that does get inserted is a failure (it would mean the PNG was shared)", async () => {
+    const w = await world();
+    w.ws.fault("slides_insert_image", () => {
+      for (const f of w.ws.files.values()) f.shared = true;
+    });
+    const run = w.run();
+    const report = await run.run();
+    const step = report.steps.find((s) => s.step === "Drive image (private)")!;
+    expect(step.status).toBe("FAIL");
+    expect(step.detail).toContain("inserted a private Drive image");
+    expect(report.ok).toBe(false);
+    expect(report.leftBehind).toEqual([]);
   });
 
   it("when cleanup itself fails, what's left is reported, and the agent and settings are still removed", async () => {

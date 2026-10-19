@@ -207,9 +207,12 @@ What it does, in order (tool names as the extension lists them; agents see `<slu
 5. **Slides.**
    - `slides_create` from an outline, in the folder. Then `slides_add_slide` and `slides_replace_text` (exactly 2
      matches).
-   - `drive_upload` puts a PNG the command makes itself into the folder. `slides_insert_image` inserts it by
-     `driveFileId` (the Drive-thumbnail path) and also from a fixed public https image. `slides_read` then checks
-     the text and both images.
+   - `drive_upload` puts a PNG the command makes itself into the folder. `slides_insert_image` with that
+     `driveFileId` must be refused. Slides fetches images without credentials, the PNG is private, and nothing is
+     ever shared. The deck must stay unchanged, and the table says "Drive image (private): refused as expected".
+     An insert fails the step.
+   - `slides_insert_image` from a fixed public https image must insert it. `slides_read` then checks the text and
+     the image.
    - `slides_delete_slide` must come back pending. The command approves it and checks that the slide is gone.
 6. **Draft.**
    - The command writes a file into a new temp dir and adds that dir to `attachmentDirs`.

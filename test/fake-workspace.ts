@@ -37,6 +37,8 @@ export interface FakeFile {
   slides: FakeSlide[];
   comments: { id: string; text: string }[];
   bytes: Buffer | null;
+  /** "Anyone with the link" (never set by the fake's tools). */
+  shared: boolean;
 }
 
 export interface FakeWorkspace {
@@ -109,6 +111,7 @@ export function fakeWorkspace(): FakeWorkspace {
       slides: f.slides ?? [],
       comments: [],
       bytes: f.bytes ?? null,
+      shared: f.shared ?? false,
     };
     files.set(file.id, file);
     return file;
@@ -383,6 +386,8 @@ export function fakeWorkspace(): FakeWorkspace {
         if (a.driveFileId !== undefined) {
           const img = get(a.driveFileId);
           if (!["image/png", "image/jpeg", "image/gif"].includes(img.mimeType)) throw new Error(`"${img.name}" isn't an image`);
+          // Slides fetches without credentials: a private Drive image can't be inserted (the extension never shares).
+          if (!img.shared) throw new Error(`"${img.name}" isn't shared publicly, so Slides can't fetch it. Share it "anyone with the link" or pass a public https imageUrl.`);
         } else if (!String(a.imageUrl).startsWith("https://")) throw new Error("imageUrl must be https");
         s.images++;
         return ok("Inserted", { presentationId: f.id, slideId: s.slideId, imageId: nextId("img") });

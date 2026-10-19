@@ -157,7 +157,8 @@ export function planLines(marker: string, account: string, connection: Connectio
     "  - Docs: create a doc from markdown, append, find and replace (count checked), comment, read back",
     "  - Sheets: create a sheet, write a range, append rows, read back",
     "  - Slides: create a deck from an outline, add a slide, replace text, upload a PNG and insert it (Drive",
-    "    thumbnail path), insert a public https image, read back, delete a slide through the approval path",
+    "    thumbnail path: a private image must be refused), insert a public https image, read back, delete a",
+    "    slide through the approval path",
     `  - Gmail: ONE draft to ${account} only, with a local file and a scratch-folder file attached; checked, then`,
     "    deleted. Nothing is ever sent.",
     "Cleanup, also on failure or Ctrl-C: the folder goes to the Drive trash (drive_trash, approved here), the draft",
@@ -640,21 +641,40 @@ export class SmokeRun {
       png = await this.recordCreated("image", out.structured?.fileId, name);
       return `image ${png}`;
     });
-    await this.step("slides_insert_image", "insert the uploaded PNG (Drive thumbnail)", async () => {
-      const { out } = await this.ws("slides_insert_image", { presentationId: this.need(deck, "the deck"), slideId: this.need(first, "the first slide"), driveFileId: this.need(png, "the PNG") });
-      return `image ${String(out.structured?.imageId ?? "?")}`;
+    // Slides fetches a Drive image without credentials, so only an image shared "anyone with the link" works, and
+    // the extension never changes sharing. The run's own PNG is private: the tool must refuse it and leave the deck
+    // as it was. An insert would mean the file got shared somehow, which is a failure.
+    const imagesOnFirst = async () => {
+      const out = await this.read("slides_read", { presentationId: deck! });
+      const slides = (Array.isArray(out.structured?.slides) ? out.structured.slides : []) as { slideId?: string; images?: number }[];
+      return slides.find((s) => s.slideId === first)?.images ?? 0;
+    };
+    await this.step("slides_insert_image", "Drive image (private)", async () => {
+      const args = { presentationId: this.need(deck, "the deck"), slideId: this.need(first, "the first slide"), driveFileId: this.need(png, "the PNG") };
+      const before = await imagesOnFirst();
+      let refusal: string | null = null;
+      try {
+        await this.ws("slides_insert_image", args);
+      } catch (err) {
+        if (err instanceof GuardError || err instanceof Interrupted) throw err;
+        refusal = errText(err);
+      }
+      if (refusal === null) throw new Error("inserted a private Drive image: check the PNG's sharing in Drive");
+      if (!/shared publicly/i.test(refusal)) throw new Error(refusal);
+      if ((await imagesOnFirst()) !== before) throw new Error("refused, but the deck changed");
+      return "refused as expected";
     });
     await this.step("slides_insert_image", "insert a public https image", async () => {
       const { out } = await this.ws("slides_insert_image", { presentationId: this.need(deck, "the deck"), slideId: this.need(first, "the first slide"), imageUrl: this.deps.imageUrl ?? PUBLIC_IMAGE_URL });
       return `image ${String(out.structured?.imageId ?? "?")}`;
     });
-    await this.step("slides_read", "read back: text replaced, images there", async () => {
+    await this.step("slides_read", "read back: text replaced, the image there", async () => {
       const out = await this.read("slides_read", { presentationId: this.need(deck, "the deck") });
       const slides = (Array.isArray(out.structured?.slides) ? out.structured.slides : []) as { slideId?: string; images?: number }[];
       const problems = [
         out.text.split(fresh).length - 1 !== 2 && "2 replacements",
         out.text.includes(old) && "no text left to replace",
-        (slides.find((s) => s.slideId === first)?.images ?? 0) < 2 && "2 images on the first slide",
+        (slides.find((s) => s.slideId === first)?.images ?? 0) !== 1 && "the public image on the first slide",
         !slides.some((s) => s.slideId === extra) && "the added slide",
       ].filter(Boolean);
       if (problems.length) throw new Error(`missing: ${problems.join(", ")}`);
