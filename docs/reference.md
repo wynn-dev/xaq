@@ -501,7 +501,9 @@ path), by default `attachments/` in the data directory. A folder xaq creates (or
 and marked with a `.xaq-attachments` file; files are 0600, created without following symlinks, and a different file
 already under a name is never overwritten (the new one becomes `name (2).ext`). Saved files are deleted **7 days**
 after they were last saved, and only from a folder xaq created: a folder that already held other files is used as it
-is and never cleaned up. At most 50 MB per file. The path is on the machine xaq runs on, so it's useful to agents
+is and never cleaned up. At most 50 MB per file, and **1 GB for all saved files together**: when a new file would
+go over, the oldest saved files are deleted first (only in a folder xaq created); in a folder it didn't create, or if
+that isn't enough, the file isn't saved and the answer says so, still with the file's name, type, size and id. The path is on the machine xaq runs on, so it's useful to agents
 running there.
 
 **Parsing runs out of process.** Every attachment is written by a third party, so documents are parsed in a

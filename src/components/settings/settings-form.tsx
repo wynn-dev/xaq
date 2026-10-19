@@ -266,7 +266,7 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
                     <FieldError>{field.state.meta.errors.join(" ")}</FieldError>
                   ) : (
                     <FieldDescription>
-                      Where get_attachment saves files it can't show as text, on this server. Files are deleted after 7 days, only from a folder xaq created.
+                      Where get_attachment saves files it can't show as text, on this server. Files are deleted after 7 days (oldest first past 1 GB in total), only from a folder xaq created.
                     </FieldDescription>
                   )}
                 </Field>

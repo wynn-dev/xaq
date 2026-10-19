@@ -16,6 +16,7 @@ import {
   SaveError,
   saveAttachment,
 } from "../server/mail/saved-attachments.ts";
+import { attachmentOutput } from "../server/mcp/attachments.ts";
 import { testContext } from "./helpers.ts";
 
 let cleanup: (() => Promise<void> | void)[] = [];
@@ -138,6 +139,61 @@ describe("saved attachments", () => {
     symlinkSync(real, link);
     ctx.settings.update({ attachmentSaveDir: link });
     await expect(saveAttachment(ctx, "m10", "a.txt", "text/plain", Buffer.from("a"))).rejects.toThrow(/symlinks are refused/);
+  });
+
+  it("keeps the folder within its total quota by deleting the oldest saved files first", async () => {
+    const ctx = setup();
+    const quotaBytes = 1000;
+    const kb = (c: string) => Buffer.alloc(400, c);
+    const a = await saveAttachment(ctx, "q1", "a.bin", "application/octet-stream", kb("a"), { quotaBytes });
+    const b = await saveAttachment(ctx, "q2", "b.bin", "application/octet-stream", kb("b"), { quotaBytes });
+    utimesSync(a, old(), old());
+    // The same bytes again need no room: nothing is deleted.
+    expect(await saveAttachment(ctx, "q2", "b.bin", "application/octet-stream", kb("b"), { quotaBytes })).toBe(b);
+    expect(existsSync(a)).toBe(true);
+    // 800 + 400 > 1000: the oldest (a) goes, and its empty message folder with it.
+    const c = await saveAttachment(ctx, "q3", "c.bin", "application/octet-stream", kb("c"), { quotaBytes });
+    expect(existsSync(a)).toBe(false);
+    expect(existsSync(join(ctx.config.dataDir, "attachments", "q1"))).toBe(false);
+    expect(existsSync(b)).toBe(true);
+    expect(existsSync(c)).toBe(true);
+    // Other entries in the folder are never deleted or counted.
+    expect(existsSync(join(ctx.config.dataDir, "attachments", SAVE_DIR_MARKER))).toBe(true);
+    // A file larger than the whole quota is refused, and nothing is deleted for it.
+    await expect(saveAttachment(ctx, "q4", "huge.bin", "application/octet-stream", Buffer.alloc(1001), { quotaBytes })).rejects.toThrow(/larger than the 1000 B quota/);
+    expect(existsSync(b) && existsSync(c)).toBe(true);
+  });
+
+  it("refuses to save over the quota in a folder xaq didn't create, deleting nothing", async () => {
+    const ctx = setup();
+    const foreign = tmp();
+    writeFileSync(join(foreign, "someone-elses.txt"), "x");
+    ctx.settings.update({ attachmentSaveDir: foreign });
+    const quotaBytes = 1000;
+    const a = await saveAttachment(ctx, "f1", "a.bin", "application/octet-stream", Buffer.alloc(600), { quotaBytes });
+    utimesSync(a, old(), old());
+    await expect(saveAttachment(ctx, "f2", "b.bin", "application/octet-stream", Buffer.alloc(600), { quotaBytes })).rejects.toThrow(
+      /over its 1000 B quota, and xaq doesn't delete files from a folder it didn't create/,
+    );
+    expect(existsSync(a)).toBe(true);
+    expect(existsSync(join(foreign, "f2"))).toBe(false);
+  });
+
+  it("get_attachment still answers with the file's metadata when it can't be saved", async () => {
+    const ctx = setup();
+    const link = join(tmp(), "link");
+    symlinkSync(tmp(), link);
+    ctx.settings.update({ attachmentSaveDir: link });
+    const out = await attachmentOutput(
+      ctx,
+      { messageId: "m11", attachmentId: "2", from: "x@evil.test", filename: "blob.bin", mimeType: "application/octet-stream", data: Buffer.alloc(10), maxChars: 0 },
+      {},
+    );
+    if (typeof out === "string" || Array.isArray(out)) throw new Error("expected structured output");
+    const text = (out.content[0] as { text: string }).text;
+    expect(text).toContain("Attachment blob.bin (application/octet-stream, 10 B) from message m11, attachment_id 2");
+    expect(text).toMatch(/It couldn't be saved to a file: the attachment folder isn't a plain directory/);
+    expect(out.structuredContent).toMatchObject({ attachment: { filename: "blob.bin", size: 10, savedPath: null } });
   });
 
   it("validates the setting: absolute paths only, empty for the default", () => {
