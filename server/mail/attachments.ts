@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { detectExtension, detectMimeType } from "nodemailer/lib/mime-funcs";
 import type { AttachmentSource } from "../../shared/types.ts";
+import { UPLOAD_MAX_BYTES } from "../google/gmail.ts";
 import { decodeMimeWords } from "../google/mime.ts";
 import { escapeDelimiters, stripInvisible } from "./content.ts";
 
@@ -47,6 +48,8 @@ export interface OutgoingAttachment {
   content: Buffer;
   /** Where it came from (approval card and audit). Absent: in the call (content_base64). */
   source?: AttachmentSource;
+  /** A Drive file's page, offered as a link when the message turns out too large. Never sent or recorded. */
+  driveLink?: string;
 }
 
 /** Audit and approval view: never the content. */
@@ -61,29 +64,47 @@ export interface AttachmentMeta {
 /** Files per message. Gmail itself takes far more; this keeps tool calls and approval cards readable. */
 export const MAX_ATTACHMENTS = 10;
 /**
- * Gmail's sending limit: 25 MB per message, body and attachments together, counted after the base64 MIME
- * encoding (support.google.com/mail/answer/6584, and the Workspace sending limits), in decimal megabytes.
- * Files take about 4/3 of their size once encoded, so about 18 MB of files fit.
+ * Gmail's sending limit: 25 MB for the message content and attachments together, before encoding
+ * (support.google.com/mail/answer/6584, "You can send up to 25 MB in attachments", and the Workspace sending
+ * limits). Counted in decimal megabytes, the stricter reading.
  */
 export const MAX_MESSAGE_BYTES = 25_000_000;
+/**
+ * The most the encoded message (RFC 822, base64 / quoted-printable parts and all) may be, for the Gmail API
+ * endpoint xaq uses. messages.send and drafts.create take the message either as `raw` in a JSON body or as a media
+ * upload on /upload/gmail/v1/…; xaq uses the JSON body only up to 512 KB (gmail.ts JSON_RAW_MAX_CHARS: Google
+ * documents no limit there and has refused 1 MB), so large messages always go through the upload endpoint, whose
+ * documented maximum is 35 MB: "Maximum file size: 35MB" on
+ * https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send and
+ * https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.drafts/create, and
+ * `"maxSize": "36700160"` for both upload methods in Gmail's discovery document
+ * (https://gmail.googleapis.com/$discovery/rest?version=v1). 25 MB of files is about 34.2 MB once base64-encoded,
+ * so this limit is only reached through the body: quoted-printable can double a text body.
+ */
+export const MAX_ENCODED_BYTES = UPLOAD_MAX_BYTES;
 /** Allowance for the message's own headers (From, To, Subject, threading, MIME boundaries). */
 const MESSAGE_HEADER_BYTES = 4096;
 /** Allowance for each attached file's MIME headers (type, disposition, an encoded long filename). */
 const PART_HEADER_BYTES = 1024;
 
-/** Bytes a part of `raw` bytes takes in the message: base64 in 76-character lines (57 bytes each, plus CRLF) and its headers. */
+/**
+ * Estimated bytes a part of `raw` bytes takes in the encoded message: base64 in 76-character lines (57 bytes each,
+ * plus CRLF) and its headers. A quoted-printable text body can take more; the composed message is checked exactly.
+ */
 export const encodedPartSize = (raw: number): number => Math.ceil(raw / 3) * 4 + Math.ceil(raw / 57) * 2 + PART_HEADER_BYTES;
-/** The encoded size of a message with this body and no files yet. */
+/** The estimated encoded size of a message with this body and no files yet. */
 export const encodedBaseSize = (bodyBytes: number): number => MESSAGE_HEADER_BYTES + encodedPartSize(bodyBytes);
-/** Largest file (raw bytes) that still fits in `encodedRoom` bytes of message. */
+/** Largest file (raw bytes) whose estimated encoding still fits in `encodedRoom` bytes of message. */
 export const rawCapacity = (encodedRoom: number): number => {
   const room = encodedRoom - PART_HEADER_BYTES;
   return room <= 0 ? 0 : Math.max(0, Math.floor((room * 57) / 78));
 };
 /** Sizes in errors: decimal, like Gmail's 25 MB. */
 export const mb = (bytes: number): string => (bytes >= 100_000 ? `${(bytes / 1_000_000).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1000))} KB`);
-/** How much file data fits next to an empty body, for messages ("about 18 MB of files"). */
-export const MAX_FILES_HINT = `about ${Math.floor(rawCapacity(MAX_MESSAGE_BYTES - encodedBaseSize(0)) / 1_000_000)} MB of files`;
+/** Gmail's 25 MB rule, as errors state it. */
+export const LIMIT_WORDS = "Gmail sends at most 25 MB per message (body and attachments together)";
+/** The API limit on the encoded message, as errors state it. */
+export const ENCODED_LIMIT_WORDS = `Gmail's API accepts at most 35 MB (${MAX_ENCODED_BYTES.toLocaleString("en-US")} bytes) per message once it is encoded for email`;
 /** Longest filename kept (code points), extension included. */
 export const MAX_FILENAME_CHARS = 120;
 
@@ -127,6 +148,8 @@ export class AttachmentError extends Error {
       | "not_found"
       /** The account hasn't granted Drive read access. */
       | "drive_not_enabled"
+      /** The agent has no grant on a Google Workspace connection for the account. */
+      | "drive_not_granted"
       | "drive_error",
     message: string,
   ) {
@@ -269,25 +292,27 @@ export const SMALLER_FILES_HINT = "Send fewer or smaller files, or share large o
 /**
  * The size refusal: names the file, its size and the message's, and says what to do instead (`hint`: a Drive
  * link, sharing from Drive, smaller files). `atLeast`: the file's size isn't known exactly (it was cut off there).
+ * `limit`: Gmail's 25 MB of body and attachments (`total` is that sum), or the API's 35 MB for the encoded message
+ * (`total` is its estimated encoded size).
  */
 export function tooLarge(opts: {
   file: string;
   size: number;
   atLeast?: boolean;
-  /** The message's encoded size with this file (at least). */
   total: number;
+  limit?: "raw" | "encoded";
   /** Every file with its size, when there are several. */
   files?: { name: string; size: number | null }[];
   hint: string;
 }): AttachmentError {
-  const size = `${opts.atLeast ? "over " : ""}${mb(opts.size)}`;
+  const over = opts.atLeast ? "over " : "";
   const list =
     opts.files && opts.files.length > 1 ? ` Files: ${opts.files.map((f) => `${f.name} ${f.size === null ? "(size unknown)" : mb(f.size)}`).join(", ")}.` : "";
-  return new AttachmentError(
-    "too_large",
-    `${opts.file} (${size}) doesn't fit: the message would be ${opts.atLeast ? "over " : ""}${mb(opts.total)} once encoded for email, and Gmail sends at most ` +
-      `25 MB per message, body and files together after encoding (${MAX_FILES_HINT}).${list} ${opts.hint}`,
-  );
+  const why =
+    opts.limit === "encoded"
+      ? `once encoded for email the message would be ${over}${mb(opts.total)}, and ${ENCODED_LIMIT_WORDS}.`
+      : `the message would be ${over}${mb(opts.total)}, and ${LIMIT_WORDS}.`;
+  return new AttachmentError("too_large", `${opts.file} (${over}${mb(opts.size)}) doesn't fit: ${why}${list} ${opts.hint}`);
 }
 
 /**
@@ -305,12 +330,11 @@ export function prepareAttachments(input: Base64AttachmentInput[] | undefined, b
     const label = itemLabel(i, a.filename);
     return { a, label, ...checkBase64(label, a.content_base64) };
   });
-  let total = encodedBaseSize(bodyBytes);
-  for (const x of items) {
-    total += encodedPartSize(x.size);
-    if (total > MAX_MESSAGE_BYTES) {
-      throw tooLarge({ file: x.label, size: x.size, total, files: items.map((y) => ({ name: y.label, size: y.size })), hint: SMALLER_FILES_HINT });
-    }
+  const total = bodyBytes + items.reduce((n, x) => n + x.size, 0);
+  if (total > MAX_MESSAGE_BYTES) {
+    let running = bodyBytes;
+    const culprit = items.find((x) => (running += x.size) > MAX_MESSAGE_BYTES)!;
+    throw tooLarge({ file: culprit.label, size: culprit.size, total, files: items.map((y) => ({ name: y.label, size: y.size })), hint: SMALLER_FILES_HINT });
   }
   return items.map(({ a, label, b64, size }) => {
     const { filename, contentType } = fileType(label, typeof a.filename === "string" ? a.filename : "", a.mime_type);

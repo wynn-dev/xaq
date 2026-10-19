@@ -4,9 +4,12 @@
 // Two passes. First every item is checked and sized without downloading anything: its shape, its name and type
 // (Gmail's blocked types), the path rules (server/mail/local-files.ts), the message part or the Drive file's
 // metadata. When the sizes known by then (base64 length, fstat, Gmail's part size, Drive's `size`) are already
-// over the limit, nothing is fetched. Then each file is fetched with a cap of what still fits, so nothing larger
+// over a limit, nothing is fetched. Then each file is fetched with a cap of what still fits, so nothing larger
 // is ever buffered: a source larger than it said (or a Drive export, whose size isn't known in advance) is cut
 // off at the cap and refused.
+//
+// Two limits: Gmail's 25 MB of body and attachment bytes (MAX_MESSAGE_BYTES), and the API's 35 MB for the
+// encoded message (MAX_ENCODED_BYTES), estimated here and checked exactly once the message is composed (agent.ts).
 
 import { basename } from "node:path";
 import type { AttachmentSource } from "../../shared/types.ts";
@@ -22,13 +25,14 @@ import {
   fileType,
   itemLabel,
   MAX_ATTACHMENTS,
+  MAX_ENCODED_BYTES,
   MAX_MESSAGE_BYTES,
   type OutgoingAttachment,
   rawCapacity,
   SMALLER_FILES_HINT,
   tooLarge,
 } from "./attachments.ts";
-import { driveError, driveNotEnabled, planDriveFile } from "./drive-files.ts";
+import { driveError, planDriveFile } from "./drive-files.ts";
 import { type OpenLocalFile, openLocalFile, type PathPolicy, readCapped } from "./local-files.ts";
 
 /** An attachment of a message in the account, as the caller found it (label scope already enforced). */
@@ -50,8 +54,11 @@ export interface SourceContext {
   bodyBytes: number;
   /** Looks up `attachmentId` (part id or current Gmail id) on `messageId` in the same account. Throws when it can't. */
   messagePart(messageId: string, attachmentId: string): Promise<MessagePart>;
-  /** The account's Drive, or null when it hasn't granted Drive read access. */
-  drive: DriveClient | null;
+  /**
+   * The account's Drive for this agent, or why it can't use it (no Google Workspace grant, or the account hasn't
+   * granted Drive read access): thrown when an item names a Drive file.
+   */
+  drive: DriveClient | AttachmentError;
   paths: PathPolicy;
   /** Forward's include_attachments: the original's files (not counted toward MAX_ATTACHMENTS, names kept). */
   originals?: MessagePart[];
@@ -194,7 +201,7 @@ async function plan(item: AttachmentInput, i: number, sc: SourceContext, open: O
     }
     case "drive": {
       const drive = sc.drive;
-      if (!drive) throw driveNotEnabled(sc.accountEmail);
+      if (drive instanceof AttachmentError) throw drive;
       const id = (o.drive_file_id as string).trim();
       const exportAs = o.export_as as Parameters<typeof planDriveFile>[2];
       let meta;
@@ -225,39 +232,61 @@ async function plan(item: AttachmentInput, i: number, sc: SourceContext, open: O
   }
 }
 
+/** What to do instead of a too-large file: its Drive link, sharing from Drive (when this agent can), smaller files. */
+export function largeFileHint(opts: { link?: string; original?: boolean; driveUsable: boolean }): string {
+  if (opts.link) return `Put its Drive link in the body instead: ${opts.link}`;
+  if (opts.original) return `Forward without include_attachments${opts.driveUsable ? ", or share the files from Google Drive and put the links in the body" : ""}.`;
+  return opts.driveUsable ? "Share large files from Google Drive and put the link in the body instead." : SMALLER_FILES_HINT;
+}
+
 /** Second pass: refuses what's already known to be too large, then fetches each file with a cap of what still fits. */
 async function fetchAll(planned: Planned[], sc: SourceContext): Promise<OutgoingAttachment[]> {
   if (!planned.length) return [];
   const files = planned.map((p) => ({ name: p.name, size: p.size }));
-  const hint = (p: Planned) =>
-    p.link
-      ? `Put its Drive link in the body instead: ${p.link}`
-      : p.original
-        ? `Forward without include_attachments${sc.drive ? ", or share the files from Google Drive and put the links in the body" : ""}.`
-        : sc.drive
-          ? "Share large files from Google Drive and put the link in the body instead."
-          : SMALLER_FILES_HINT;
+  const driveUsable = !(sc.drive instanceof AttachmentError);
+  const hint = (p: Planned) => largeFileHint({ link: p.link, original: p.original, driveUsable });
+  const raw = (p: Planned) => p.size ?? 0;
   const enc = (p: Planned) => (p.size === null ? 0 : encodedPartSize(p.size));
 
-  // Known sizes first: nothing is fetched when they're already over.
-  let used = encodedBaseSize(sc.bodyBytes) + planned.reduce((n, p) => n + enc(p), 0);
-  if (used > MAX_MESSAGE_BYTES) {
-    let running = encodedBaseSize(sc.bodyBytes);
-    const culprit = planned.find((p) => (running += enc(p)) > MAX_MESSAGE_BYTES) ?? planned.at(-1)!;
-    throw tooLarge({ file: culprit.name, size: culprit.size ?? 0, total: used, files, hint: hint(culprit) });
+  // Known sizes first: nothing is fetched when they're already over either limit.
+  let rawUsed = sc.bodyBytes + planned.reduce((n, p) => n + raw(p), 0);
+  let encUsed = encodedBaseSize(sc.bodyBytes) + planned.reduce((n, p) => n + enc(p), 0);
+  const culprit = (start: number, size: (p: Planned) => number, max: number) => {
+    let running = start;
+    return planned.find((p) => (running += size(p)) > max) ?? planned.at(-1)!;
+  };
+  if (rawUsed > MAX_MESSAGE_BYTES) {
+    const c = culprit(sc.bodyBytes, raw, MAX_MESSAGE_BYTES);
+    throw tooLarge({ file: c.name, size: raw(c), total: rawUsed, files, hint: hint(c) });
+  }
+  if (encUsed > MAX_ENCODED_BYTES) {
+    const c = culprit(encodedBaseSize(sc.bodyBytes), enc, MAX_ENCODED_BYTES);
+    throw tooLarge({ file: c.name, size: raw(c), total: encUsed, limit: "encoded", files, hint: hint(c) });
   }
 
   const out: OutgoingAttachment[] = [];
   for (const p of planned) {
-    const room = MAX_MESSAGE_BYTES - (used - enc(p));
-    const cap = rawCapacity(room);
+    // What still fits under both limits, counting every other file at its known size.
+    const rawRoom = MAX_MESSAGE_BYTES - (rawUsed - raw(p));
+    const encCap = rawCapacity(MAX_ENCODED_BYTES - (encUsed - enc(p)));
+    const cap = Math.min(rawRoom, encCap);
     const content = cap > 0 ? await p.fetch(cap) : null;
     if (content === null) {
-      throw tooLarge({ file: p.name, size: cap, atLeast: true, total: MAX_MESSAGE_BYTES, files, hint: hint(p) });
+      const encoded = encCap < rawRoom;
+      throw tooLarge({
+        file: p.name,
+        size: cap,
+        atLeast: true,
+        total: encoded ? MAX_ENCODED_BYTES : MAX_MESSAGE_BYTES,
+        limit: encoded ? "encoded" : "raw",
+        files,
+        hint: hint(p),
+      });
     }
     if (!content.length && !p.original) throw new AttachmentError("invalid_attachment", `${p.name} is empty; an attached file needs at least one byte.`);
-    used += encodedPartSize(content.length) - enc(p);
-    out.push({ filename: p.filename, contentType: p.contentType, content, source: p.source });
+    rawUsed += content.length - raw(p);
+    encUsed += encodedPartSize(content.length) - enc(p);
+    out.push({ filename: p.filename, contentType: p.contentType, content, source: p.source, ...(p.link ? { driveLink: p.link } : {}) });
   }
   return out;
 }

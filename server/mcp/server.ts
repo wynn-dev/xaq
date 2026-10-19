@@ -10,7 +10,7 @@ import type { AppContext } from "../context.ts";
 import { classifyCalendarError } from "../google/calendar.ts";
 import { AccountNeedsReauthError, GoogleApiError } from "../google/types.ts";
 import { AgentMail, MAX_ATTACHMENT_BYTES, ToolError, type ToolTrace } from "../mail/agent.ts";
-import { DRIVE_EXPORT_FORMATS, MAX_ATTACHMENTS, MAX_FILES_HINT } from "../mail/attachments.ts";
+import { DRIVE_EXPORT_FORMATS, MAX_ATTACHMENTS } from "../mail/attachments.ts";
 import { cleanLine, formatSize, labelNames, MAX_HTML_CHARS, truncateText, wrapUntrusted } from "../mail/content.ts";
 import { contentPool } from "../mail/pool.ts";
 import type { AgentPrincipal } from "../policy/types.ts";
@@ -96,7 +96,7 @@ const attachmentItem = z.union([
         .optional()
         .describe("For Google Docs (pdf, docx, txt, md), Sheets (pdf, xlsx, csv; csv is the first sheet), Slides (pdf, pptx, txt) and Drawings (pdf). Default pdf. Other files are attached as they are."),
     })
-    .describe("A Google Drive file of the account (needs Drive enabled for the account in xaq)."),
+    .describe("A Google Drive file of the account (needs your access to its Google Workspace connection, and Drive enabled for the account in xaq)."),
 ]);
 const attachments = z
   .array(attachmentItem)
@@ -104,7 +104,7 @@ const attachments = z
   .describe(
     `Files to attach (at most ${MAX_ATTACHMENTS}), each from exactly one source: bytes in this call (content_base64 + filename), a path on xaq's machine (path), ` +
       "another message's attachment (message_id + attachment_id), or a Google Drive file (drive_file_id, with export_as for Google Docs, Sheets and Slides). " +
-      `Gmail's limit is 25 MB per message after encoding, body and files together (${MAX_FILES_HINT}); for larger files put a Drive link in the body instead. ` +
+      "Gmail's limit is 25 MB per message, body and files together; for larger files put a Drive link in the body instead. " +
       "Gmail refuses executables and similar types (.exe, .js, .bat, …).",
   );
 const eventTypes = z.array(z.enum(EVENT_TYPES)).optional().describe("Only these event types.");
