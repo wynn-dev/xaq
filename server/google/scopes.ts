@@ -44,3 +44,60 @@ export const CALENDAR_SCOPE_WORDS: Record<string, string> = {
 
 /** "view and edit events, see the list of calendars" for missing calendar scopes. */
 export const describeScopes = (scopes: readonly string[]): string => scopes.map((s) => CALENDAR_SCOPE_WORDS[s] ?? s).join(", ");
+
+// ───────────── Google Workspace files (Drive, Docs, Sheets, Slides) ─────────────
+// Used by the official google-workspace code extension (docs/EXTENSIONS.md "Google accounts for code extensions")
+// and by core's own Drive use (Gmail's attach-from-Drive). Never part of what an account is connected with: they're
+// added incrementally (include_granted_scopes) when the user opts in.
+
+/** Read every file in the user's Drive, and its metadata (restricted scope). */
+export const DRIVE_READONLY_SCOPE = `${G}drive.readonly`;
+/** Create files, and edit or delete the files this app created or the user opened with it (non-sensitive). */
+export const DRIVE_FILE_SCOPE = `${G}drive.file`;
+/** See, edit, create and delete Google Docs documents (sensitive). */
+export const DOCS_SCOPE = `${G}documents`;
+/** See, edit, create and delete Google Sheets spreadsheets (sensitive). */
+export const SHEETS_SCOPE = `${G}spreadsheets`;
+/** See, edit, create and delete Google Slides presentations (sensitive). */
+export const SLIDES_SCOPE = `${G}presentations`;
+
+/** The google-workspace extension's scope set (its manifest's `code.auth.scopes`). */
+export const WORKSPACE_SCOPES: readonly string[] = [DOCS_SCOPE, SHEETS_SCOPE, SLIDES_SCOPE, DRIVE_FILE_SCOPE, DRIVE_READONLY_SCOPE];
+
+/** The scopes Google names for identity on a token (what `openid email profile` come back as). */
+export const IDENTITY_TOKEN_SCOPES: readonly string[] = ["openid", `${G}userinfo.email`, `${G}userinfo.profile`, "email", "profile"];
+
+/**
+ * Scopes a code extension may never ask for: everything core itself uses (Gmail, Calendar, Pub/Sub) and what covers
+ * them (cloud-platform includes Pub/Sub; https://mail.google.com/ is full Gmail). EXTENSION_SCOPE_RE refuses every
+ * gmail*, calendar*, pubsub* and cloud-platform* name as well, so a new Gmail or Calendar scope can't slip through.
+ */
+export const CORE_ONLY_SCOPES: readonly string[] = [GMAIL_SCOPE, PUBSUB_SCOPE, ...CALENDAR_SCOPES, `${G}cloud-platform`, "https://mail.google.com/"];
+
+/**
+ * A scope a code extension's `code.auth` of type "google" may list: an https://www.googleapis.com/auth/ URL whose name
+ * doesn't start with gmail, calendar, pubsub or cloud-platform (core's scopes, or ones covering them).
+ */
+export const EXTENSION_SCOPE_RE = /^https:\/\/www\.googleapis\.com\/auth\/(?!(?:gmail|calendar|pubsub|cloud-platform)(?:[.\-/]|$))[a-z0-9][a-z0-9._-]{0,99}$/;
+
+export const isExtensionScope = (s: string): boolean => EXTENSION_SCOPE_RE.test(s) && !CORE_ONLY_SCOPES.includes(s);
+
+/** A Google API's service name, as `gcloud services enable` and the API Library take it: `docs.googleapis.com`. */
+export const GOOGLE_SERVICE_RE = /^[a-z][a-z0-9-]{0,62}\.googleapis\.com$/;
+
+/** What each Workspace scope lets the extension do, and what stops working without it (consent step, unticked boxes). */
+export const WORKSPACE_SCOPE_WORDS: Record<string, { grants: string; without: string }> = {
+  [DOCS_SCOPE]: { grants: "see, edit, create and delete your Google Docs documents", without: "its Google Docs tools won't work" },
+  [SHEETS_SCOPE]: { grants: "see, edit, create and delete your Google Sheets spreadsheets", without: "its Google Sheets tools won't work" },
+  [SLIDES_SCOPE]: { grants: "see, edit, create and delete your Google Slides presentations", without: "its Google Slides tools won't work" },
+  [DRIVE_FILE_SCOPE]: {
+    grants: "see, edit, create and delete only the Drive files it creates or you open with it",
+    without: "it can't create new files or save copies in your Drive",
+  },
+  [DRIVE_READONLY_SCOPE]: { grants: "see and download all your Google Drive files", without: "it can't search your Drive or open files it didn't create" },
+};
+
+/** What a scope lets the holder do, in plain words (the scope itself when xaq has no words for it). */
+export const scopeGrants = (scope: string): string => WORKSPACE_SCOPE_WORDS[scope]?.grants ?? scope;
+/** What stops working without a scope, or null when xaq has no words for it. */
+export const scopeWithout = (scope: string): string | null => WORKSPACE_SCOPE_WORDS[scope]?.without ?? null;

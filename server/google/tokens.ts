@@ -15,7 +15,17 @@ import {
   REQUEST_TIMEOUT_MS,
   sleep,
 } from "./http.ts";
-import { AccountNeedsReauthError, GoogleApiError } from "./types.ts";
+import { missingScopes } from "./scopes.ts";
+import { AccountNeedsReauthError, DownscopeError, GoogleApiError, ScopesNotGrantedError } from "./types.ts";
+
+/** A downscoped access token (TokenManager.scopedAccessToken). */
+export interface ScopedToken {
+  accessToken: string;
+  /** Epoch milliseconds. */
+  expiresAt: number;
+  /** The scopes Google says the token has: always within the ones asked for. */
+  scopes: string[];
+}
 
 export interface TokenResponse {
   access_token: string;
@@ -127,6 +137,98 @@ export class TokenManager {
   /** Drops the cached access token (e.g. after a 401). */
   invalidate(accountId: string): void {
     this.ctx.db.run("UPDATE accounts SET access_token_enc = NULL, access_expires_at = NULL WHERE id = ?", accountId);
+  }
+
+  // ───── Downscoped tokens ─────
+
+  /** Downscoped tokens by account and sorted scope set (memory only, never on the row: the row's token is the full one). */
+  private readonly scoped = new Map<string, ScopedToken & { refreshTokenEnc: string }>();
+  private readonly scopedInflight = new Map<string, Promise<ScopedToken>>();
+
+  /**
+   * An access token for `accountId` limited to `scopes`, a subset of what the account granted: Google's refresh grant
+   * with an explicit `scope` (RFC 6749 §6: it "MUST NOT include any scope not originally granted", and the token is
+   * issued for exactly that scope). Google's answer is checked: its `scope` must be present and within `scopes`, or the
+   * token is dropped (DownscopeError) and never returned. Cached per account and scope set until ~60 s before it
+   * expires, and dropped when the account's refresh token changes (a reconnect or consent); one refresh in flight per
+   * account and scope set. Never writes the account's own access token or recorded scopes.
+   *
+   * Throws ScopesNotGrantedError when the account hasn't granted all of `scopes`, AccountNeedsReauthError (as
+   * accessToken) when its sign-in is gone.
+   */
+  async scopedAccessToken(accountId: string, scopes: readonly string[], opts: { force?: boolean } = {}): Promise<ScopedToken> {
+    const want = [...new Set(scopes)].sort();
+    if (!want.length) throw new Error("A downscoped token needs at least one scope");
+    const row = getRow(this.ctx, accountId);
+    if (!row) throw notFound("Account");
+    if (row.status === "needs_reauth") throw new AccountNeedsReauthError(row.id, row.email);
+    // In the caller's order (the manifest's), for the messages.
+    const missing = missingScopes(accountScopes(row), [...new Set(scopes)]);
+    if (missing.length) throw new ScopesNotGrantedError(row.id, row.email, missing);
+    const key = `${accountId} ${want.join(" ")}`;
+    const hit = this.scoped.get(key);
+    if (!opts.force && hit && hit.refreshTokenEnc === row.refresh_token_enc && hit.expiresAt - EARLY_REFRESH_MS > Date.now()) {
+      return { accessToken: hit.accessToken, expiresAt: hit.expiresAt, scopes: [...hit.scopes] };
+    }
+    const pending = this.scopedInflight.get(key);
+    if (pending) return pending;
+    const p = this.refreshScoped(row, want, key).finally(() => this.scopedInflight.delete(key));
+    this.scopedInflight.set(key, p);
+    return p;
+  }
+
+  /** Drops the account's cached downscoped tokens (all scope sets). */
+  invalidateScoped(accountId: string): void {
+    for (const k of [...this.scoped.keys()]) if (k.startsWith(`${accountId} `)) this.scoped.delete(k);
+  }
+
+  private async refreshScoped(row: AccountRow, want: string[], key: string): Promise<ScopedToken> {
+    const { clientId, clientSecret } = clientCredentials(this.ctx);
+    let res: TokenResponse;
+    try {
+      res = await postToken(this.ctx, {
+        grant_type: "refresh_token",
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: this.ctx.crypto.decrypt(row.refresh_token_enc),
+        scope: want.join(" "),
+      });
+    } catch (err) {
+      if (err instanceof GoogleApiError && err.reason === "invalid_grant") {
+        const fresh = getRow(this.ctx, row.id);
+        if (fresh && fresh.status !== "needs_reauth" && fresh.refresh_token_enc !== row.refresh_token_enc) return this.refreshScoped(fresh, want, key);
+        this.authFailed(row, err.message, hasReason(err, "invalid_rapt"));
+      }
+      if (err instanceof GoogleApiError && err.reason === "invalid_scope") {
+        // The recorded scopes said yes, Google says no (revoked outside xaq): re-read them with a normal refresh,
+        // which backfills accounts.scopes, and report what's missing now.
+        await this.accessToken(row.id, { force: true }).catch(() => undefined);
+        const fresh = getRow(this.ctx, row.id) ?? row;
+        const missing = missingScopes(accountScopes(fresh), want);
+        throw new ScopesNotGrantedError(row.id, row.email, missing.length ? missing : want);
+      }
+      if (err instanceof GoogleApiError && err.reason === "invalid_client") {
+        throw new GoogleApiError(err.status, "Google rejected the OAuth client ID or secret (invalid_client). Check the client in the setup wizard.", err.reason, err.details);
+      }
+      throw err;
+    }
+    // The proof the token is limited: Google's own `scope` for it, within what was asked for. No `scope`, or anything
+    // more, and the token is dropped: it may carry the account's whole grant (Gmail included).
+    const granted = (res.scope ?? "").split(/\s+/).filter(Boolean);
+    if (!granted.length) throw new DownscopeError("Google didn't say which access the downscoped token has, so xaq didn't use it.");
+    const extra = granted.filter((s) => !want.includes(s));
+    if (extra.length) {
+      this.ctx.log.child("google").warn("A downscoped token came back with more access than asked for; dropped", { email: row.email, extra });
+      throw new DownscopeError(`Google returned a token with more access than asked for (${extra.join(", ")}), so xaq didn't use it.`);
+    }
+    if (res.refresh_token) {
+      // Google may rotate the refresh token on any refresh: keep the new one, only over the one this refresh used.
+      this.ctx.db.run("UPDATE accounts SET refresh_token_enc = ? WHERE id = ? AND refresh_token_enc = ?", this.ctx.crypto.encrypt(res.refresh_token), row.id, row.refresh_token_enc);
+    }
+    const token: ScopedToken = { accessToken: res.access_token, expiresAt: Date.now() + (res.expires_in ?? 3600) * 1000, scopes: granted };
+    const current = getRow(this.ctx, row.id);
+    if (current) this.scoped.set(key, { ...token, scopes: [...granted], refreshTokenEnc: current.refresh_token_enc });
+    return token;
   }
 
   private async refresh(row: AccountRow): Promise<string> {

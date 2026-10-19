@@ -21,7 +21,18 @@ export interface Config {
    * Defaults: https://oauth2.googleapis.com, https://accounts.google.com, https://gmail.googleapis.com, https://pubsub.googleapis.com,
    * https://www.googleapis.com (Calendar: paths start with /calendar/v3).
    */
-  google: { oauthBase: string; authBase: string; gmailBase: string; pubsubBase: string; calendarBase: string };
+  google: {
+    oauthBase: string;
+    authBase: string;
+    gmailBase: string;
+    pubsubBase: string;
+    calendarBase: string;
+    /**
+     * Other Google APIs a code extension's account access names (Drive, Docs, Sheets, Slides; server/google/apis.ts):
+     * one base for all of them (tests: the fake). Unset: each API's own https://<service>.
+     */
+    apisBase?: string;
+  };
 }
 
 export interface ConfigInput {
@@ -100,6 +111,7 @@ export function loadConfig(input: ConfigInput = {}, version = "0.0.0"): Config {
       gmailBase: envVar("GOOGLE_GMAIL_BASE") ?? "https://gmail.googleapis.com",
       pubsubBase: envVar("GOOGLE_PUBSUB_BASE") ?? "https://pubsub.googleapis.com",
       calendarBase: envVar("GOOGLE_CALENDAR_BASE") ?? "https://www.googleapis.com",
+      ...(envVar("GOOGLE_APIS_BASE") ? { apisBase: envVar("GOOGLE_APIS_BASE")! } : {}),
     },
   };
 }

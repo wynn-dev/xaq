@@ -40,11 +40,16 @@ It lives at the root of the extension's directory. Unknown keys are rejected (sc
     "entry": "dist/server.mjs",     // one self-contained ESM file: no node_modules, no install scripts, ever
     "node": ">=22.23.2",            // shown; the host enforces its own floor for code extensions (Sandbox limits)
     "auth": {                       // OAuth is done by xaq core; the extension only ever gets access tokens
-      "type": "user_app",           // or "none"
+      "type": "user_app",           // or "none", or "google" (official extensions only, below)
       "authorizeUrl": "…", "tokenUrl": "…", "scopes": ["…"],
       "clientIdInput": "client_id", "clientSecretInput": "client_secret",
       "refreshScope": "offline"     // optional: sent as `scope` on refresh (WHOOP needs "offline"); omit to send none
     },
+    // or, official extensions only: a connected Google account, tokens downscoped to `scopes` (see "Google accounts
+    // for code extensions")
+    // "auth": { "type": "google",
+    //           "scopes": ["https://www.googleapis.com/auth/documents", "https://www.googleapis.com/auth/drive.file"],
+    //           "apis": [{ "service": "docs.googleapis.com", "label": "Google Docs API" }] },
     "network": ["api.example.com"],      // declared hosts: shown at install and in the warning (not enforced, see Sandbox)
     "events": ["example.item_updated"]   // the event types it may emit (`<name>.<event>`); anything else is dropped and logged
   },
@@ -52,7 +57,8 @@ It lives at the root of the extension's directory. Unknown keys are rejected (sc
   "reconnectPolicy": { "maxLifetimeDays": 180, "idleDays": 30, "tokenLifetimeCapDays": 30 },
 
   // Setup copy: SetupStep[] (server/broker/types.ts). Strings may use {{publicUrl}}, {{redirectUri}}, {{webhookUrl}}
-  // and nothing else. A step with "when": "webhookUrl" appears only when the internet reaches this install.
+  // and nothing else ({{projectId}} too with a "google" auth). A step with "when": "webhookUrl" appears only when the
+  // internet reaches this install.
   "setup": [ { "id": "app", "title": "…", "body": "…", "copy": { "label": "Redirect URI", "value": "{{redirectUri}}" } } ],
 
   // The risk map: exact tool names. Anything not listed falls back to the generic rules (annotations + verbs).
@@ -119,6 +125,18 @@ repo's `scripts/validate.mjs`) checks the shape; a few rules below are only the 
   setup inputs (validator only). Its optional `refreshScope` (OAuth scopes separated by single spaces) passes through
   to the preset's `auth.refreshScope` and is sent as `scope` on a refresh; without it, a refresh sends no scope.
   WHOOP sets `"offline"`.
+- **`code.auth` of type `google`:** official extensions only (validator only: the schema lives in the official repo).
+  `validateManifest(raw, { official })` refuses it for a third-party manifest, before reading its scopes, so the
+  store refuses such an install (and `resolve`) with `invalid`, and `presetFromManifest` refuses it again for a store
+  row that isn't official. Keys `type`, `scopes` and `apis`, all required, nothing else.
+  - `scopes`: 1 to 20 unique `https://www.googleapis.com/auth/<name>` URLs. Never Gmail, Calendar, Pub/Sub or Cloud:
+    any name starting `gmail`, `calendar`, `pubsub` or `cloud-platform` is refused, and so is `https://mail.google.com/`
+    (`EXTENSION_SCOPE_RE` and `CORE_ONLY_SCOPES` in `server/google/scopes.ts`; the schema has the same pattern).
+  - `apis`: up to 20 `{ "service": "<name>.googleapis.com", "label": "…" }`, unique services; labels are shown as they
+    are (no `{{ }}`).
+  - `{{projectId}}` may be used in such a manifest's setup strings (the install's Google Cloud project ID, or
+    `YOUR_PROJECT_ID` while unknown); in a link only after the host (path, query or fragment), URL-encoded there.
+  - Step ids starting `google-` are xaq's own (any manifest).
 - **Names:** an extension can't use one of xaq's own event prefixes as its name (`message`, `calendar`,
   `connection`, `approval`, …).
 
@@ -240,6 +258,64 @@ repo's `scripts/validate.mjs`) checks the shape; a few rules below are only the 
     restarts. A failed integrity check also marks it `error`, with the reason, and never spawns. A good start clears
     an `error` the host set.
   - Scheduled work, such as a polling sync, is the extension's own timer while it runs.
+
+## Google accounts for code extensions
+
+An official code extension (google-workspace: Docs, Sheets, Slides and the Drive files to find them) can work as one
+of xaq's connected Google accounts, through xaq's own OAuth client, with access added incrementally when the user opts
+in. Core side: `server/extensions/google-auth.ts` (binding, connect, tokens, status), `server/extensions/google-setup.ts`
+(the setup steps), `server/google/scoped.ts` (downscoped tokens), `server/google/apis.ts` (API links and probe).
+
+- **Binding:** a connection is bound to ONE connected account, picked in setup (the `google_account` input: an email or
+  account id). It's kept in `connections.google_account_id` (migration 12, `ON DELETE SET NULL`). Nothing else per
+  connection is stored: the refresh token stays the account's.
+- **Connecting** (`POST /api/connections/:id/connect` with `inputs.google_account`, or Reconnect with the bound one):
+  - when the account already granted every manifest scope, it's connected at once;
+  - otherwise Google's consent for exactly the manifest's scopes on top of what the account has
+    (`include_granted_scopes=true`, `login_hint`, the existing client and `/oauth/callback`, as "Add Calendar" does).
+    It never asks for Calendar on its own, and a later account reconnect asks again for scopes the account had;
+  - the account's granted scopes are recorded as Google returns them; existing scopes are never revoked;
+  - unticked boxes: the account keeps what was ticked, and the callback says, in plain words, what each missing scope
+    would have allowed and what won't work without it (`oauth_extension_not_granted`); a cancel, an admin block or the
+    wrong Google account are said for the extension too. Paste mode goes through `POST /api/connections/finish`.
+- **Status:** `needs_reauth` while there's no usable access (no account picked, the account removed or needing a
+  reconnect, nothing granted), with the reason; `active` once any of the manifest's scopes is granted. Recomputed on
+  every account change (bus `account`) and shown live in the connection view (`ConnectionView.google`: the account,
+  the granted and the missing scopes in plain words; `grantedScopes` holds the granted ones).
+- **`xaq/credentials/get`** returns `{ accessToken, expiresAt }` (unchanged shape) for the account bound to THIS
+  connection, read on every call, downscoped to the manifest's scopes that account granted:
+  - Google's refresh grant with an explicit `scope`, a subset of the granted scopes (RFC 6749 §6: the token gets exactly
+    that scope, which "MUST NOT include any scope not originally granted"). Google's client libraries send it the same
+    way (google-auth's `refresh_grant`: "If present, all scopes must be authorized for the refresh token").
+  - **Fail closed:** the token is handed over only when Google's response names its `scope` and every scope is within
+    what was asked for, and within the manifest's (checked twice). Otherwise it's dropped (`DownscopeError`, the
+    extension gets needs_reauth). An extension never receives a token that can read or send Gmail.
+  - Cached per account and scope set until a minute before it expires, dropped when the account's refresh token
+    changes; one refresh in flight per account and scope set. Never written over the account's own token or scopes.
+  - Every failure is needs_reauth (`-32010`) with plain words. The tokens handed out are scrubbed from tool output like
+    stored credentials.
+- **Core's own use** (`server/google/scoped.ts`): `accountHasScopes(ctx, accountId, scopes)` and
+  `googleAccessToken(ctx, accountId, scopes)` (a downscoped token for any granted subset; `ScopesNotGrantedError` when
+  not granted). Scope constants, including `DRIVE_READONLY_SCOPE` and `WORKSPACE_SCOPES`, are in `server/google/scopes.ts`.
+- **Setup, in the product** (console and `xaq connections add google-workspace`, the same steps from
+  `PresetView.setupSteps`): core's four steps come first, then the manifest's own.
+  1. **Pick the Google account** from xaq's connected ones (`input.choices`; one needing a reconnect is disabled), with
+     a link to add one.
+  2. **Turn on the APIs** in the user's own Cloud project: a link per API
+     (`https://console.cloud.google.com/apis/library/<service>?project=<project id>`, the project from the Google step
+     of the setup wizard), a copyable `gcloud services enable … --project=<id>`, and Check again
+     (`POST /api/connections/presets/:id/google-apis {account}`). The probe is a cheap read per known API (Drive, Docs,
+     Sheets, Slides), with a downscoped token: the extension's granted scopes, or only the identity scopes before
+     consent. Google's `SERVICE_DISABLED` / `accessNotConfigured` reads "off" (with Google's activationUrl when it
+     sends one); before consent an API that answers "insufficient scopes" reads "not checked yet".
+  3. **Allow access on Google's screen:** the new permissions in plain words, tick every box, and for a non-Internal
+     app Google's "unverified app" warning (Advanced → Go to <app>) and the test-user rule.
+  4. **Done:** the granted scopes and anything missing, explained on the connection.
+  The CLI prints the steps and links, picks the account (`--account`), checks the APIs (offering to check again), then
+  opens the consent URL (or asks for the pasted address).
+- **Revoke:** removing the extension or the connection keeps the account's granted scopes (core may use them too, and
+  other connections may share them). To drop them, remove xaq's access at https://myaccount.google.com/permissions:
+  that removes all of xaq's access to the account, mail included, so reconnect the account in xaq afterwards.
 
 ## Prompts and resources
 

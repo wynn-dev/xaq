@@ -1298,6 +1298,8 @@ export interface ConnectionView extends Connection {
   scopeNotes: { scope: string; note: string }[] | null;
   /** Agents with a grant on this connection. */
   agents: number;
+  /** A Google extension's connection: its account and access (grantedScopes holds `granted` too). Absent otherwise. */
+  google?: ConnectionGoogleView;
 }
 
 /** POST /api/connections: a custom MCP URL, or a preset (its URL and auth come from the preset). */
@@ -1383,7 +1385,42 @@ export interface SetupStepView {
   body: string;
   link?: { label: string; url: string };
   copy?: { label: string; value: string };
-  input?: { key: string; label: string; secret?: boolean; pattern?: string; placeholder?: string };
+  /** `choices`: pick one of these values (a Google extension's connected accounts) instead of typing. */
+  input?: {
+    key: string;
+    label: string;
+    secret?: boolean;
+    pattern?: string;
+    placeholder?: string;
+    choices?: { value: string; label: string; note?: string; disabled?: boolean }[];
+  };
+  /** Google APIs to turn on in the user's Cloud project, each with its console page (a Google extension's setup). */
+  apis?: { service: string; label: string; url: string }[];
+  /** "Check again": google_apis is POST /api/connections/presets/:id/google-apis with the picked account. */
+  check?: "google_apis";
+}
+
+/** POST /api/connections/presets/:id/google-apis {account} → GoogleApiCheckView[]: is each API on in the project? */
+export interface GoogleApiCheckView {
+  service: string;
+  label: string;
+  /** enabled; disabled (Google said it's off); unchecked (xaq can't tell yet: no access allowed, or no probe); error. */
+  state: "enabled" | "disabled" | "unchecked" | "error";
+  enableUrl: string;
+  message: string | null;
+}
+
+/** A connection of a Google extension (`code.auth` type "google"): the account it works as and the access it has. */
+export interface ConnectionGoogleView {
+  /** null: no account picked yet, or the account was removed from xaq. */
+  accountId: string | null;
+  email: string | null;
+  /** The extension's scopes, in its manifest's order. */
+  scopes: string[];
+  /** Of those, the ones the account granted (the extension's tokens are limited to these). */
+  granted: string[];
+  /** Of those, the ones it didn't: what each would allow and what won't work, in plain words. */
+  missing: { scope: string; grants: string; without: string | null }[];
 }
 
 /** GET /api/connections/presets. */
@@ -1544,6 +1581,7 @@ export interface ApiError {
 //   POST   /api/connections CreateConnectionInput     → ConnectionView
 //   GET    /api/connections/presets                   → PresetView[]
 //   POST   /api/connections/probe {url, connectionId?} → ConnectionProbe
+//   POST   /api/connections/presets/:id/google-apis {account} → GoogleApiCheckView[] (a Google extension's Check again)
 //   GET    /api/connections/:id                       → ConnectionView
 //   PATCH  /api/connections/:id UpdateConnectionInput → ConnectionView
 //   DELETE /api/connections/:id                       → 204 (kill switch, then removal)

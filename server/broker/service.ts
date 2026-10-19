@@ -31,6 +31,8 @@ import { OFFICIAL_NAMES } from "../extensions/registry.ts";
 import { type ExtensionPin, extensionStore, LISTENER_ORDER, type SqliteExtensionStore } from "../extensions/store.ts";
 import { boundPreset, presetSource, presets, reloadPresets, snapshotPreset, useExtensionStore } from "../integrations/index.ts";
 import { removeConnectionState } from "../extensions/host/spawn.ts";
+import { googleConnectionState, googleConnectionView, googleTokenDeps, isGooglePreset, syncGoogleConnections } from "../extensions/google-auth.ts";
+import { forgetHandedTokens } from "../extensions/handed-tokens.ts";
 import { loopbackUrl } from "../urls.ts";
 import { conflict, errorMessage, notFound } from "../util/errors.ts";
 import { type ConnectionGrantRef, connectionGrantsOf } from "./access.ts";
@@ -321,6 +323,11 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
    */
   const defaultNativeDeps = (c: Connection): NativeSourceDeps => ({
     ...nativeDepsFor(ctx, up, c),
+    // A Google extension's tokens come from its bound account, downscoped (never the runtime's credential store).
+    ...(() => {
+      const preset = presetOf(c);
+      return isGooglePreset(preset) ? googleTokenDeps(ctx, c.id, preset) : {};
+    })(),
     dataDir: ctx.config.dataDir,
     emit: (e) => {
       const conn = getConnection(ctx, c.id);
@@ -373,6 +380,14 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
   };
 
   const presetOf = (c: Connection): IntegrationPreset | null => presetFor(c.preset);
+
+  const onAccount = () => {
+    try {
+      syncGoogleConnections(ctx, presetFor);
+    } catch (err) {
+      log.warn("Couldn't update Google extension connections", { error: errorMessage(err) });
+    }
+  };
 
   /** The client registration (e.g. WHOOP's pasted client id and secret). */
   const clientRecord = (connectionId: string): Record<string, unknown> | null => credentials.client(connectionId);
@@ -495,7 +510,10 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
     for (const id of usedBy(ctx.db, name)) {
       const c = getConnection(ctx, id);
       if (!c || c.status !== "disabled" || c.statusReason !== reason) continue;
-      const signedIn = c.authType === "none" || (c.authType === "header" ? !!credentials.header(id) : !!credentials.tokens(id));
+      const preset = presetOf(c);
+      const signedIn = isGooglePreset(preset)
+        ? !googleConnectionState(ctx, id, preset).problem
+        : c.authType === "none" || (c.authType === "header" ? !!credentials.header(id) : !!credentials.tokens(id));
       ctx.db.run(
         "UPDATE connections SET status = ?, status_reason = ?, updated_at = ? WHERE id = ?",
         signedIn ? "active" : "needs_reauth",
@@ -589,6 +607,7 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
       await rt().killConnection(connectionId);
       ctx.db.run("UPDATE connections SET status_reason = ? WHERE id = ?", reason, connectionId);
       await closeSource(connectionId);
+      forgetHandedTokens(connectionId);
     },
 
     async remove(connectionId) {
@@ -687,6 +706,9 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
       }
       policy.start();
       ctx.bus.on("settings", onSettings);
+      // Google extensions' connections follow their accounts (consent, scopes backfilled, needs_reauth, reconnect).
+      ctx.bus.on("account", onAccount);
+      onAccount();
       wasOn = enabled();
       if (wasOn) attachAll();
       pollTimer = setInterval(() => void pollEvents(), opts.pollTickMs ?? 60_000);
@@ -700,6 +722,7 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
       if (extensions && presetSource() === extensions) useExtensionStore(null);
       catalog.close();
       ctx.bus.off("settings", onSettings);
+      ctx.bus.off("account", onAccount);
       if (pollTimer) clearInterval(pollTimer);
       await closeAll();
     },
@@ -794,12 +817,18 @@ export function connectionView(ctx: Pick<AppContext, "db">, c: Connection, at = 
   const total = ctx.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM upstream_tools WHERE connection_id = ?", c.id)!.n;
   const agents = ctx.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM connection_grants WHERE connection_id = ?", c.id)!.n;
   const expiresInDays = c.expiresAt ? Math.max(0, Math.floor((Date.parse(c.expiresAt) - at) / DAY_MS)) : null;
+  const preset = c.preset ? boundPreset(c.preset) : null;
+  // A Google extension's connection: its account and access, live (an account removed or needing a reconnect shows at
+  // once, even before the stored status catches up).
+  const google = isGooglePreset(preset) ? googleConnectionState(ctx, c.id, preset) : null;
+  if (google?.problem && c.status === "active") c = { ...c, status: "needs_reauth", statusReason: google.problem };
   // Scopes aren't secret (the token is): the plaintext column, as granted by the last sign-in.
-  const scope = c.authType === "oauth" ? ctx.db.get<{ scope: string | null }>("SELECT scope FROM connection_credentials WHERE connection_id = ? AND access_token_enc IS NOT NULL", c.id)?.scope : null;
-  const grantedScopes = typeof scope === "string" ? scope.split(/\s+/).filter(Boolean) : null;
+  const scope =
+    c.authType === "oauth" && !google ? ctx.db.get<{ scope: string | null }>("SELECT scope FROM connection_credentials WHERE connection_id = ? AND access_token_enc IS NOT NULL", c.id)?.scope : null;
+  const grantedScopes = google ? (google.account ? [...google.granted] : null) : typeof scope === "string" ? scope.split(/\s+/).filter(Boolean) : null;
   const expired = c.status !== "disabled" && isExpired(c, at);
-  const auth = c.preset ? boundPreset(c.preset)?.auth : undefined;
+  const auth = preset?.auth;
   const broadScopes = auth?.type === "mcp_oauth" && auth.broadScopes?.length ? [...auth.broadScopes] : null;
   const scopeNotes = auth?.type === "mcp_oauth" && auth.scopeNotes?.length ? auth.scopeNotes.map((n) => ({ ...n })) : null;
-  return { ...c, tools: { total }, expiresInDays, expired, grantedScopes, broadScopes, scopeNotes, agents };
+  return { ...c, tools: { total }, expiresInDays, expired, grantedScopes, broadScopes, scopeNotes, agents, ...(google ? { google: googleConnectionView(google) } : {}) };
 }
