@@ -40,6 +40,23 @@ limits its files, child processes and workers, not its network. Details: [Extens
 
 ![Overview](docs/screenshots/overview.png)
 
+## Live check
+
+There is no test account, so `smoke google-workspace` checks Gmail attachments and the Google Workspace extension
+on the real one, end to end. Run it on xaq's machine while xaq is running:
+
+```sh
+npx xaq-cli smoke google-workspace --scratch
+```
+
+It prints its plan and asks first. Existing files and mail are only read; it prints their names and the email's
+subject, never their content. Every write goes into one new Drive folder, `xaq-smoke-<UTC timestamp>`, and the only
+mail is one draft to the account itself, which is never sent. A temporary agent makes the calls through `/mcp`, so
+risky ones go through approval, and the command approves its own. At the end the draft is deleted, the folder goes
+to the Drive trash, and the agent and the temporary settings are removed, also after a failure or Ctrl-C. You get a
+PASS/FAIL table and a "Left behind" list, which should say nothing. Details:
+[Live check](docs/reference.md#live-check-smoke-google-workspace).
+
 <!-- rename-xaq: keep-start -->
 ## Upgrading from agentinbox
 

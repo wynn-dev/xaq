@@ -336,6 +336,8 @@ export function createPolicyService(ctx: AppContext): PolicyService {
       const r = requireRow(id);
       approvals.cancelForAgent(id, null, "the agent was deleted");
       db.run("DELETE FROM agents WHERE id = ?", id);
+      // Its tool-mode setting (server/broker/search/mode.ts) lives in the settings table, outside the cascade.
+      db.run("DELETE FROM settings WHERE key = ?", `broker.search:${id}`);
       ctx.audit.record({ ...ADMIN_ACTOR, action: "agent.delete", target: id, outcome: "ok", detail: { name: r.name } });
       changed(id, "deleted");
     },

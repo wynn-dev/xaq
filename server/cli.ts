@@ -248,6 +248,9 @@ registerConnectionsCommands(program);
 // `ext add | list | update | remove` (docs/EXTENSIONS.md), through the daemon's /api/extensions.
 const { registerExtensionCommands } = await import("./extensions/cli.ts");
 registerExtensionCommands(program);
+// `smoke google-workspace --scratch`: the live end-to-end check (server/smoke), through the daemon's admin API and /mcp.
+const { registerSmokeCommands } = await import("./smoke/cli.ts");
+registerSmokeCommands(program);
 // Short one-liners for the command list; each command's own --help keeps its full description.
 const AGENT_SUMMARIES: Record<string, string> = {
   connect: "pair an agent; you approve it in the console",
