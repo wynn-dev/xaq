@@ -305,7 +305,7 @@ runs, or `npm i -g xaq-cli` and then `xaq …`. Every command has `--help`.
 
 ```
 xaq [start] [--port 8425] [--host 0.0.0.0] [--data ~/.xaq] [--no-open] [--dev]
-xaq service install [--port …] [--host …] [--data …]
+xaq service install [--port …] [--host …] [--data …] [--node <path>]
 xaq service uninstall [--data …]
 xaq service status
 xaq reset-password [--data …] [--port …] [--host …]
@@ -474,8 +474,26 @@ to an empty value to remove it).
 
 When a newer version is published, the console shows **Update available** with the exact command to run.
 
-The unit runs the Node.js binary you installed it with; if you remove or replace that Node, run `service install`
-again. If the service doesn't come up, `service install` rolls back and prints where to look (`systemctl --user status
+**Which Node.js the service runs.** `service install` records one Node.js binary in the unit or plist, and checks
+its version by running it (`<node> -p process.versions.node`). While any code extension is installed in the data
+directory, it must meet the code-extension floor (22.23.2+, 24.18.1+ or 26.5.1+, or a newer line); otherwise xaq's own
+minimum (22.13) applies, though a Node that meets the floor is still preferred. In order, it takes:
+
+1. the Node running `service install`, if it is new enough;
+2. else the Node the existing service (or the agentinbox one it replaces) runs, if it is still there and new enough;
+3. else the newest new-enough Node in the usual places: fnm (`$FNM_DIR`, `~/.local/share/fnm`,
+   `~/Library/Application Support/fnm`), nvm (`$NVM_DIR`, `~/.nvm`), Volta (`~/.volta`), Homebrew
+   (`/opt/homebrew` and `/usr/local`: `bin/node` and `opt/node@*`), asdf and mise installs, and `/usr/bin/node`.
+
+fnm's per-shell links (`…/fnm_multishells/…`, deleted with the shell) are never recorded: they are resolved to the
+install they point to. `--node <path>` names the binary instead; it is still checked. When no Node qualifies,
+nothing is changed: the install stops and lists what it found (path → version), what is needed, and how to fix it
+(install a newer Node, e.g. `fnm install 24 && fnm default 24`, `nvm install 24`, `brew install node@24`, or pass
+`--node`). The success message names the Node, its version and why it was chosen. If you remove or replace that
+Node, run `service install` again. `service status` checks it too: it reports a problem (and exits non-zero) when
+the service's Node no longer runs, or is below the code-extension floor while code extensions are installed.
+
+If the service doesn't come up, `service install` rolls back and prints where to look (`systemctl --user status
 xaq`, `journalctl --user -u xaq`). Over `su` or `sudo -u` there is often no systemd user session: log in
 as that user directly, or enable lingering and set `XDG_RUNTIME_DIR=/run/user/$(id -u)` first.
 
