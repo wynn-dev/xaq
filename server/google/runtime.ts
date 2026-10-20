@@ -7,6 +7,8 @@ import {
   isAbortError,
   isRetryable,
   MAX_ATTEMPTS,
+  readBodyCapped,
+  ResponseTooLargeError,
   networkError,
   OUTCOME_UNKNOWN,
   type Query,
@@ -40,6 +42,13 @@ export interface RequestOptions {
   headers?: Record<string, string>;
   /** For non-idempotent requests: what may have happened when the outcome is unknown (default: a Gmail send). */
   ambiguousHint?: string;
+  /** Return the body as a Buffer (media downloads such as Drive's alt=media) instead of parsed JSON. */
+  binary?: boolean;
+  /**
+   * Refuse a successful response longer than this many bytes with ResponseTooLargeError (not retried),
+   * without reading past the limit.
+   */
+  maxResponseBytes?: number;
 }
 
 /**
@@ -89,12 +98,18 @@ export class GoogleRuntime {
           signal: attemptSignal(opts.signal, timeoutMs),
         });
         if (res.ok) {
+          if (opts.binary || opts.maxResponseBytes !== undefined) {
+            const bytes = await readBodyCapped(res, opts.maxResponseBytes);
+            if (opts.binary) return bytes as T;
+            const text = bytes.toString("utf8");
+            return (text ? JSON.parse(text) : undefined) as T;
+          }
           const text = await res.text();
           return (text ? JSON.parse(text) : undefined) as T;
         }
         err = await errorFromResponse(res);
       } catch (e) {
-        if (opts.signal?.aborted) throw e;
+        if (opts.signal?.aborted || e instanceof ResponseTooLargeError) throw e;
         if (e instanceof SyntaxError) throw new GoogleApiError(502, "Google returned an invalid JSON response", "invalid_response");
         err = isAbortError(e)
           ? new GoogleApiError(0, `Google (${new URL(url).host}) didn't respond within ${timeoutMs / 1000}s`, "timeout")

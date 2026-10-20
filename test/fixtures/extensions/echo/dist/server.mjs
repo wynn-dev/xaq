@@ -63,6 +63,11 @@ const TOOLS = [
   { name: "state", description: "Writes and reads a file in the state directory.", inputSchema: { type: "object", properties: { text: { type: "string" } } } },
   { name: "env", description: "Lists the environment's keys.", inputSchema: { type: "object", properties: {} } },
   { name: "fetch", description: "Fetches a URL (the network isn't sandboxed).", inputSchema: { type: "object", properties: { url: { type: "string" } }, required: ["url"] } },
+  {
+    name: "authfetch",
+    description: "Gets this connection's access token from xaq and fetches each URL with it (a Google extension's API calls).",
+    inputSchema: { type: "object", properties: { urls: { type: "array", items: { type: "string" } } }, required: ["urls"] },
+  },
   { name: "argv", description: "Reports how it was started.", inputSchema: { type: "object", properties: {} } },
   { name: "escape", description: "Tries to escape the sandbox.", inputSchema: { type: "object", properties: { paths: { type: "object" } } } },
   { name: "slow", description: "Sleeps.", inputSchema: { type: "object", properties: { ms: { type: "number" } } } },
@@ -100,6 +105,20 @@ async function callTool(name, args) {
     case "fetch": {
       const res = await fetch(String(args.url));
       return text({ status: res.status, body: await res.text() });
+    }
+    case "authfetch": {
+      let c;
+      try {
+        c = await request("xaq/credentials/get", {});
+      } catch (e) {
+        return { ...text(`${e.code}: ${e.message}`), isError: true };
+      }
+      const results = [];
+      for (const url of args.urls ?? []) {
+        const res = await fetch(String(url), { headers: { authorization: `Bearer ${c.accessToken}` } });
+        results.push({ url: String(url), status: res.status, body: (await res.text()).slice(0, 2000) });
+      }
+      return text({ tokenSha256: createHash("sha256").update(String(c.accessToken)).digest("hex"), expiresAt: c.expiresAt, results });
     }
     case "argv":
       return text({ execArgv: process.execArgv, entry: process.argv[1], cwd: process.cwd(), env: process.env });

@@ -134,6 +134,32 @@ export class AccountNeedsReauthError extends Error {
   }
 }
 
+/**
+ * A downscoped token was asked for scopes the account hasn't granted xaq (never asked for, unticked on Google's
+ * screen, or revoked since). Nothing is marked: the account's own access is unchanged. `missing` are full scope URLs.
+ */
+export class ScopesNotGrantedError extends Error {
+  constructor(
+    readonly accountId: string,
+    readonly email: string,
+    readonly missing: string[],
+  ) {
+    super(`${email} hasn't given xaq this access yet (missing: ${missing.join(", ")}).`);
+    this.name = "ScopesNotGrantedError";
+  }
+}
+
+/**
+ * Google's answer to a downscoped refresh didn't prove the token is limited to what was asked for: it named other
+ * scopes too, or none at all. The token is dropped, never handed out (server/google/tokens.ts scopedAccessToken).
+ */
+export class DownscopeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DownscopeError";
+  }
+}
+
 // ───────────── Gmail client (FROZEN) ─────────────
 
 export interface ListParams {
@@ -155,8 +181,8 @@ export interface GmailClient {
   listThreads(p: ListParams): Promise<{ threads: { id: string; snippet: string; historyId: string }[]; nextPageToken: string | null; resultSizeEstimate: number }>;
   getMessage(id: string, format?: GmailFormat, metadataHeaders?: string[]): Promise<GmailMessage>;
   getThread(id: string, format?: Exclude<GmailFormat, "raw">, metadataHeaders?: string[]): Promise<GmailThread>;
-  /** Returns base64url data. */
-  getAttachment(messageId: string, attachmentId: string): Promise<{ data: string; size: number }>;
+  /** Returns base64url data. `maxBytes`: refuse (ResponseTooLargeError) an attachment larger than this without buffering it. */
+  getAttachment(messageId: string, attachmentId: string, opts?: { maxBytes?: number }): Promise<{ data: string; size: number }>;
   listLabels(): Promise<GmailLabelRaw[]>;
   modifyMessage(id: string, add: string[], remove: string[]): Promise<GmailMessage>;
   modifyThread(id: string, add: string[], remove: string[]): Promise<GmailThread>;

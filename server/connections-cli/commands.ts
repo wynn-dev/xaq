@@ -65,6 +65,7 @@ export function registerConnectionsCommands(program: Command): void {
     .option("--access <level>", "full, ask (ask before risky actions; the default) or read")
     .option("--agent <name>", 'an agent that gets it (repeatable; default: all agents; "all")', collect)
     .option("--header <name>", "header for a server that wants a static key (default Authorization)")
+    .option("--account <email>", "a Google extension (google-workspace): the connected Google account it works as (asked when omitted)")
     .option("--paste", "paste the address the browser lands on after signing in, instead of waiting for the redirect (automatic over SSH)")
     .option("--allow-private <origin>", "allow this exact scheme://host:port on this machine or a private network without asking (--yes never does)")
     .option("-y, --yes", "answer yes to confirmations and take the defaults (never to a private-network allow)")
@@ -73,6 +74,7 @@ export function registerConnectionsCommands(program: Command): void {
       `
 Examples:
   ${NPX} connections add notion
+  ${NPX} connections add google-workspace --account you@example.com   # turn on its Google APIs, then allow access
   ${NPX} connections add t3code --url http://100.101.102.103:3773   # one per T3 server; have a T3 pairing code ready
   ${NPX} connections add https://mcp.example.com/mcp --access read
   ${NPX} connections add http://127.0.0.1:8787/mcp      # asks before allowing a server on this machine`,

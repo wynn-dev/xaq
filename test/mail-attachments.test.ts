@@ -181,17 +181,20 @@ describe("prepareAttachments", () => {
     ]);
     const over = fail(() => prepareAttachments([{ filename: "a.bin", content_base64: half }, { filename: "b.bin", content_base64: half }], 1));
     expect(over).toMatchObject({ code: "too_large", message: expect.stringMatching(/Gmail sends at most 25 MB per message \(body and attachments together\)/) });
+    // It names the file and the sizes.
+    expect(over.message).toMatch(/^Attachment 2 \(b\.bin\) \(12\.5 MB\) doesn't fit: the message would be 25\.0 MB/);
+    expect(over.message).toMatch(/Files: Attachment 1 \(a\.bin\) 12\.5 MB, Attachment 2 \(b\.bin\) 12\.5 MB\./);
     // Over the limit and invalid: the size is reported without decoding (the base64 error would come later).
     expect(fail(() => prepareAttachments([{ filename: "a.bin", content_base64: "!".repeat(40_000_000) }])).code).toBe("invalid_attachment");
     expect(fail(() => prepareAttachments([{ filename: "a.bin", content_base64: "A".repeat(40_000_000) }])).code).toBe("too_large");
   });
 
-  it("describes files by name, type, size and sha256 only", () => {
+  it("describes files by name, type, size, source and sha256 only", () => {
     const files = prepareAttachments([{ filename: "a.txt", content_base64: b64("hello") }]);
     expect(attachmentMeta(files)).toEqual([
-      { filename: "a.txt", mimeType: "text/plain", size: 5, sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" },
+      { filename: "a.txt", mimeType: "text/plain", size: 5, source: { kind: "upload" }, sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" },
     ]);
-    expect(attachmentMeta(files, false)).toEqual([{ filename: "a.txt", mimeType: "text/plain", size: 5 }]);
+    expect(attachmentMeta(files, false)).toEqual([{ filename: "a.txt", mimeType: "text/plain", size: 5, source: { kind: "upload" } }]);
   });
 });
 

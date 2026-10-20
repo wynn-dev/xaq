@@ -20,8 +20,9 @@ running xaq in production, scripting it, and understanding what it does.
 - **One place for credentials.** Connect Gmail and Google Workspace accounts once. Refresh tokens are encrypted at rest.
   Agents only ever see an `aib_…` key.
 - **MCP for every agent.** Streamable HTTP at `/mcp`: `search_threads`, `get_thread`, `reply`, `send_message`,
-  `modify_labels`, `wait_for_events` and more. Each agent sees only the tools its grants allow. Drafts, replies and new
-  messages can carry files the agent attaches (see [Attachments](#attachments)).
+  `modify_labels`, `wait_for_events` and more. Each agent sees only the tools its grants allow. Drafts, replies, forwards
+  and new messages can carry files: bytes the agent has, a file from a directory you allow on xaq's machine, another
+  message's attachment, or a Google Drive file (see [Attachments](#attachments)).
 - **Real-time delivery.** New mail, replies to threads you sent into, and label changes arrive within seconds through
   Gmail push via a Pub/Sub *pull* subscription (no public URL needed), or within the poll interval (30 seconds by
   default) by polling with zero extra setup.
@@ -281,6 +282,7 @@ xaq skill print [--url <public url>]
 xaq connections add|list|reconnect|rename|disable|remove …   # see Connections
 xaq ext add|list|update|remove …                             # see Extensions
 xaq smoke google-workspace --scratch [--account …] [--connection …] [--json] [--yes]   # see Live check
+xaq settings attachment-dirs list|add <dir>|remove <dir>     # see Attachments
 xaq connect <url> … / setup-mcp / listen …   # on agent machines, see listen.md
 ```
 
@@ -297,7 +299,7 @@ xaq connect <url> … / setup-mcp / listen …   # on agent machines, see listen
 | `--url` | `XAQ_URL` | the xaq running on this machine, else `http://localhost:8425` | `skill` commands only: the server URL written into SKILL.md |
 
 Everything else (public URL, ingest mode, poll interval, body size limit, retention, approval expiry, webhook allowlist,
-agent pairing) is set in the console under **Settings**.
+agent pairing, the directories agents may attach files from) is set in the console under **Settings**.
 
 <!-- rename-xaq: keep-start -->
 Installs from before the rename to xaq keep working unchanged: every `XAQ_*` variable is also read under its old
@@ -544,21 +546,60 @@ use allowlists for anything that sends directly.
 
 ### Attachments
 
-`create_draft`, `reply` and `send_message` take an optional `attachments` array of
-`{filename, mime_type, content_base64}`; the file travels base64-encoded inside the MCP tool call. Attachments are
-checked before anything reaches Google, and the agent gets a plain-words error otherwise:
+`create_draft`, `reply`, `send_message` and `forward` take an optional `attachments` array. Each item is exactly one
+of four sources:
+
+| Item | Source |
+|---|---|
+| `{content_base64, filename, mime_type?}` | The bytes, base64-encoded inside the MCP tool call |
+| `{path, filename?, mime_type?}` | A file on xaq's own machine, inside a directory the owner allowed (below). Off by default |
+| `{message_id, attachment_id}` | An attachment of another message in the same account, with the ids `get_message` / `get_thread` show. Needs `read` on the grant, and the message must be in its label scope |
+| `{drive_file_id, export_as?}` | A Google Drive file of the account. Google Docs, Sheets, Slides and Drawings are exported, as PDF unless `export_as` says otherwise (Docs: `pdf`, `docx`, `txt`, `md`; Sheets: `pdf`, `xlsx`, `csv` (first sheet); Slides: `pdf`, `pptx`, `txt`; Drawings: `pdf`); other files are attached as they are. Needs two things. First, the agent's own grant (any level) on a Google Workspace connection bound to the same Google account; mail access alone isn't enough, or any agent that can send could mail out any Drive file. Without it: "This agent has no access to Google Drive for <account>: grant it the Google Workspace connection." Second, the account's Drive read access (`drive.readonly`, through the Google Workspace extension's Drive opt-in); without it: "Drive isn't enabled for <account>: install the google-workspace extension and enable Drive in xaq (Connections → Google Workspace)" |
+
+`forward` keeps `include_attachments` (the original's files) and can add new ones next to them. Every file is checked
+before anything is sent, and the agent gets a plain-words error otherwise:
 
 | Check | |
 |---|---|
-| Count | At most 10 files per message |
-| Size | 25 MB per message, body and files together, before encoding: Gmail's sending limit ([Gmail help](https://support.google.com/mail/answer/6584)). As a backstop the encoded message must fit the 35 MB (`36700160` bytes) Gmail's upload endpoint accepts |
+| Count | At most 10 files per message (a forward's original files don't count) |
+| Size | 25 MB per message, body and files together, before encoding: Gmail's sending limit ("up to 25 MB in attachments", [Gmail help](https://support.google.com/mail/answer/6584)). The encoded message must also fit the 35 MB (`36700160` bytes) that the Gmail API's upload endpoint for `messages.send` and `drafts.create` accepts (xaq sends anything over 512 KB that way). 25 MB of files is about 34 MB encoded, so in practice only a long body can reach it: quoted-printable can double a text body. Sizes are checked before downloading wherever the source says (base64 length, the file's size on disk, Gmail's part size, Drive's `size`), and each download is cut off at what still fits, so nothing larger is ever held in memory. The composed message is then counted exactly. The error names the file and the sizes; for a Drive file it gives the file's Drive link to put in the body instead, and for an agent that can use Drive it suggests sharing from Drive |
 | Content | Standard or url-safe base64; empty files are refused |
-| Type | `mime_type` must be `type/subtype` (default: from the extension, else `application/octet-stream`); [file types Gmail blocks](https://support.google.com/mail/answer/6590) (`.exe`, `.js`, `.bat`, `.msi`, `.iso`, …, also gzipped) are refused. Gmail may still refuse archives that contain them |
+| Type | `mime_type` must be `type/subtype` (default: the source's type, else from the extension, else `application/octet-stream`); [file types Gmail blocks](https://support.google.com/mail/answer/6590) (`.exe`, `.js`, `.bat`, `.msi`, `.iso`, …, also gzipped) are refused, whatever the source. Gmail may still refuse archives that contain them |
 | Filename | Path removed; control, zero-width, bidi and tag characters stripped; delimiter tags defused; at most 120 characters with the extension kept; `attachment` (plus the type's extension) when nothing is left |
 
+**Files from a path** are a security boundary: an agent must never be able to mail xaq's own secrets or arbitrary
+files.
+
+- Off until the owner lists directories under **Settings → Attachments from files**, or with
+  `npx xaq-cli settings attachment-dirs add <dir>` (`list`, `remove`) on xaq's machine. Only the admin can change the
+  list (it's the `attachmentDirs` setting of `PATCH /api/settings`); no agent tool can. A directory must exist when it's
+  added. It can't be or contain your home directory or `/`. It also can't be, contain or sit inside any of the
+  refused places below. Pick a narrow folder such as `~/Documents/xaq-outbox`.
+- The path must be absolute and inside an allowed directory, both as given and after resolving symlinks and `..`
+  (a symlink is followed only when it stays inside).
+- These are refused even inside an allowed directory:
+  - xaq's own directories: the data directory (and `~/.xaq`, `~/.agentinbox`), and the CLI's config, state and data
+    directories, both where `XDG_*` points and at their default locations, so a daemon started by launchd or
+    systemd covers the profiles too;
+  - service files: all of `~/Library/LaunchAgents`, and the systemd unit directories;
+  - the agent tools' directories and the MCP configs `setup-mcp` writes with agent keys: `~/.codex`, `~/.cursor`,
+    `~/.claude` and `~/.claude.json`, and the Hermes home. Their `*.xaq-backup-*` copies are refused too;
+  - credential stores: `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.gnupg`, `~/Library/Keychains`, `~/.kube`, `~/.docker`,
+    `~/.netrc`, `~/.npmrc`;
+  - files named `master.key`, `*.db` (and SQLite's `-wal`, `-shm`, `-journal`), `.env` (`.env.*`), `id_*`, `*.pem`,
+    `*.key`, `.netrc`, `.npmrc`, `.pgpass`, `.claude.json`, `.mcp.json` or `*.xaq-backup-*`, anywhere.
+- Regular files only: no directories, FIFOs or devices, and no hard-linked files (a hard link can make any file look
+  like it's in an allowed directory). The file is opened without following a final symlink and without blocking. The
+  open file must be the very file that was checked (same device and inode). On Linux its actual path
+  (`/proc/self/fd`) must also still pass every check, so swapping the file between the check and the open fails.
+- Errors name the path the agent gave and sizes, never contents. They never say where a symlink leads: anything
+  refused through a symlink, including a missing target, gets the same answer.
+
 The grant applies unchanged: a draft needs `draft`, a send needs `send` and goes through its send mode, recipient
-allowlist, reply-only rule and caps. An approval card lists each file's name, type and size, and approving sends the
-draft that carries them. The audit log records each file's name, type, size and SHA-256, never its content.
+allowlist, reply-only rule and caps. An approval card lists each file's name, type, size and source (the path that was
+read, the source message, or the Drive file's name and id and the export format), and approving sends the draft that
+carries them. The audit log records the same plus each file's SHA-256, never its content; a refused attempt records
+what was asked for (the path, message or Drive id).
 
 Messages whose raw form is over 512 KB are sent to Gmail through its `/upload/` endpoint (`uploadType=media`, or
 `multipart` with the `threadId` for replies), since Google documents no size limit for the JSON `raw` field and has

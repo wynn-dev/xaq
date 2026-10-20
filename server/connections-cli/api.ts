@@ -5,6 +5,7 @@ import type {
   ConnectionProbe,
   ConnectionView,
   CreateConnectionInput,
+  GoogleApiCheckView,
   PresetView,
   StartConnectInput,
   StartConnectResult,
@@ -58,6 +59,10 @@ export class ConnectionsApi {
   }
   get(id: string): Promise<ConnectionView> {
     return this.call("GET", `/api/connections/${enc(id)}`);
+  }
+  /** A Google extension's "Check again": is each of its Google APIs on in the project, checked as `account`? */
+  googleApis(presetId: string, account: string): Promise<GoogleApiCheckView[]> {
+    return this.call("POST", `/api/connections/presets/${enc(presetId)}/google-apis`, { account });
   }
   /** Stores a static header (and connects), or starts OAuth and returns the authorize URL. */
   connect(id: string, input: StartConnectInput = {}): Promise<StartConnectResult> {

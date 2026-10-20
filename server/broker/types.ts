@@ -165,8 +165,25 @@ export interface SetupStep {
   link?: { label: string; url: string };
   /** A value to copy into another site (e.g. the redirect URI). */
   copy?: { label: string; value: string };
-  /** A value the user pastes back (e.g. a client ID/secret). Secrets are stored encrypted, never echoed. */
-  input?: { key: string; label: string; secret?: boolean; pattern?: string; placeholder?: string };
+  /**
+   * A value the user pastes back (e.g. a client ID/secret). Secrets are stored encrypted, never echoed. Additive
+   * (Google extensions): `choices`, the values to pick from (the connected Google accounts), rendered as a choice.
+   */
+  input?: { key: string; label: string; secret?: boolean; pattern?: string; placeholder?: string; choices?: SetupChoice[] };
+  /** Additive (Google extensions, rendered by core): Google APIs to turn on, each with its console page. */
+  apis?: { service: string; label: string; url: string }[];
+  /** Additive: the step has a "Check again" (google_apis: POST /api/connections/presets/:id/google-apis). */
+  check?: "google_apis";
+}
+
+/** One value of a SetupStep input with choices. */
+export interface SetupChoice {
+  value: string;
+  label: string;
+  /** Shown next to it ("already has this access", "needs reconnecting"). */
+  note?: string;
+  /** Can't be picked now (an account that needs reconnecting first). */
+  disabled?: boolean;
 }
 
 /** What a preset needs to know about the install to describe its setup. */
@@ -184,6 +201,15 @@ export interface SetupContext {
    * there. `command` exposes only the webhook path on `port`; once run, webhooks go to `webhookUrl`.
    */
   funnel?: { port: number; command: string; offCommand: string; webhookUrl: string } | null;
+  /**
+   * Additive (Google extensions): the install's Google Cloud project ID (null until the Google step of the setup
+   * wizard is done), its OAuth app type, and xaq's connected Google accounts with the scopes each granted.
+   */
+  google?: {
+    projectId: string | null;
+    appType: "internal" | "external" | null;
+    accounts: { id: string; email: string; needsReauth: boolean; scopes: readonly string[] }[];
+  } | null;
 }
 
 /** OAuth facts for a preset whose provider needs the user's own app (WHOOP) or a known DCR server (Notion). */
@@ -196,6 +222,12 @@ export type PresetAuth =
    * and `scopeNotes`, what a granted scope means, in priority order (the console shows the first granted one's note).
    */
   | { type: "mcp_oauth"; broadScopes?: readonly string[]; scopeNotes?: readonly { scope: string; note: string }[] }
+  /**
+   * Additive (official code extensions, docs/EXTENSIONS.md "Google accounts for code extensions"): the connection is
+   * bound to one of xaq's connected Google accounts (connections.google_account_id) and gets access tokens downscoped
+   * to `scopes`, added to the account by incremental consent. `apis` must be on in the user's Cloud project.
+   */
+  | { type: "google"; scopes: readonly string[]; apis: readonly { service: string; label: string }[] }
   /** Provider OAuth with the user's own app (WHOOP): fixed endpoints, client secret, no PKCE. */
   | {
       type: "user_app";

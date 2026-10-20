@@ -6,6 +6,7 @@
 import type { Connection, ConnectionProbe } from "../../shared/types.ts";
 import type { AppContext } from "../context.ts";
 import { now } from "../db/index.ts";
+import { isGooglePreset, startGoogleConnect } from "../extensions/google-auth.ts";
 import { errorMessage, HttpError } from "../util/errors.ts";
 import { scrubText } from "./credentials/scrub.ts";
 import type { ConnectOutcome, Connector } from "./service.ts";
@@ -101,6 +102,12 @@ export function upstreamConnector(ctx: AppContext, up: UpstreamRuntime, presetFo
             status: "error",
             message: `The ${conn.preset} extension isn't installed yet, so ${conn.name} can't be reconnected. xaq installs it in the background; try again shortly, or run \`xaq ext add ${conn.preset}\`.`,
           };
+        }
+        // A Google extension (official only): bind one of xaq's connected Google accounts, then its incremental consent
+        // for the manifest's scopes, through the account OAuth client and callback (server/extensions/google-auth.ts).
+        if (isGooglePreset(preset)) {
+          if (input.header) throw new HttpError(400, "connection_auth", `${conn.name} doesn't take a header`);
+          return startGoogleConnect(ctx, conn, preset, input, presetFor);
         }
         // Static header (bearer or API key): stored encrypted, injected per request.
         if (input.header) {

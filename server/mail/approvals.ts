@@ -8,6 +8,7 @@ import {
   type McpCallApproval,
   MAIL_APPROVAL_KINDS,
   type McpCallApprovalDetail,
+  type OutgoingFileMeta,
 } from "../../shared/types.ts";
 import type { AppContext } from "../context.ts";
 import { sha256 } from "../crypto.ts";
@@ -24,8 +25,8 @@ export interface ApprovalPayload {
   subject: string;
   body: string;
   threadId: string | null;
-  /** Files on the message: name, MIME type and decoded size (never the content). */
-  attachments: { filename: string; size: number; mimeType?: string }[];
+  /** Files on the message: name, MIME type, decoded size and source (never the content). */
+  attachments: OutgoingFileMeta[];
   reason: string | null;
   /** Fingerprint of the Gmail draft when it was queued; a mismatch at approval means it was edited in Gmail. */
   fingerprint?: string;

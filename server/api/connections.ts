@@ -13,9 +13,12 @@ import {
   type ConnectionGrant,
   type ConnectionKind,
   type ConnectionView,
+  type GoogleApiCheckView,
   type PresetView,
   type StartConnectResult,
 } from "../../shared/types.ts";
+import { checkGoogleApis, googleSetupContext, isGooglePreset } from "../extensions/google-auth.ts";
+import { extensionConsentConnection } from "../google/oauth.ts";
 import { exposedName } from "../broker/catalog/index.ts";
 import { connectionView, getConnection, listConnections, notifyAgent } from "../broker/service.ts";
 import { Approvals } from "../mail/approvals.ts";
@@ -67,6 +70,7 @@ const grantsSchema = z.object({ grants: z.array(z.object({ agentId: z.string().m
 const privateTargetSchema = z.object({ allow: z.boolean() }).strict();
 const probeSchema = z.object({ url: httpUrl, connectionId: z.string().optional() }).strict();
 const finishSchema = z.object({ url: z.string().trim().min(1).max(8192) }).strict();
+const googleApisSchema = z.object({ account: z.string().trim().min(1).max(320) }).strict();
 const connectSchema = z
   .object({
     // Surrounding whitespace is never part of a header value (HTTP strips it); a line break would split the header.
@@ -81,6 +85,7 @@ const connectSchema = z
   })
   .strict();
 
+/** A Google extension's auth reads "oauth": its access is an OAuth grant on the bound account. */
 const authTypeOf = (a: PresetAuth): ConnectionAuthType => (a.type === "none" ? "none" : a.type === "header" ? "header" : "oauth");
 
 /**
@@ -133,6 +138,17 @@ export function connectionsApi(ctx: AppContext) {
     return c;
   };
   const view = (id: string): ConnectionView => connectionView(ctx, requireConnection(id), Date.now(), ctx.broker.presets());
+  /** The connection a pasted Google callback address is for (a pending extension consent's state), or null. */
+  const googleConsentFor = (raw: string): string | null => {
+    try {
+      const text = raw.trim();
+      const u = new URL(text.startsWith("?") ? `http://localhost/oauth/callback${text}` : text);
+      const id = extensionConsentConnection(ctx, u.searchParams.get("state") ?? "");
+      return id && getConnection(ctx, id) ? id : null;
+    } catch {
+      return null;
+    }
+  };
   const grantsOf = (connectionId: string): ConnectionGrant[] =>
     ctx.db
       .all<{ agent_id: string; level: AccessLevel; created_at: string; updated_at: string }>(
@@ -147,6 +163,8 @@ export function connectionsApi(ctx: AppContext) {
   const presetView = (p: IntegrationPreset, reach: WebhookReachability): PresetView => {
     const publicUrl = ctx.settings.publicUrl();
     const steps = p.setupSteps({
+      // A Google extension's steps name the project, the app type and the connected accounts (google-setup.ts).
+      google: isGooglePreset(p) ? googleSetupContext(ctx) : null,
       publicUrl,
       redirectUri: `${publicUrl}/oauth/connections/callback`,
       // The preset's URL (POST /hooks/connections/<preset id>): no connection exists yet while choosing a preset, and
@@ -180,6 +198,15 @@ export function connectionsApi(ctx: AppContext) {
     // The reachability check (DNS, the Tailscale CLI) only for a preset that takes webhooks: none does today.
     const reach: WebhookReachability = presets.some((p) => p.events?.handleWebhook) ? await ctx.broker.webhookReachability() : NO_WEBHOOKS;
     return c.json<PresetView[]>(presets.map((p) => presetView(p, p.events?.handleWebhook ? reach : NO_WEBHOOKS)));
+  });
+
+  // A Google extension's "Check again": is each of its APIs on in the project, checked as the picked account. The probe
+  // token is downscoped (the extension's granted scopes, or only identity before consent): never the account's own.
+  app.post("/connections/presets/:id/google-apis", async (c) => {
+    const preset = ctx.broker.presets().find((p) => p.id === c.req.param("id"));
+    if (!isGooglePreset(preset)) throw notFound("Google extension");
+    const { account } = await readBody(c, googleApisSchema);
+    return c.json<GoogleApiCheckView[]>(await checkGoogleApis(ctx, preset, account));
   });
 
   app.post("/connections/probe", async (c) => {
@@ -216,10 +243,12 @@ export function connectionsApi(ctx: AppContext) {
     const levelDefault = body.levelDefault ?? "ask";
     const id = newId("con");
     const t = now();
+    // A Google extension's connection has no access until an account is picked and allowed (Connect does both).
+    const pending = isGooglePreset(preset) ? `Pick the Google account ${preset.displayName} works as, and allow its access: Connect.` : null;
     ctx.db.tx(() => {
       ctx.db.run(
-        `INSERT INTO connections (id, kind, preset, slug, name, url, auth_type, level_default, all_agents, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
+        `INSERT INTO connections (id, kind, preset, slug, name, url, auth_type, level_default, all_agents, status, status_reason, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         kind,
         preset?.id ?? null,
@@ -230,6 +259,8 @@ export function connectionsApi(ctx: AppContext) {
         levelDefault,
         // "All agents" (no agentIds): agents created later get it too (policy.createAgent).
         body.agentIds === undefined ? 1 : null,
+        pending ? "needs_reauth" : "active",
+        pending,
         t,
         t,
       );
@@ -368,6 +399,22 @@ export function connectionsApi(ctx: AppContext) {
   // Paste mode (no direct callback to this install): the landing URL the user copied after approving.
   app.post("/connections/finish", async (c) => {
     const { url } = await readBody(c, finishSchema);
+    // A Google extension's consent lands on Google's own callback: the account flow finishes it, then the connection.
+    const googleConnection = googleConsentFor(url);
+    if (googleConnection) {
+      try {
+        await ctx.google.completeConnectFromUrl(url);
+      } catch (err) {
+        // Partly granted is still connected (what was ticked works); the view says what's missing.
+        if (!(err instanceof HttpError && err.code === "oauth_extension_not_granted")) {
+          return c.json<StartConnectResult>({ status: "error", message: err instanceof HttpError && err.hint ? `${err.message} ${err.hint}` : errorMessage(err) }, 400);
+        }
+      }
+      // The consent's onDone bound the account and re-listed the tools (server/extensions/google-auth.ts).
+      const v = view(googleConnection);
+      if (v.status !== "active") return c.json<StartConnectResult>({ status: "error", message: v.statusReason ?? `${v.name} didn't get access.` }, 400);
+      return c.json<StartConnectResult>({ status: "connected", connection: v });
+    }
     const finish = ctx.broker.connector.finishFromUrl;
     if (!finish) throw new HttpError(404, "not_found", "No such API route");
     const r = await finish(url);
