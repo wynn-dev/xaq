@@ -2,6 +2,7 @@ import type { MessageContent } from "../../shared/types.ts";
 import type { AppContext } from "../context.ts";
 import { errorMessage, notFound } from "../util/errors.ts";
 import { Approvals } from "./approvals.ts";
+import { closeAttachmentParser } from "./extract/sandbox.ts";
 import { closeContentPool, contentPool } from "./pool.ts";
 import type { MailService } from "./types.ts";
 
@@ -46,6 +47,7 @@ export function createMailService(ctx: AppContext): MailService {
       if (timer) clearInterval(timer);
       timer = undefined;
       await closeContentPool(ctx);
+      await closeAttachmentParser(ctx);
     },
   };
 }

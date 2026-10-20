@@ -23,7 +23,7 @@ afterEach(async () => {
 
 const META = ["call_read_tool", "call_write_tool", "search_tools"];
 // What a read-only agent gets on main (9 tools).
-const READER_TOOLS = ["ack_events", "get_attachment", "get_message", "get_thread", "list_accounts", "list_events", "list_labels", "search_threads", "wait_for_events"];
+const READER_TOOLS = ["ack_events", "get_attachment", "get_message", "get_thread", "list_accounts", "list_attachments", "list_events", "list_labels", "search_threads", "wait_for_events"];
 
 function enableBroker(ctx: AppContext, on = true) {
   ctx.settings.update({ brokerUpstreams: on });

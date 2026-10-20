@@ -9,7 +9,7 @@ import { gmailHeader, grant, mailbox, type Stack, startStack } from "./e2e/harne
 import { type Agent, attachmentIds, feedCursor, feedLastSeq, MCP_TEXT, sendStatus } from "./e2e/mcp.ts";
 import { waitFor } from "./e2e/wait.ts";
 
-const READ_TOOLS = ["ack_events", "get_attachment", "get_message", "get_thread", "list_accounts", "list_events", "list_labels", "search_threads", "wait_for_events"];
+const READ_TOOLS = ["ack_events", "get_attachment", "get_message", "get_thread", "list_accounts", "list_attachments", "list_events", "list_labels", "search_threads", "wait_for_events"];
 const SEND_TOOLS = ["forward", "get_send_status", "reply", "send_message"];
 
 let s: Stack;
@@ -375,7 +375,7 @@ describe.runIf(HAS_AGENTS)("MCP agent journey", () => {
 
     const csv = await mcp.ok("get_attachment", { message_id: msg.id, attachment_id: ids[0] });
     expect(csv).toContain(MCP_TEXT.wrapperOpen("finance@vendor.test"));
-    expect(csv).toContain("EU,100");
+    expect(csv).toContain("| EU | 100 |");
     const image = await mcp.call("get_attachment", { message_id: msg.id, attachment_id: ids[1] });
     expect(image.isError).toBe(false);
     const parts = image.raw.content as { type: string; data?: string; mimeType?: string }[];

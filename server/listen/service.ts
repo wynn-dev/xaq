@@ -107,6 +107,8 @@ RestartMaxDelaySec=600
 # ${EXIT.revoked}: the key was revoked or the config is invalid. Restarting can't fix that.
 RestartPreventExitStatus=${EXIT.revoked}
 TimeoutStopSec=20
+# An OOM kill of one child (a hook command) must not stop the listener.
+OOMPolicy=continue
 
 [Install]
 WantedBy=${system ? "multi-user.target" : "default.target"}
