@@ -17,7 +17,7 @@ import { z } from "zod";
 import type { AppContext } from "../context.ts";
 import { MAX_ATTACHMENT_BYTES, ToolError } from "../mail/agent.ts";
 import type { Address } from "../../shared/types.ts";
-import { cleanLine, formatAddress, formatSize, MAX_HTML_CHARS, stripInvisible, truncateText, wrapUntrusted } from "../mail/content.ts";
+import { cleanLine, escapeDelimiters, formatAddress, formatSize, MAX_HTML_CHARS, stripInvisible, truncateText, wrapUntrusted } from "../mail/content.ts";
 import { markdownTable } from "../mail/extract/docx.ts";
 import { attachmentParser, type ParseFailure } from "../mail/extract/sandbox.ts";
 import { type Extracted, PARSE_LIMITS, type ParseFormat, type SheetData } from "../mail/extract/types.ts";
@@ -225,7 +225,7 @@ export async function attachmentOutput(ctx: AppContext, r: FetchedAttachment, ar
   const saved = async (lead: string) => {
     const s = await save();
     const text = `${head}\n${lead}${lead ? "\n" : ""}${s.line}`;
-    return { content: [{ type: "text" as const, text }], structuredContent: { attachment: { ...meta, savedPath: s.path } } };
+    return { content: [{ type: "text" as const, text }], structuredContent: safeStructured({ attachment: { ...meta, savedPath: s.path } }) };
   };
 
   if (format === "file") return saved("");
@@ -327,7 +327,7 @@ export async function attachmentOutput(ctx: AppContext, r: FetchedAttachment, ar
   const text = `${head}\n${wrapUntrusted(r.from, recleaned(w.shown))}\n${lines.join("\n")}`;
   const structured = structuredSheets(doc);
   if (!structured) return text;
-  return { content: [{ type: "text", text }], structuredContent: { attachment: meta, untrusted: true, sheets: structured } };
+  return { content: [{ type: "text", text }], structuredContent: safeStructured({ attachment: meta, untrusted: true, sheets: structured }) };
 }
 
 // ───────────── list_attachments ─────────────
@@ -349,7 +349,7 @@ export function formatAttachmentList(r: {
   }));
   if (!items.length) {
     const text = `No attachments in ${where} (${r.account.email}${r.threadId ? `, ${r.messageCount} message${r.messageCount === 1 ? "" : "s"}` : ""}).`;
-    return { content: [{ type: "text", text }], structuredContent: { attachments: [] } };
+    return { content: [{ type: "text", text }], structuredContent: safeStructured({ attachments: [] }) };
   }
   const messages = new Set(items.map((x) => x.messageId)).size;
   const lines = [
@@ -362,7 +362,7 @@ export function formatAttachmentList(r: {
     );
   }
   lines.push("Read one with get_attachment (message_id and attachment_id).");
-  return { content: [{ type: "text", text: lines.join("\n") }], structuredContent: { attachments: items } };
+  return { content: [{ type: "text", text: lines.join("\n") }], structuredContent: safeStructured({ attachments: items }) };
 }
 
 /** Small spreadsheets' rows as data (cells cleaned like the text). Null when they're over STRUCTURED_MAX_CELLS. */
@@ -373,12 +373,25 @@ function structuredSheets(doc: Rendered): { name: string; rows: string[][] }[] |
   return doc.sheets.map((s) => ({ name: cleanLine(s.name, 100), rows: s.rows.map((row) => row.map(recleaned)) }));
 }
 
+/**
+ * Every string in a structuredContent value (keys too) cleaned and delimiter-escaped, as the broker does for upstream
+ * structuredContent (server/broker/policy/output.ts): a cell or file name can't forge a closing </email_content>.
+ */
+export function safeStructured<T>(v: T): T {
+  if (typeof v === "string") return escapeDelimiters(recleaned(v)) as T;
+  if (Array.isArray(v)) return v.map((x) => safeStructured(x)) as T;
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [escapeDelimiters(recleaned(k)), safeStructured(x)])) as T;
+  return v;
+}
+
 function failureText(reason: ParseFailure, message: string): string {
   switch (reason) {
     case "timeout":
       return "reading it took too long.";
     case "crashed":
       return "the parser stopped while reading it (the file may be damaged or hostile).";
+    case "memory":
+      return "reading it needed too much memory (the file may be damaged or hostile).";
     case "busy":
       return "too many attachments are being read right now; try again in a moment.";
     case "unavailable":

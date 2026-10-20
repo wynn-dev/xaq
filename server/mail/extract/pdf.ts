@@ -8,7 +8,13 @@ import { type Extracted, PARSE_LIMITS, UnsafeDocumentError } from "./types.ts";
 type TextItem = { str?: string; hasEOL?: boolean };
 
 export async function extractPdf(input: Uint8Array): Promise<Extracted> {
+  // Defence in depth only: PDF.js has no cap on decoded stream bytes (a FlateDecode chain can inflate to gigabytes in
+  // ArrayBuffers, outside --max-old-space-size), so the daemon's RSS watchdog is what bounds memory (sandbox.ts).
+  // isEvalSupported is no longer read by this PDF.js line (the eval font path is gone); passed in case it returns.
   const task = getDocument({
+    isEvalSupported: false,
+    maxImageSize: 16 * 1024 * 1024,
+    canvasMaxAreaInBytes: 16 * 1024 * 1024,
     data: input,
     useSystemFonts: false,
     useWorkerFetch: false,
@@ -20,7 +26,7 @@ export async function extractPdf(input: Uint8Array): Promise<Extracted> {
     disableStream: true,
     stopAtErrors: false,
     verbosity: 0,
-  });
+  } as Parameters<typeof getDocument>[0]);
   let doc;
   try {
     doc = await task.promise;
