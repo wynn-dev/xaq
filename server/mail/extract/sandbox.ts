@@ -64,7 +64,9 @@ const STDERR_KEEP = 4096;
 
 /** Network deny-by-default and v8 flags, loaded before the bootstrap (see the header). Plain JS, no imports. */
 const PARSER_HARDENING = `
-const NET = "Network access is disabled in the attachment parser";
+// The stdio pipes are created lazily from net.Socket: create them while that's still the real class.
+void process.stdin; void process.stdout; void process.stderr;
+const NET ="Network access is disabled in the attachment parser";
 const get = (m) => process.getBuiltinModule(m);
 const thrower = (msg) => { const f = function () { throw new Error(msg); }; return f; };
 const lock = (o, k, msg) => { try { Object.defineProperty(o, k, { value: thrower(msg), writable: false, configurable: false, enumerable: true }); } catch {} };
