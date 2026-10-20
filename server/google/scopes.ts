@@ -22,6 +22,12 @@ export const CALENDAR_LIST_SCOPE = `${G}calendar.calendarlist.readonly`;
 export const CALENDAR_FREEBUSY_SCOPE = `${G}calendar.events.freebusy`;
 
 /**
+ * Read any Drive file the user can open (restricted scope). Optional: attaching Drive files to mail
+ * (server/mail/drive-files.ts) needs it; the Google Workspace extension's opt-in asks for it.
+ */
+export const DRIVE_READONLY_SCOPE = `${G}drive.readonly`;
+
+/**
  * Google Calendar: the minimal set covering every calendar tool (docs/calendar.md). All three are needed
  * for Account.calendar.status "active"; with granular consent a user can untick some (missingScopes).
  */

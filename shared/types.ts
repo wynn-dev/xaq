@@ -308,6 +308,13 @@ export interface Settings {
   /** Accept device-flow pairing requests from `npx xaq-cli connect` (each still needs approval). */
   pairingEnabled: boolean;
   /**
+   * Absolute directories on xaq's machine whose files agents may attach to mail by path (attachments
+   * `{ path }`). Empty (the default): path attachments are off. xaq's own directories and secret-looking
+   * files (master.key, *.db, .env, id_*, *.pem, *.key) are refused even inside them. Admin only (console
+   * Settings, `npx xaq-cli settings attachment-dirs`); no agent tool changes it.
+   */
+  attachmentDirs: string[];
+  /**
    * The MCP broker's upstream connections (docs/MCP-BROKER.md): the Connections page, connection access on agents,
    * `mcp.call` approvals and first run with Google optional. On by default since the console shipped (M1 PR 8).
    */
@@ -1092,6 +1099,31 @@ export interface McpCallResult {
   isError?: boolean;
 }
 
+/**
+ * Where a file attached to an outgoing message came from (approval cards and the audit log show it):
+ * - upload: the bytes were in the tool call (content_base64);
+ * - path: a file on xaq's machine, inside an allowed attachment directory (Settings.attachmentDirs). `path` is the
+ *   resolved real path that was read; `requested` the path the agent gave, when it differs (a symlink, "..");
+ * - message: an attachment of another message in the same account (`attachmentId` as get_message lists it);
+ * - drive: a Google Drive file, downloaded or (Google Docs, Sheets, Slides) exported (`exportedAs`, e.g. "pdf");
+ * - forward: an original file carried by forward's include_attachments.
+ */
+export type AttachmentSource =
+  | { kind: "upload" }
+  | { kind: "path"; path: string; requested?: string }
+  | { kind: "message"; messageId: string; attachmentId: string; filename: string }
+  | { kind: "drive"; fileId: string; name: string; exportedAs?: string }
+  | { kind: "forward"; messageId: string };
+
+/** An outgoing file as approval cards and the audit log describe it (never the content). */
+export interface OutgoingFileMeta {
+  filename: string;
+  size: number;
+  mimeType?: string;
+  /** Absent on approvals from before attachment sources were recorded. */
+  source?: AttachmentSource;
+}
+
 interface ApprovalCommon {
   id: string; // apr_…
   agentId: string;
@@ -1104,8 +1136,8 @@ interface ApprovalCommon {
   /** Full body as the agent wrote it (markdown/plain). */
   body: string;
   threadId: string | null;
-  /** Files on the message: name, MIME type and decoded size (never the content). */
-  attachments: { filename: string; size: number; mimeType?: string }[];
+  /** Files on the message: name, MIME type, decoded size and where each came from (never the content). */
+  attachments: OutgoingFileMeta[];
   /** Why the agent says it is sending (optional `reason` tool arg). */
   reason: string | null;
   decidedAt: string | null;

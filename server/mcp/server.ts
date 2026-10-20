@@ -10,7 +10,7 @@ import type { AppContext } from "../context.ts";
 import { classifyCalendarError } from "../google/calendar.ts";
 import { AccountNeedsReauthError, GoogleApiError } from "../google/types.ts";
 import { AgentMail, MAX_ATTACHMENT_BYTES, ToolError, type ToolTrace } from "../mail/agent.ts";
-import { MAX_ATTACHMENTS } from "../mail/attachments.ts";
+import { DRIVE_EXPORT_FORMATS, MAX_ATTACHMENTS } from "../mail/attachments.ts";
 import { cleanLine, formatSize, labelNames } from "../mail/content.ts";
 import { attachmentArgs, attachmentOutput, formatAttachmentList } from "./attachments.ts";
 import type { AgentPrincipal } from "../policy/types.ts";
@@ -64,17 +64,49 @@ const recipients = (what: string) =>
 const reason = z.string().max(500).optional().describe("Why you are sending this; shown to the human if the send needs approval.");
 const threadId = z.string().min(1).describe("Thread id (from search_threads, get_message or events).");
 const messageId = z.string().min(1).describe("Message id (from get_thread, get_message or events).");
-const attachments = z
-  .array(
-    z.object({
-      filename: z.string().describe('File name shown to the recipient, with its extension, e.g. "tenant-form.pdf".'),
-      mime_type: z.string().optional().describe("type/subtype, e.g. application/pdf. Default: from the extension, else application/octet-stream."),
+const mimeType = z.string().optional().describe("type/subtype, e.g. application/pdf. Default: from the extension, else application/octet-stream.");
+// Each item is exactly one of four strict shapes (an item mixing sources matches none and is refused).
+const attachmentItem = z.union([
+  z
+    .strictObject({
       content_base64: z.string().describe("The file's bytes, base64-encoded (standard or url-safe)."),
-    }),
-  )
+      filename: z.string().describe('File name shown to the recipient, with its extension, e.g. "tenant-form.pdf".'),
+      mime_type: mimeType,
+    })
+    .describe("A file whose bytes you have: put them in this call, base64-encoded."),
+  z
+    .strictObject({
+      path: z.string().describe("Absolute path of the file on xaq's machine, e.g. /home/me/Documents/report.pdf."),
+      filename: z.string().optional().describe("Name shown to the recipient. Default: the file's own name."),
+      mime_type: mimeType,
+    })
+    .describe(
+      "A file on xaq's own machine, read by xaq: only inside directories the owner allowed for attachments (off unless the owner set some); xaq's own files and keys are always refused.",
+    ),
+  z
+    .strictObject({
+      message_id: z.string().describe("The message that has the file (same account; from get_message, get_thread or events)."),
+      attachment_id: z.string().describe("The attachment's id as get_message / get_thread list it."),
+    })
+    .describe("A file attached to another message in the same account (needs read access to it)."),
+  z
+    .strictObject({
+      drive_file_id: z.string().describe('The Google Drive file id (from its link: …/d/<id>/… or ?id=<id>).'),
+      export_as: z
+        .enum(DRIVE_EXPORT_FORMATS)
+        .optional()
+        .describe("For Google Docs (pdf, docx, txt, md), Sheets (pdf, xlsx, csv; csv is the first sheet), Slides (pdf, pptx, txt) and Drawings (pdf). Default pdf. Other files are attached as they are."),
+    })
+    .describe("A Google Drive file of the account (needs your access to its Google Workspace connection, and Drive enabled for the account in xaq)."),
+]);
+const attachments = z
+  .array(attachmentItem)
   .optional()
   .describe(
-    `Files to attach (at most ${MAX_ATTACHMENTS}). The file content goes in this call, base64-encoded. Gmail's limit is 25 MB per message, body included; it refuses executables and similar types (.exe, .js, .bat, …).`,
+    `Files to attach (at most ${MAX_ATTACHMENTS}), each from exactly one source: bytes in this call (content_base64 + filename), a path on xaq's machine (path), ` +
+      "another message's attachment (message_id + attachment_id), or a Google Drive file (drive_file_id, with export_as for Google Docs, Sheets and Slides). " +
+      "Gmail's limit is 25 MB per message, body and files together; for larger files put a Drive link in the body instead. " +
+      "Gmail refuses executables and similar types (.exe, .js, .bat, …).",
   );
 const eventTypes = z.array(z.enum(EVENT_TYPES)).optional().describe("Only these event types.");
 const eventAccount = z.string().optional().describe("Only events from this account (email or id).");
@@ -549,7 +581,7 @@ export function buildMcpServer(ctx: AppContext, principal: AgentPrincipal, opts:
       {
         title: "Create draft",
         description:
-          "Create a Gmail draft; nothing is sent. A human can review and send it from Gmail. Pass thread_id to draft a reply inside that thread, and attachments to attach files.",
+          "Create a Gmail draft; nothing is sent. A human can review and send it from Gmail. Pass thread_id to draft a reply inside that thread, and attachments to attach files (bytes, a path on xaq's machine, another message's attachment or a Drive file).",
         input: {
           account,
           to: recipients("Recipients"),
@@ -600,13 +632,14 @@ export function buildMcpServer(ctx: AppContext, principal: AgentPrincipal, opts:
         "forward",
         {
           title: "Forward message",
-          description: `Forward a message to new recipients, with an optional note above the quoted original. ${modes}`,
+          description: `Forward a message to new recipients, with an optional note above the quoted original. include_attachments carries the original's files; attachments adds new ones. ${modes}`,
           input: {
             account,
             message_id: messageId,
             to: recipients("Recipients"),
             body: z.string().optional().describe("Your note above the forwarded message."),
             include_attachments: z.boolean().optional().describe("Also attach the original files (default false)."),
+            attachments,
             reason,
           },
           annotations: SEND,
@@ -618,6 +651,7 @@ export function buildMcpServer(ctx: AppContext, principal: AgentPrincipal, opts:
               to: args.to,
               body: args.body,
               includeAttachments: args.include_attachments,
+              attachments: args.attachments,
               reason: args.reason,
             }),
           ),

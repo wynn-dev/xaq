@@ -248,6 +248,9 @@ registerConnectionsCommands(program);
 // `ext add | list | update | remove` (docs/EXTENSIONS.md), through the daemon's /api/extensions.
 const { registerExtensionCommands } = await import("./extensions/cli.ts");
 registerExtensionCommands(program);
+// `settings attachment-dirs list | add | remove`, through the daemon's /api/settings.
+const { registerSettingsCommands } = await import("./settings-cli.ts");
+registerSettingsCommands(program);
 // Short one-liners for the command list; each command's own --help keeps its full description.
 const AGENT_SUMMARIES: Record<string, string> = {
   connect: "pair an agent; you approve it in the console",

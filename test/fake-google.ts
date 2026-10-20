@@ -1,5 +1,5 @@
 /**
- * In-memory fake of every Google endpoint xaq calls (OAuth, Gmail REST, Pub/Sub REST), served by
+ * In-memory fake of every Google endpoint xaq calls (OAuth, Gmail REST, Pub/Sub REST, Calendar, Drive read-only), served by
  * node:http on 127.0.0.1:<random port>. Deterministic and fast; used by unit tests and the end-to-end test.
  *
  *   const g = await startFakeGoogle();
@@ -146,7 +146,7 @@ export interface FakeGoogle {
   expireAccessTokens(email: string): void;
   expireHistory(email: string): void;
   orgPolicyBlocksIam(on: boolean): void;
-  disableApi(api: "gmail" | "pubsub" | "calendar", on: boolean): void;
+  disableApi(api: "gmail" | "pubsub" | "calendar" | "drive", on: boolean): void;
   failNext(rule: FailRule): void;
   sent(email: string): GmailMessage[];
   drafts(email: string): { id: string; message: GmailMessage }[];
@@ -168,6 +168,34 @@ export interface FakeGoogle {
   uploads: { path: string; uploadType: string; metadata: Record<string, unknown>; size: number }[];
   /** Google Calendar (routes under /calendar/v3). See the header comment. */
   calendar: FakeCalendar;
+  /** Google Drive, read-only (routes under /drive/v3). See FakeDrive. */
+  drive: FakeDrive;
+}
+
+/** A file in a fake Drive. Google-native files (mimeType application/vnd.google-apps.*) have no content, only exports. */
+export interface FakeDriveFileInput {
+  id?: string;
+  name: string;
+  mimeType: string;
+  /** Bytes of a regular file (alt=media). */
+  content?: Buffer;
+  /** What files.get reports as `size` (default: the content's length; null: none, like Google-native files). */
+  size?: string | null;
+  /** Export results by MIME type; other supported types get a generated stub. */
+  exports?: Record<string, Buffer>;
+  trashed?: boolean;
+}
+
+/**
+ * Google Drive v3, the parts xaq reads (files.get metadata, alt=media downloads, files.export), per account. Routes
+ * need drive.readonly or drive (else 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT). Unknown ids → 404 notFound; alt=media
+ * on a Google-native file → 403 fileNotDownloadable; export of a regular file → 403 fileNotExportable; an export
+ * over 10 MB → 403 exportSizeLimitExceeded, like Google.
+ */
+export interface FakeDrive {
+  addFile(email: string, file: FakeDriveFileInput): string;
+  /** How many bytes each alt=media / export response sent (to check nothing large was fetched). */
+  served: { id: string; kind: "media" | "export"; bytes: number }[];
 }
 
 /** An email Google Calendar would have sent for a write (sendUpdates). */
@@ -502,6 +530,7 @@ const SERVICES = {
   gmail: { name: "Gmail API", host: "gmail.googleapis.com" },
   pubsub: { name: "Cloud Pub/Sub API", host: "pubsub.googleapis.com" },
   calendar: { name: "Google Calendar API", host: "calendar-json.googleapis.com" },
+  drive: { name: "Google Drive API", host: "drive.googleapis.com" },
 } as const;
 
 const serviceDisabled = (service: keyof typeof SERVICES) => {
@@ -518,7 +547,7 @@ const serviceDisabled = (service: keyof typeof SERVICES) => {
           reason: "SERVICE_DISABLED",
           domain: "googleapis.com",
           // Newer error bodies carry the enable link (activationUrl is optional in Google's ErrorInfo).
-          metadata: { service: host, consumer: "projects/123456789", ...(service === "calendar" ? { activationUrl, serviceTitle: name } : {}) },
+          metadata: { service: host, consumer: "projects/123456789", ...(service === "calendar" || service === "drive" ? { activationUrl, serviceTitle: name } : {}) },
         },
       ],
     },
@@ -1438,7 +1467,7 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
   };
   const canWrite = (c: FakeCal) => c.entry.accessRole === "owner" || c.entry.accessRole === "writer";
 
-  function calendarBearer(req: IncomingMessage, scopes: string[]): Token {
+  function calendarBearer(req: IncomingMessage, scopes: string[], api: "calendar" | "drive" = "calendar"): Token {
     const t = accessTokens.get((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
     if (!valid(t) || t.expiresAt < Date.now()) {
       throw apiError(401, "Request had invalid authentication credentials. Expected OAuth 2 access token.", "authError");
@@ -1448,7 +1477,7 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
         details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT", domain: "googleapis.com" }],
       });
     }
-    if (disabled.has("calendar")) throw serviceDisabled("calendar");
+    if (disabled.has(api)) throw serviceDisabled(api);
     return t;
   }
 
@@ -1982,6 +2011,81 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     notify,
   };
 
+  // ───── Google Drive (read-only) ─────
+
+  const DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive"];
+  /** Google's export formats per native type (the subset xaq uses, plus html for docs). */
+  const DRIVE_EXPORTS: Record<string, string[]> = {
+    "application/vnd.google-apps.document": [
+      "application/pdf",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "text/plain",
+      "text/markdown",
+      "text/html",
+    ],
+    "application/vnd.google-apps.spreadsheet": ["application/pdf", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "text/csv"],
+    "application/vnd.google-apps.presentation": ["application/pdf", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "text/plain"],
+    "application/vnd.google-apps.drawing": ["application/pdf", "image/png"],
+  };
+  const driveFiles = new Map<string, Map<string, FakeDriveFileInput & { id: string }>>();
+  let nextDriveId = 1;
+  const driveFile = (req: IncomingMessage, rawId: string) => {
+    const t = calendarBearer(req, DRIVE_SCOPES, "drive");
+    const f = driveFiles.get(t.email)?.get(decodeURIComponent(rawId));
+    if (!f) throw apiError(404, `File not found: ${decodeURIComponent(rawId)}.`, "notFound");
+    return f;
+  };
+  const webViewLink = (f: FakeDriveFileInput & { id: string }) =>
+    f.mimeType.startsWith("application/vnd.google-apps.")
+      ? `https://docs.google.com/${f.mimeType.slice("application/vnd.google-apps.".length)}/d/${f.id}/edit?usp=drivesdk`
+      : `https://drive.google.com/file/d/${f.id}/view?usp=drivesdk`;
+  const sendBytes = (res: ServerResponse, mimeType: string, data: Buffer) => {
+    res.writeHead(200, { "content-type": mimeType, "content-length": String(data.length) });
+    // Large bodies in chunks, so a client that stops reading early is seen (the socket closes).
+    for (let i = 0; i < data.length; i += 1 << 20) res.write(data.subarray(i, i + (1 << 20)));
+    res.end();
+  };
+
+  on("GET", /^\/drive\/v3\/files\/([^/]+)$/, (req, url, _b, m, res) => {
+    const f = driveFile(req, m[1]!);
+    if (url.searchParams.get("alt") === "media") {
+      if (f.mimeType.startsWith("application/vnd.google-apps.")) {
+        throw apiError(403, "Only files with binary content can be downloaded. Use Export with Docs Editors files.", "fileNotDownloadable");
+      }
+      const data = f.content ?? Buffer.alloc(0);
+      driveApi.served.push({ id: f.id, kind: "media", bytes: data.length });
+      sendBytes(res, f.mimeType, data);
+      return;
+    }
+    const size = f.size === undefined ? (f.content ? String(f.content.length) : undefined) : (f.size ?? undefined);
+    return { id: f.id, name: f.name, mimeType: f.mimeType, ...(size !== undefined ? { size } : {}), webViewLink: webViewLink(f), trashed: !!f.trashed };
+  });
+
+  on("GET", /^\/drive\/v3\/files\/([^/]+)\/export$/, (req, url, _b, m, res) => {
+    const f = driveFile(req, m[1]!);
+    const formats = DRIVE_EXPORTS[f.mimeType];
+    if (!formats) throw apiError(403, "Export only supports Docs Editors files.", "fileNotExportable");
+    const mime = url.searchParams.get("mimeType") ?? "";
+    if (!formats.includes(mime)) throw apiError(400, "The requested conversion is not supported.", "badRequest");
+    const data = f.exports?.[mime] ?? Buffer.from(mime === "application/pdf" ? `%PDF-1.7\n% ${f.name} exported\n%%EOF\n` : `${f.name} exported as ${mime}\n`);
+    if (data.length > 10 * 1024 * 1024) throw apiError(403, "This file is too large to be exported.", "exportSizeLimitExceeded");
+    driveApi.served.push({ id: f.id, kind: "export", bytes: data.length });
+    sendBytes(res, mime, data);
+  });
+
+  const driveApi: FakeDrive = {
+    served: [],
+    addFile(email, file) {
+      const key = email.toLowerCase();
+      box(key);
+      const id = file.id ?? `1fakeDrive${String(nextDriveId++).padStart(6, "0")}Xy`;
+      let files = driveFiles.get(key);
+      if (!files) driveFiles.set(key, (files = new Map()));
+      files.set(id, { ...file, id });
+      return id;
+    },
+  };
+
   // ───── Server ─────
 
   const closers = new Set<() => void>();
@@ -2034,7 +2138,7 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
 
   const fake: FakeGoogle = {
     url,
-    google: { oauthBase: url, authBase: url, gmailBase: url, pubsubBase: url, calendarBase: url },
+    google: { oauthBase: url, authBase: url, gmailBase: url, pubsubBase: url, calendarBase: url, driveBase: url },
     accessTokenTtl: 3600,
     refreshTokenTtl: null,
     registeredRedirectUris: null,
@@ -2154,6 +2258,7 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     },
     iamPolicy: (topic) => (topics.has(topic) ? structuredClone(topics.get(topic)!.policy) : null),
     calendar: calendarApi,
+    drive: driveApi,
   };
   return fake;
 }
