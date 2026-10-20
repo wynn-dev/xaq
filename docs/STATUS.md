@@ -95,6 +95,45 @@ Open, in order:
    `agentinbox` entry for routes confined with `mcp-agentinbox`); Hermes in search mode (opt-in from the agent's
    "Tool list" card).
 
+## PAUSED 2026-10-20 (Wynn: Claude usage nearly out). Resume state
+
+Nothing is in flight: no open PRs in wynn-dev/xaq or wynn-dev/xaq-extensions, no uncommitted work, no running agents.
+The merge train is idle.
+
+**Merged and published (latest = `xaq-cli@0.1.0-nightly.90`):**
+- Gmail attachments:
+  - #86: new attachments from a path (owner-allowed `attachmentDirs`, secrets always refused), another message, or Drive;
+  - #87: readable content for PDF, DOCX, XLSX, PPTX and CSV in a sandboxed parser child, plus `list_attachments`;
+  - #90: Drive attachments need a grant on a `google-workspace` connection bound to the same account, and use a downscoped token.
+- #88: Google accounts for code extensions (`code.auth.type: "google"`, official only, incremental consent, downscoped tokens, API-enable setup).
+- The google-workspace extension: xaq-extensions #6 (Drive and Docs) and #5 (Sheets and Slides), pinned at `3249eee` (#7). That's 31 tools.
+- #89: `npx xaq-cli smoke google-workspace --scratch`, the live end-to-end check, safe by construction.
+- #91: `service install` picks a Node that meets the code-extension floor (`--node`; `service status` flags a too-old one).
+
+**Waiting on Adri and Wynn:** Wynn connects Google Workspace on the Mac (enable the 4 APIs, then consent). Adri grants Hermes
+and runs the smoke command, then sends the PASS/FAIL table. Unverified against real Google: downscoped refresh, the
+`removeParents=root` move, and the link-shared Drive image via `webContentLink`.
+
+**Next steps, in order, when resumed:**
+1. Fix whatever the smoke table shows failing (one PR per area; review; merge on green; nightly).
+2. Re-check `CODE_EXTENSION_NODE_FLOOR` (`server/extensions/host/spawn.ts`) against Node's 2026-10-21 security release.
+3. A docs PR: move the notes below into `docs/FOLLOWUPS.md` and refresh this section.
+
+**Follow-ups gathered this round (not yet in FOLLOWUPS.md):**
+
+#### service install Node choice (#91 review)
+- trustedNodeFile rejects group-writable fnm dirs under umask 002 (Linux): previous-service/search fnm Nodes skipped → install refuses; consider trusting the previous service's Node or the user's private group.
+- nodeVersionOf passes the full env (NODE_OPTIONS, XAQ_MASTER_KEY) to probed binaries; use a minimal env and killSignal SIGKILL.
+- "writable by others" message should say "group- or world-writable"; tests stub trusted() everywhere.
+#### Attachments/Workspace round (2026-10-19/20)
+- A2: a PDF/Office file that fails to parse is still saved (and can trigger quota eviction); add a never-save format for callers like smoke.
+- Smoke: two concurrent runs sweep each other (lock file); second Ctrl-C during the attachmentDirs PATCH can leave the entry (next sweep removes it).
+- Workspace: exfil channels by design under "edits allowed" (imageUrl, attacker-shared doc/folder, IMAGE() formula) — Wynn's call if he wants image-by-URL to ask.
+- Workspace: comments/trash only on extension-created files (drive.file); slides Drive image needs link-shared files; /uc fallback.
+- Google auth: pending consent list is memory-only; handed-token scrub list memory-only.
+- Saved attachments manifest has no lock (concurrent saves can drop an entry, safe direction).
+- e2e-restart test flaky under full-suite load.
+
 ## Rules (Wynn / Adri)
 
 - Finite exit, blockers-only gates. Nits go to `docs/FOLLOWUPS.md`.
