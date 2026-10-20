@@ -17,7 +17,8 @@
 //   - every export of net, tls, dns, dns/promises, dgram, http, https and http2 becomes a throwing stub (classes too),
 //     and the prototypes that reach the network are locked to throwers (Socket#connect, Server#listen, every
 //     dgram.Socket and dns Resolver method, Agent#createConnection), since instances such as process.stdout (a
-//     net.Socket) hand out the original classes; fetch, WebSocket and EventSource go too. Node 25+ refuses the network
+//     net.Socket) hand out the original classes; fetch, WebSocket and EventSource go too. The stdio pipes' native
+//     handles (process.std*._handle and their prototype) lose connect, connect6, bind, bind6 and listen. Node 25+ refuses the network
 //     under --permission anyway (no --allow-net is passed); on 22 and 24 this is what stands. (Node has no `undici`
 //     builtin: fetch is its only public entry, and it ends in Socket#connect.)
 //   - v8.setFlagsFromString throws (it can turn on --allow-natives-syntax).
@@ -96,6 +97,18 @@ for (const mod of [net, tls, dgram, dns, dnsp, dns.promises, http, https, http2]
   }
 }
 for (const k of ["fetch", "WebSocket", "EventSource"]) lock(globalThis, k, NET);
+// The stdio pipes' native handles (and so every handle of their class, e.g. a new Pipe from .constructor) can't
+// connect, bind or listen: no route to a Unix socket such as a container runtime's.
+for (const s of [process.stdin, process.stdout, process.stderr]) {
+  const h = s && s._handle;
+  if (!h) continue;
+  const proto = Object.getPrototypeOf(h);
+  for (const k of ["connect", "connect6", "bind", "bind6", "listen"]) {
+    if (!(k in h)) continue;
+    if (proto && k in proto) lock(proto, k, NET);
+    lock(h, k, NET);
+  }
+}
 lock(get("node:v8"), "setFlagsFromString", "v8 flags can't be changed in the attachment parser");
 get("node:module").syncBuiltinESMExports();
 `;

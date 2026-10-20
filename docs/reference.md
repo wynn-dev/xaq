@@ -561,7 +561,8 @@ short-lived child `node` started for each file, never in xaq itself:
 - The network is denied by default: Node 25+ closes it itself; on every release the parser preload replaces every
   export of `net`, `tls`, `dns`, `dns/promises`, `dgram`, `http`, `https` and `http2` with throwing stubs, locks the
   methods that reach the network on the classes live objects still hand out (socket connect, server listen, every
-  UDP socket and DNS resolver method, agent connections), and removes `fetch`, `WebSocket` and `EventSource`.
+  UDP socket and DNS resolver method, agent connections, and connect/bind/listen on the stdio pipes' native
+  handles, so no Unix socket either), and removes `fetch`, `WebSocket` and `EventSource`.
   `v8.setFlagsFromString` throws too.
 - Memory: the V8 heap is capped at 256 MB, and since decoded PDF streams and other buffers live outside it, xaq also
   samples the child's resident memory every 100 ms (`/proc` on Linux, `ps` on macOS) and kills it above **512 MB**.

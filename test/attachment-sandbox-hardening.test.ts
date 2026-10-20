@@ -4,8 +4,10 @@
 // requests in flight merged.
 
 import { createSocket } from "node:dgram";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AttachmentParser, procRss, psRss, rssReaderFor } from "../server/mail/extract/sandbox.ts";
 import { createLogger } from "../server/util/log.ts";
@@ -95,6 +97,52 @@ describe("no network from the child", () => {
     await sleep(300);
     expect(tcpHits).toBe(0);
     expect(udpHits).toBe(0);
+  });
+});
+
+describe("no Unix sockets through the stdio handles", () => {
+  it.runIf(process.platform !== "win32")("connect/bind/listen on process.std*._handle, its prototype and new handles of its class all throw", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "xaq-sock-"));
+    const path = join(dir, "s.sock");
+    let hits = 0;
+    const server = createServer((s) => {
+      hits++;
+      s.destroy();
+    });
+    await new Promise<void>((r) => server.listen(path, () => r()));
+    try {
+      const report = await probe(`
+        const p = ${JSON.stringify(path)};
+        const req = () => ({ oncomplete() {} });
+        for (const [name, s] of [["stdin", process.stdin], ["stdout", process.stdout], ["stderr", process.stderr]]) {
+          const h = s._handle;
+          out[name + "Handle"] = h ? "present" : "none";
+          if (!h) continue;
+          const proto = Object.getPrototypeOf(h);
+          for (const k of ["connect", "connect6", "bind", "bind6", "listen"]) {
+            if (!(k in h)) continue;
+            for (const [route, f] of [
+              ["own", () => h[k](req(), p)],
+              ["proto", () => proto[k].call(h, req(), p)],
+              ["fresh", () => { const x = new h.constructor(0); return x[k](req(), p); }],
+            ]) {
+              try { f(); out[name + "." + k + "." + route] = "ALLOWED"; } catch (e) { out[name + "." + k + "." + route] = /disabled/.test(e.message) ? "blocked" : e.message; }
+            }
+            try { proto[k] = () => 0; out[name + "." + k + ".relock"] = "ALLOWED"; } catch { out[name + "." + k + ".relock"] = "blocked"; }
+          }
+        }
+        await new Promise((r) => setTimeout(r, 300));
+      `);
+      const checked = Object.entries(report).filter(([k]) => !k.endsWith("Handle"));
+      expect(report.stdoutHandle).toBe("present");
+      expect(checked.length).toBeGreaterThanOrEqual(12);
+      for (const [k, v] of checked) expect([k, v]).toEqual([k, "blocked"]);
+      await sleep(200);
+      expect(hits).toBe(0);
+    } finally {
+      await new Promise((r) => server.close(r));
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
