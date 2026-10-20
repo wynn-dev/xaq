@@ -1,97 +1,87 @@
 // `xaq smoke google-workspace --scratch` end to end, offline: the real daemon (startStack: real HTTP, the fake
-// Google for Gmail), the real admin channel (a one-time session in the data dir), /mcp as the temporary agent, and a
-// fake google-workspace extension (test/fake-workspace.ts) as an MCP upstream connection at "ask".
+// Google for Gmail and Drive), the real admin channel (a one-time session in the data dir), /mcp as the temporary
+// agent, and a fake google-workspace extension (test/fake-workspace.ts) as an MCP upstream connection at "ask", bound
+// to the account like the extension's Google setup leaves it (preset google-workspace, connections.google_account_id),
+// so create_draft's { drive_file_id } is the real thing (#86, #90).
 //
-// Until writer A1 (attachment sources, attachmentDirs) and A2 (list_attachments) land, two small shims stand in for
-// them, and only when the daemon lacks them: attachmentDirs on /api/settings, and create_draft's { path } and
-// { drive_file_id } items turned into today's content_base64 items. Once A1/A2 are merged the shims switch off by
-// themselves and the same tests run against the real thing.
+// Until writer A2 (list_attachments, get_attachment's content extraction) lands, one stand-in answers
+// list_attachments the way A2 does (structured attachmentId, filename, mimeType, size), only while the daemon has no
+// such tool. It can also answer get_attachment with A2's "saved to disk" shape, for the guard against that.
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, resolve, sep } from "node:path";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Account, AgentWithKey, ConnectionView } from "../shared/types.ts";
+import type { Account, AgentWithKey, ConnectAccountResponse, ConnectionView } from "../shared/types.ts";
 import { type AdminChannel, openAdminChannel } from "../server/connections-cli/admin.ts";
+import { DRIVE_READONLY_SCOPE, GMAIL_SCOPE } from "../server/google/scopes.ts";
+import { GOOGLE_WORKSPACE_EXTENSION } from "../server/google/workspace-binding.ts";
 import { type AgentMcp, type CallOutcome, connectAgentMcp } from "../server/smoke/agent.ts";
-import { installSmokeSignals } from "../server/smoke/cli.ts";
+import { installSmokeSignals, safeWriter } from "../server/smoke/cli.ts";
 import { GuardError, newLedger, ScratchGuard, WRITE_TARGETS } from "../server/smoke/guards.ts";
 import { renderReport } from "../server/smoke/report.ts";
-import { chooseTargets, parseAttachmentList, SmokeRun, SmokeSetupError } from "../server/smoke/run.ts";
+import { chooseTargets, inlineKind, parseAttachmentList, SKIPPED_WOULD_SAVE, SmokeRun, SmokeSetupError } from "../server/smoke/run.ts";
 import { HAS_AGENTS } from "./e2e/features.ts";
 import { type Stack, startStack } from "./e2e/harness.ts";
 import { startFakeMcpUpstream } from "./fake-mcp-upstream.ts";
 import { type FakeWorkspace, fakeWorkspace } from "./fake-workspace.ts";
 
+// attachmentDirs refuses directories holding the home directory's secret places: give the tests a temporary home.
+process.env.HOME = mkdtempSync(join(tmpdir(), "xaq-smoke-home-"));
+for (const v of ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]) delete process.env[v];
+
 const EMAIL = "wynn@acme.test";
+const IDENTITY = ["openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"];
 const SECRETS = ["TOP-SECRET-DOC-CONTENT", "TOP-SECRET-SHEET-CONTENT", "TOP-SECRET-SLIDE-CONTENT", "EMAIL-BODY-SECRET", "ATTACHMENT-SECRET"];
 const cleanup: (() => Promise<unknown> | unknown)[] = [];
 afterEach(async () => {
   for (const fn of cleanup.splice(0).reverse()) await fn();
 });
 
-// ───────────── The A1/A2 stand-ins (inactive once the daemon has them) ─────────────
+// ───────────── The A2 stand-in (inactive once the daemon has list_attachments) ─────────────
 
-interface Shims {
-  /** attachmentDirs as the shim keeps it (null when the daemon has the real setting). */
-  dirs: () => string[] | null;
+interface McpKnobs {
+  /** get_attachment answers these file names with A2's "saved to disk" shape. */
+  savedFor: Set<string>;
+  /** Every get_attachment call the run made (file names). */
+  extracted: string[];
+  /** create_draft makes the draft, but its answer is lost (the run never learns the draft id). */
+  dropDraftAnswer: boolean;
 }
 
-function shimAdmin(channel: AdminChannel): Pick<AdminChannel, "request" | "baseUrl"> & Shims {
-  let native: boolean | null = null;
-  let dirs: string[] = [];
-  return {
-    baseUrl: channel.baseUrl,
-    dirs: () => (native === false ? dirs : null),
-    async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-      if (path === "/api/settings") {
-        native ??= Array.isArray((await channel.request<{ attachmentDirs?: unknown }>("GET", path)).attachmentDirs);
-        if (!native) {
-          let rest = body as Record<string, unknown> | undefined;
-          if (method === "PATCH" && rest && "attachmentDirs" in rest) {
-            const { attachmentDirs, ...others } = rest;
-            dirs = [...(attachmentDirs as string[])];
-            rest = others;
-          }
-          const r = method === "PATCH" && rest && Object.keys(rest).length ? await channel.request<object>(method, path, rest) : await channel.request<object>("GET", path);
-          return { ...r, attachmentDirs: [...dirs] } as T;
-        }
-      }
-      return channel.request<T>(method, path, body);
-    },
-  };
-}
-
-function shimMcp(mcp: AgentMcp, ws: FakeWorkspace, shims: Shims): AgentMcp {
+function shimMcp(mcp: AgentMcp, knobs: McpKnobs): AgentMcp {
   let natives: Set<string> | null = null;
   const listed = async () => (natives ??= new Set(await mcp.listTools()));
-  const text = (t: string, isError = false): CallOutcome => ({ isError, text: t, structured: null, content: [{ type: "text", text: t }] });
+  const names = new Map<string, string>();
   return {
     async listTools() {
-      const names = [...(await listed())];
-      return names.includes("list_attachments") ? names : [...names, "list_attachments"];
+      const all = [...(await listed())];
+      return all.includes("list_attachments") ? all : [...all, "list_attachments"];
     },
     async call(name, args) {
       const have = await listed();
       if (name === "list_attachments" && !have.has("list_attachments")) {
         const m = await mcp.call("get_message", args);
-        const line = /^Attachments: .*$/m.exec(m.text.split("<email_content ")[0] ?? "")?.[0];
-        return line ? text(line) : text("No attachments.", m.isError);
+        const head = m.text.split("<email_content ")[0] ?? "";
+        const items = parseAttachmentList({ ...m, text: /^Attachments: .*$/m.exec(head)?.[0] ?? "", structured: null });
+        for (const a of items) names.set(a.id, a.filename);
+        const attachments = items.map((a) => ({ messageId: args.message_id, attachmentId: a.id, filename: a.filename, mimeType: a.mimeType, size: a.size }));
+        const text = `${attachments.length} attachments`;
+        return { isError: false, text, structured: { attachments }, content: [{ type: "text", text }] };
       }
-      const dirs = shims.dirs();
-      if (name === "create_draft" && dirs && Array.isArray(args.attachments)) {
-        const items = [];
-        for (const a of args.attachments as Record<string, unknown>[]) {
-          if (typeof a.path === "string") {
-            const abs = resolve(a.path);
-            if (!dirs.some((d) => abs.startsWith(resolve(d) + sep))) return text(`${a.path} isn't in an allowed attachment directory (attachmentDirs).`, true);
-            items.push({ filename: basename(abs), content_base64: readFileSync(abs).toString("base64") });
-          } else if (typeof a.drive_file_id === "string") {
-            const pdf = ws.exportPdf(a.drive_file_id);
-            items.push({ filename: pdf.filename, mime_type: "application/pdf", content_base64: pdf.bytes.toString("base64") });
-          } else items.push(a);
+      if (name === "create_draft" && knobs.dropDraftAnswer) {
+        await mcp.call(name, args);
+        const text = "The connection dropped before the answer arrived.";
+        return { isError: true, text, structured: null, content: [{ type: "text", text }] };
+      }
+      if (name === "get_attachment") {
+        const filename = names.get(String(args.attachment_id)) ?? "?";
+        knobs.extracted.push(filename);
+        if (knobs.savedFor.has(filename)) {
+          const savedPath = `/home/wynn/.xaq/attachments/${filename}`;
+          const text = `Attachment ${filename}\nCouldn't read this PDF.\nSaved at: ${savedPath}`;
+          return { isError: false, text, structured: { attachment: { filename, savedPath } }, content: [{ type: "text", text }] };
         }
-        return mcp.call(name, { ...args, attachments: items });
       }
       return mcp.call(name, args);
     },
@@ -106,23 +96,38 @@ interface World {
   ws: FakeWorkspace;
   account: Account;
   connection: ConnectionView;
-  admin: Pick<AdminChannel, "request" | "baseUrl"> & Shims;
+  admin: Pick<AdminChannel, "request" | "baseUrl">;
   out: string[];
   controller: AbortController;
   tmpRoot: string;
+  knobs: McpKnobs;
   run: (flags?: Record<string, unknown>) => SmokeRun;
 }
 
-async function world(): Promise<World> {
+/** Connects `address` through the console API and the fake consent screen, granting exactly `scopes`. */
+async function connectWith(s: Stack, address: string, scopes: string[]): Promise<Account> {
+  s.fake.addAccount(address, { name: "Wynn" });
+  const start = await s.admin.post<ConnectAccountResponse>("/api/accounts/connect", {});
+  s.fake.consentAs(address, { scopes });
+  const consent = await fetch(start.authUrl, { redirect: "manual" });
+  const location = consent.headers.get("location");
+  if (consent.status !== 302 || !location) throw new Error(`fake consent failed: HTTP ${consent.status}`);
+  if (start.callbackMode === "paste") return s.admin.post<Account>("/api/accounts/connect/complete", { url: location });
+  expect((await fetch(location)).status).toBe(200);
+  return (await s.admin.get<Account[]>("/api/accounts")).find((a) => a.email === address)!;
+}
+
+async function world(opts: { attachments?: { filename: string; mimeType: string; content: string | Buffer }[] } = {}): Promise<World> {
   const s = await startStack();
   cleanup.push(() => s.close());
-  const [account] = (await s.bootstrap({ accounts: [{ email: EMAIL, name: "Wynn" }] })) as [Account];
+  await s.bootstrap({});
+  const account = await connectWith(s, EMAIL, [GMAIL_SCOPE, ...IDENTITY, DRIVE_READONLY_SCOPE]);
   await s.admin.patch("/api/settings", { brokerUpstreams: true });
   s.fake.deliver(EMAIL, {
     from: "Landlord <leasing@offices.test>",
     subject: "Lease papers",
     text: "EMAIL-BODY-SECRET: the papers are attached.",
-    attachments: [
+    attachments: opts.attachments ?? [
       { filename: "lease.pdf", mimeType: "application/pdf", content: Buffer.from("%PDF-1.4 ATTACHMENT-SECRET-PDF") },
       { filename: "notes.txt", mimeType: "text/plain", content: "ATTACHMENT-SECRET-TEXT" },
     ],
@@ -130,27 +135,34 @@ async function world(): Promise<World> {
   s.kick(account.id);
 
   const ws = fakeWorkspace();
+  // The extension and Gmail's Drive reads see one Drive: new Google Docs appear in the fake Google's Drive too.
+  ws.hooks.onCreate = (f) => {
+    if (f.kind === "doc") s.fake.drive.addFile(EMAIL, { id: f.id, name: f.name, mimeType: f.mimeType });
+  };
   const up = await startFakeMcpUpstream({ tools: ws.tools });
   cleanup.push(() => up.close());
   const conn = await s.admin.post<ConnectionView>("/api/connections", { url: up.url, slug: "workspace", name: "Google Workspace", levelDefault: "ask", agentIds: [] });
   await s.admin.put(`/api/connections/${conn.id}/private-target`, { allow: true });
   await s.admin.post(`/api/connections/${conn.id}/connect`, {});
+  // What the extension's Google setup leaves: a google-workspace connection bound to the account.
+  s.ctx.db.run("UPDATE connections SET preset = ?, google_account_id = ? WHERE id = ?", GOOGLE_WORKSPACE_EXTENSION, account.id, conn.id);
   const connection = await s.admin.get<ConnectionView>(`/api/connections/${conn.id}`);
   expect(connection.status).toBe("active");
 
   const channel = openAdminChannel({ dataDir: s.dataDir, instance: { pid: process.pid, host: "127.0.0.1", port: s.config.port, startedAt: "" } });
   cleanup.push(() => channel.close());
-  const admin = shimAdmin(channel);
+  const admin = channel;
   const out: string[] = [];
   const controller = new AbortController();
   const tmpRoot = mkdtempSync(join(tmpdir(), "xaq-smoke-test-"));
   cleanup.push(() => rmSync(tmpRoot, { recursive: true, force: true }));
+  const knobs: McpKnobs = { savedFor: new Set(), extracted: [], dropDraftAnswer: false };
   const run = (flags: Record<string, unknown> = {}) =>
     new SmokeRun(
       { scratch: true, yes: true, connection: "workspace", ...flags },
       {
         admin,
-        connectMcp: async (key) => shimMcp(await connectAgentMcp(admin.baseUrl, key), ws, admin),
+        connectMcp: async (key) => shimMcp(await connectAgentMcp(admin.baseUrl, key), knobs),
         print: (l = "") => out.push(l),
         confirm: async () => true,
         signal: controller.signal,
@@ -158,7 +170,7 @@ async function world(): Promise<World> {
         pollMs: 10,
       },
     );
-  return { s, ws, account, connection, admin, out, controller, tmpRoot, run };
+  return { s, ws, account, connection, admin, out, controller, tmpRoot, knobs, run };
 }
 
 /** Nothing of the run is left in xaq, Gmail, Drive or on disk. */
@@ -221,8 +233,100 @@ describe.runIf(HAS_AGENTS)("xaq smoke google-workspace", () => {
     expect(printed).toContain('subject "Lease papers"');
     expect(printed).toContain('"lease.pdf"');
     expect(printed).toMatch(/text, \d+ chars/);
+    expect(w.knobs.extracted).toEqual(["lease.pdf", "notes.txt"]);
+    // The local file lived in a private 0700 directory, not the shared temp dir.
+    const privateDir = join(w.tmpRoot, "xaq-smoke");
+    expect(run.ledger.tempDir!.startsWith(`${privateDir}/xaq-smoke-`)).toBe(true);
+    expect(statSync(privateDir).mode & 0o777).toBe(0o700);
+    expect(report.earlier).toEqual([]);
+    expect(report.steps.find((s) => s.step === "sweep earlier runs' leftovers")!.detail).toBe(
+      "0 agent(s) deleted, 0 attachmentDirs entries removed, 0 temp dir(s) removed, 0 draft(s) to check",
+    );
     expectOnlyScratchWrites(w, run);
     await expectClean(w, run);
+  });
+
+  it("extracts only attachments get_attachment shows inline: anything it would save to disk is skipped", async () => {
+    const w = await world({
+      attachments: [
+        { filename: "photos.zip", mimeType: "application/zip", content: Buffer.from("PK\u0003\u0004 ATTACHMENT-SECRET") },
+        { filename: "setup.bin", mimeType: "application/octet-stream", content: Buffer.from("ATTACHMENT-SECRET") },
+        { filename: "notes.txt", mimeType: "text/plain", content: "ATTACHMENT-SECRET-TEXT" },
+      ],
+    });
+    const report = await w.run().run();
+    expect(report.steps.filter((s) => s.tool === "get_attachment").map((s) => `${s.step}: ${s.status} ${s.detail}`)).toEqual([
+      `extract "photos.zip": PASS ${SKIPPED_WOULD_SAVE}`,
+      `extract "setup.bin": PASS ${SKIPPED_WOULD_SAVE}`,
+      expect.stringMatching(/^extract "notes.txt": PASS text: text, \d+ chars$/),
+    ]);
+    expect(w.knobs.extracted).toEqual(["notes.txt"]);
+    expect(report.ok).toBe(true);
+  });
+
+  it("a get_attachment answer that saved the file anyway fails the step and lists the saved copy", async () => {
+    const w = await world();
+    w.knobs.savedFor.add("lease.pdf");
+    const report = await w.run().run();
+    const step = report.steps.find((s) => s.step === 'extract "lease.pdf"')!;
+    expect(step.status).toBe("FAIL");
+    expect(step.detail).toContain("saved");
+    expect(report.leftBehind).toEqual(['A copy of the email attachment "lease.pdf" was saved at /home/wynn/.xaq/attachments/lease.pdf: delete it.']);
+    expect(report.ok).toBe(false);
+  });
+
+  it("sweeps earlier runs first: their agents deleted, their temp dirs out of attachmentDirs, their drafts and folders listed", async () => {
+    const w = await world();
+    // An earlier run that died: its agent, a draft it made, its temp dir in attachmentDirs and on disk, its folder.
+    const old = await w.admin.request<AgentWithKey>("POST", "/api/smoke/agents", { name: "xaq-smoke-20250101T000000Z", accountId: w.account.id, connectionId: w.connection.id });
+    const oldMcp = await connectAgentMcp(w.admin.baseUrl, old.apiKey);
+    cleanup.push(() => oldMcp.close());
+    const oldDraft = JSON.parse((await oldMcp.call("create_draft", { to: [EMAIL], subject: "[xaq-smoke-20250101T000000Z] old", body: "x" })).text) as { draftId: string };
+    const oldDir = join(w.tmpRoot, "xaq-smoke", "xaq-smoke-20250101T000000Z-abc123");
+    mkdirSync(oldDir, { recursive: true });
+    const keep = mkdtempSync(join(w.tmpRoot, "outgoing-"));
+    await w.admin.request("PATCH", "/api/settings", { attachmentDirs: [keep, oldDir] });
+    const folder = w.ws.addFile({ name: "xaq-smoke-20250101T000000Z", kind: "folder" });
+
+    const run = w.run();
+    const report = await run.run();
+    expect(report.steps.find((s) => s.step === "sweep earlier runs' leftovers")!.detail).toBe(
+      "1 agent(s) deleted (xaq-smoke-20250101T000000Z), 1 attachmentDirs entry removed, 1 temp dir(s) removed, 1 draft(s) to check",
+    );
+    expect(report.earlier).toEqual([
+      `An earlier run's (xaq-smoke-20250101T000000Z) draft ${oldDraft.draftId} is still in ${EMAIL}: check it in Gmail (Drafts) and delete it.`,
+      `An earlier run's Drive folder "xaq-smoke-20250101T000000Z" (${folder.id}) isn't in the trash: check it and trash it.`,
+    ]);
+    expect(renderReport(report).join("\n")).toContain("From earlier runs (check these)");
+    // Not this run's doing: it still passes, and the owner's own attachment dir stays.
+    expect(report.leftBehind).toEqual([]);
+    expect(report.ok).toBe(true);
+    expect(existsSync(oldDir)).toBe(false);
+    expect((await w.admin.request<{ attachmentDirs: string[] }>("GET", "/api/settings")).attachmentDirs).toEqual([keep]);
+    expect((await w.s.admin.get<{ name: string }[]>("/api/agents")).filter((a) => a.name.startsWith("xaq-smoke-"))).toEqual([]);
+    // Reported, never deleted, and never touched.
+    expect(w.s.fake.drafts(EMAIL).map((d) => d.id)).toEqual([oldDraft.draftId]);
+    expect(w.ws.isTrashed(folder.id)).toBe(false);
+  });
+
+  it("the leftover check finds creates the run never recorded: a Drive file with its name, a draft from the audit log", async () => {
+    const w = await world();
+    // A sheet created outside the folder whose answer got lost, and a draft whose answer got lost.
+    w.ws.fault("sheets_create", (a) => {
+      w.ws.addFile({ name: String(a.title), kind: "sheet" });
+      throw new Error("the answer got lost");
+    });
+    w.knobs.dropDraftAnswer = true;
+    const run = w.run();
+    const report = await run.run();
+    const drafts = w.s.fake.drafts(EMAIL);
+    expect(drafts).toHaveLength(1);
+    const lost = [...w.ws.files.values()].find((f) => f.name === `${run.ledger.marker} sheet`)!;
+    expect(report.leftBehind).toEqual([
+      `Drive sheet "${run.ledger.marker} sheet" (${lost.id}) carries this run's name and isn't in the trash: check it and trash it.`,
+      `The draft ${drafts[0]!.id} still exists in ${EMAIL}: delete it in Gmail (Drafts).`,
+    ]);
+    expect(report.ok).toBe(false);
   });
 
   it("an injected failure mid-run: the rest still runs, cleanup still happens, and the run fails", async () => {
@@ -287,7 +391,10 @@ describe.runIf(HAS_AGENTS)("xaq smoke google-workspace", () => {
     for (const t of ["docs_append", "docs_replace_text", "docs_comment_add"]) expect(statusOf(report, t)).toEqual(["SKIP"]);
     expect(w.ws.calls.filter((c) => c.tool in WRITE_TARGETS && Object.values(c.args).includes("doc-existing"))).toEqual([]);
     expectOnlyScratchWrites(w, run);
-    expect(report.leftBehind).toEqual([`Drive doc "${run.ledger.marker} doc" (doc-existing) was created outside the scratch folder: check Drive and remove it.`]);
+    // Its real name, and a warning that it may be the owner's file.
+    expect(report.leftBehind).toEqual([
+      `Drive doc "Quarterly plan" (doc-existing) came back from a create call but isn't in the scratch folder. It may be an existing file: check it before removing anything.`,
+    ]);
     expect(report.ok).toBe(false);
     const agents = await w.s.admin.get<{ name: string }[]>("/api/agents");
     expect(agents.filter((a) => a.name.startsWith("xaq-smoke-"))).toEqual([]);
@@ -346,6 +453,11 @@ describe.runIf(HAS_AGENTS)("xaq smoke google-workspace", () => {
     // The smoke agent can't be named anything else, and deleting it removes its tool-mode setting.
     await expect(w.admin.request("POST", "/api/smoke/agents", { name: "hermes-2", accountId: w.account.id, connectionId: w.connection.id })).rejects.toThrow(/xaq-smoke/);
     expect(w.s.ctx.db.get("SELECT 1 AS x FROM settings WHERE key = ?", `broker.search:${smoke.agent.id}`)).toBeDefined();
+    // The leftover check without an agent of its own still lists every smoke agent, and finds drafts in the audit log.
+    const noAgent = await w.admin.request<{ otherSmokeAgents: { name: string }[]; agent: boolean }>("POST", "/api/smoke/leftovers", { agentId: null, accountId: w.account.id, draftIds: [] });
+    expect(noAgent).toMatchObject({ agent: false, otherSmokeAgents: [{ name: "xaq-smoke-20261019T000000Z" }] });
+    const viaAudit = await w.admin.request<{ drafts: string[] }>("POST", "/api/smoke/leftovers", { agentId: smoke.agent.id, accountId: w.account.id, draftIds: [] });
+    expect(viaAudit.drafts).toEqual([own.draftId]);
     await w.admin.request("DELETE", `/api/agents/${smoke.agent.id}`);
     expect(w.s.ctx.db.get("SELECT 1 AS x FROM settings WHERE key = ?", `broker.search:${smoke.agent.id}`)).toBeUndefined();
   });
@@ -387,6 +499,10 @@ describe("the smoke run's guards", () => {
     await expect(guard.checkWrite("slides_insert_image", { presentationId: "doc1", slideId: "s", driveFileId: "doc-existing" })).rejects.toThrow(/driveFileId/);
     await expect(guard.checkWrite("docs_overwrite", { documentId: "doc1" })).rejects.toThrow(/isn't one of the writes/);
     await expect(guard.checkWrite("drive_create_folder", { name: folder.name })).rejects.toThrow(/already exists/);
+    // Every file argument is required (a missing one is never "no target"), except driveFileId.
+    await expect(guard.checkWrite("docs_append", { markdown: "x" })).rejects.toThrow(/documentId must be a file id/);
+    await expect(guard.checkWrite("slides_delete_slide", { slideId: "s" })).rejects.toThrow(/presentationId must be a file id/);
+    await guard.checkWrite("slides_insert_image", { presentationId: "doc1", slideId: "s", imageUrl: "https://x.test/a.png" });
   });
 
   it("refuses everything when there is no scratch folder", async () => {
@@ -412,6 +528,11 @@ describe("the smoke run's guards", () => {
     await expect(guard.checkDraft({ ...ok, attachments: [{ path: "/tmp/xaq-smoke-abc/../x" }] }, EMAIL)).rejects.toThrow(/temp dir/);
     await expect(guard.checkDraft({ ...ok, attachments: [{ drive_file_id: "doc-existing" }] }, EMAIL)).rejects.toThrow(/isn't a file this run created/);
     await expect(guard.checkDraft({ ...ok, attachments: [{ message_id: "m", attachment_id: "a" }] }, EMAIL)).rejects.toThrow(/temp-dir file or a scratch-folder file/);
+    // Exactly one source per item, and nothing else riding along.
+    await expect(guard.checkDraft({ ...ok, attachments: [{ path: "/tmp/xaq-smoke-abc/f.txt", drive_file_id: "doc-existing" }] }, EMAIL)).rejects.toThrow(/exactly one source, not path \+ drive_file_id/);
+    await expect(guard.checkDraft({ ...ok, attachments: [{ drive_file_id: "doc1", content_base64: "eA==" }] }, EMAIL)).rejects.toThrow(/exactly one source/);
+    await expect(guard.checkDraft({ ...ok, attachments: [{ export_as: "pdf" }] }, EMAIL)).rejects.toThrow(/exactly one source, not none/);
+    await expect(guard.checkDraft({ ...ok, attachments: [{ path: "/tmp/xaq-smoke-abc/f.txt", to: "bob@else.test" }] }, EMAIL)).rejects.toThrow(/unexpected attachment keys to/);
   });
 });
 
@@ -433,57 +554,150 @@ describe("the smoke command's setup", () => {
     expect(() => chooseTargets({}, [acc(EMAIL)], [conn({ grantedScopes: ["https://www.googleapis.com/auth/documents"] })], "https://x.test")).toThrow(
       /missing Google permissions: spreadsheets, presentations, drive.file, drive.readonly.*connections\/con_1/,
     );
-    // C's view: google.missing says it directly.
-    const lacking = conn({ google: { email: EMAIL, accountId: "acc_1", scopes: [], granted: [], missing: ["https://www.googleapis.com/auth/presentations"] } } as unknown as Partial<ConnectionView>);
-    expect(() => chooseTargets({}, [acc(EMAIL)], [lacking], "https://x.test")).toThrow(/missing Google permissions: presentations\. .*connections\/con_1/);
-    const complete = conn({ google: { email: EMAIL, accountId: "acc_1", scopes: [], granted: [], missing: [] } } as unknown as Partial<ConnectionView>);
+    // C's view: google.missing lists { scope, grants, without }.
+    const lacking = conn({
+      google: {
+        email: EMAIL,
+        accountId: "acc_1",
+        scopes: [],
+        granted: [],
+        missing: [
+          { scope: "https://www.googleapis.com/auth/presentations", grants: "Edit Slides", without: "Slides tools fail" },
+          { scope: "https://www.googleapis.com/auth/drive.file", grants: "Create files", without: null },
+        ],
+      },
+    });
+    expect(() => chooseTargets({}, [acc(EMAIL)], [lacking], "https://x.test")).toThrow(/missing Google permissions: presentations, drive\.file\. .*connections\/con_1/);
+    const complete = conn({ google: { email: EMAIL, accountId: "acc_1", scopes: [], granted: [], missing: [] } });
     expect(chooseTargets({}, [acc(EMAIL)], [complete], "https://x.test").connection.id).toBe("con_1");
     expect(() => chooseTargets({}, [acc(EMAIL, "needs_reauth")], [conn({})], "https://x.test")).toThrow(/needs reauth.*\/accounts/);
     expect(() => chooseTargets({ connection: "nope" }, [acc(EMAIL)], [conn({})], "https://x.test")).toThrow(/No connection "nope"/);
   });
 
   it("uses the Google account the connection is signed in as, and refuses a mismatch", () => {
-    const bound = conn({ google: { email: "b@x.test", accountId: "acc_b", scopes: [], granted: [], missing: [] } } as unknown as Partial<ConnectionView>);
+    const bound = conn({ google: { email: "b@x.test", accountId: "acc_b", scopes: [], granted: [], missing: [] } });
     expect(chooseTargets({}, [acc(EMAIL), acc("b@x.test")], [bound], "https://x.test").account.email).toBe("b@x.test");
     expect(() => chooseTargets({ account: EMAIL }, [acc(EMAIL), acc("b@x.test")], [bound], "https://x.test")).toThrow(/signed in as b@x.test/);
     // Not bound yet (google.email null): the usual default applies.
-    const unbound = conn({ google: { email: null, missing: [] } } as unknown as Partial<ConnectionView>);
+    const unbound = conn({ google: { email: null, accountId: null, scopes: [], granted: [], missing: [] } });
     expect(chooseTargets({}, [acc(EMAIL)], [unbound], "https://x.test").account.email).toBe(EMAIL);
   });
 
-  it("reads list_attachments' structured list or its text lines", () => {
+  it("reads list_attachments' structured list (A2) or its text lines, with types and sizes", () => {
     const t = (text: string): CallOutcome => ({ isError: false, text, structured: null, content: [] });
     expect(parseAttachmentList(t("Attachments: a b.pdf (application/pdf, 2 KB, attachment_id: A1); c.txt (text/plain, 10 B, attachment_id: A2)"))).toEqual([
-      { filename: "a b.pdf", id: "A1" },
-      { filename: "c.txt", id: "A2" },
+      { filename: "a b.pdf", mimeType: "application/pdf", size: 2048, id: "A1" },
+      { filename: "c.txt", mimeType: "text/plain", size: 10, id: "A2" },
     ]);
-    expect(parseAttachmentList(t("2 attachments:\n- x.png (image/png, 1 KB, attachment_id: X)\n- y.csv (text/csv, 1 KB, attachment_id: Y)"))).toEqual([
-      { filename: "x.png", id: "X" },
-      { filename: "y.csv", id: "Y" },
+    expect(parseAttachmentList(t("2 attachments:\n- x.png (image/png, 1 KB) · message_id: m · attachment_id: X · 2026-10-01\n- y.csv (text/csv, 1.5 MB) · message_id: m · attachment_id: Y"))).toEqual([
+      { filename: "x.png", mimeType: "image/png", size: 1024, id: "X" },
+      { filename: "y.csv", mimeType: "text/csv", size: 1572864, id: "Y" },
     ]);
-    expect(parseAttachmentList({ ...t(""), structured: { attachments: [{ attachment_id: "Z", filename: "z.pdf" }] } })).toEqual([{ filename: "z.pdf", id: "Z" }]);
+    expect(parseAttachmentList({ ...t(""), structured: { attachments: [{ attachmentId: "Z", filename: "z.pdf", mimeType: "application/pdf", size: 9 }] } })).toEqual([
+      { filename: "z.pdf", mimeType: "application/pdf", size: 9, id: "Z" },
+    ]);
   });
 
-  it("Ctrl-C: the first stops the run (cleanup follows), the second quits and says what may be left", () => {
+  it("extracts only what get_attachment shows inline (A2's kinds and caps); anything it would save is skipped", () => {
+    const k = (filename: string, mimeType: string, size = 1000) => inlineKind({ filename, mimeType, size });
+    expect([k("a.pdf", "application/pdf"), k("a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"), k("a.xlsx", "application/octet-stream")]).toEqual(["pdf", "docx", "xlsx"]);
+    expect([k("a.csv", "text/csv"), k("a.pptx", "application/zip"), k("a.txt", "text/plain"), k("a.html", "text/html"), k("a.md", "application/octet-stream")]).toEqual(["csv", "pptx", "text", "html", "text"]);
+    expect(k("a.png", "image/png")).toBe("image");
+    // Saved by get_attachment: other types, images at or over 5 MB, documents at or over 25 MB, unknown sizes.
+    expect([k("a.zip", "application/zip"), k("a.exe", "application/x-msdownload"), k("a.heic", "image/heic"), k("noext", "application/octet-stream")]).toEqual([null, null, null, null]);
+    expect(k("big.png", "image/png", 5 * 1024 * 1024)).toBeNull();
+    expect(k("big.pdf", "application/pdf", 25 * 1024 * 1024)).toBeNull();
+    expect(k("a.pdf", "application/pdf", Number.NaN)).toBeNull();
+    expect(k("huge.txt", "text/plain", 500 * 1024 * 1024)).toBe("text");
+  });
+
+  const handler = (sig: "SIGINT" | "SIGTERM" | "SIGHUP", before: Set<unknown>) => process.listeners(sig).find((l) => !before.has(l)) as () => void;
+
+  it("Ctrl-C: the first stops the run (cleanup follows); the second runs the quick cleanup, says what's left and quits", async () => {
     const controller = new AbortController();
     const printed: string[] = [];
     const exits: number[] = [];
+    let fast = 0;
     const before = new Set(process.listeners("SIGINT"));
-    const remove = installSmokeSignals(controller, { print: (l) => printed.push(l), exit: (c) => exits.push(c), leftovers: () => "These may be left: the agent xaq-smoke-x." });
+    const remove = installSmokeSignals(controller, {
+      print: (l) => printed.push(l),
+      exit: (c) => exits.push(c),
+      fastCleanup: async () => {
+        fast++;
+      },
+      leftovers: () => "These may be left: the Drive folder xaq-smoke-x.",
+    });
     try {
-      const ours = process.listeners("SIGINT").find((l) => !before.has(l))!;
-      expect(ours).toBeDefined();
-      (ours as () => void)();
+      const ours = handler("SIGINT", before);
+      ours();
       expect(controller.signal.aborted).toBe(true);
       expect(exits).toEqual([]);
       expect(printed.join("\n")).toContain("cleaning up");
-      (ours as () => void)();
+      ours();
+      ours(); // a third press while quitting changes nothing
+      await new Promise((r) => setTimeout(r, 10));
+      expect(fast).toBe(1);
       expect(exits).toEqual([130]);
-      expect(printed.join("\n")).toContain("These may be left: the agent xaq-smoke-x.");
+      expect(printed.join("\n")).toContain("deleting the temporary agent and restoring attachmentDirs first");
+      expect(printed.join("\n")).toContain("These may be left: the Drive folder xaq-smoke-x.");
     } finally {
       remove();
     }
     expect(process.listeners("SIGINT").filter((l) => !before.has(l))).toEqual([]);
+  });
+
+  it("the second Ctrl-C quits within its bound even when the quick cleanup hangs", async () => {
+    const exits: number[] = [];
+    const before = new Set(process.listeners("SIGINT"));
+    const remove = installSmokeSignals(new AbortController(), { print: () => {}, exit: (c) => exits.push(c), fastCleanup: () => new Promise(() => {}), leftovers: () => "", quitWithinMs: 20 });
+    try {
+      const ours = handler("SIGINT", before);
+      ours();
+      ours();
+      await new Promise((r) => setTimeout(r, 60));
+      expect(exits).toEqual([130]);
+    } finally {
+      remove();
+    }
+  });
+
+  it("SIGTERM and SIGHUP act like the first Ctrl-C, however often: they stop the run and never skip its cleanup", () => {
+    for (const sig of ["SIGTERM", "SIGHUP"] as const) {
+      const controller = new AbortController();
+      const exits: number[] = [];
+      const before = new Set(process.listeners(sig));
+      const remove = installSmokeSignals(controller, { print: () => {}, exit: (c) => exits.push(c), fastCleanup: async () => {}, leftovers: () => "" });
+      try {
+        const ours = handler(sig, before);
+        ours();
+        ours();
+        ours();
+        expect(controller.signal.aborted).toBe(true);
+        expect(exits).toEqual([]);
+      } finally {
+        remove();
+      }
+    }
+  });
+
+  it("printing can't kill the run: a terminal that went away (EIO) drops the lines", async () => {
+    const { Writable } = await import("node:stream");
+    let writes = 0;
+    const tty = new Writable({
+      write(_chunk, _enc, cb) {
+        writes++;
+        cb(Object.assign(new Error("write EIO"), { code: "EIO" }));
+      },
+    });
+    const w = safeWriter(tty);
+    w.print("one");
+    await new Promise((r) => setTimeout(r, 5));
+    expect(() => w.print("two")).not.toThrow();
+    expect(writes).toBe(1);
+    const throwing = { on: () => throwing, removeListener: () => throwing, write: () => { throw new Error("EIO"); } } as unknown as NodeJS.WritableStream;
+    const t = safeWriter(throwing);
+    expect(() => t.print("x")).not.toThrow();
+    w.dispose();
   });
 
   it("refuses without --scratch before touching the daemon", async () => {

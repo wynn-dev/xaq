@@ -264,7 +264,8 @@ export function parseAttachmentList(out: CallOutcome): ListedAttachment[] {
   }
   const found: ListedAttachment[] = [];
   for (const segment of out.text.split(/;|\n/)) {
-    const m = /^\s*(?:Attachments:\s*)?(?:[-*]|\d+\.)?\s*(.+?) \(([^,()]*), ([^,()]*)[^()]*?attachment_id: ([^)\s;·]+)/.exec(segment);
+    // "name (type, size, attachment_id: X)" (get_message) or "- name (type, size) · message_id: … · attachment_id: X" (A2).
+    const m = /^\s*(?:Attachments:\s*)?(?:[-*]|\d+\.)?\s*(.+?) \(([^,()]+), ([^,()]+?)(?:,[^()]*?)?(?:\)[^()]*?)?attachment_id: ([^)\s;·]+)/.exec(segment);
     if (m) found.push({ filename: m[1]!.trim(), mimeType: m[2]!.trim(), size: sizeOf(m[3]!), id: m[4]! });
   }
   return found;
@@ -306,7 +307,12 @@ export function privateSmokeDir(root?: string): string {
 
 /** Waits for `p` at most `ms`; the timeout wins silently. */
 const within = <T>(p: Promise<T>, ms: number): Promise<T | undefined> =>
-  Promise.race([p, new Promise<undefined>((r) => setTimeout(r, ms).unref?.())]);
+  Promise.race([
+    p,
+    new Promise<undefined>((r) => {
+      setTimeout(() => r(undefined), ms).unref?.();
+    }),
+  ]);
 
 export class SmokeRun {
   readonly marker: string;

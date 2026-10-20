@@ -189,16 +189,32 @@ xaq smoke google-workspace --scratch [--account <email>] [--connection <slug>] [
 - **A temporary agent** `xaq-smoke-<UTC timestamp>` runs it, through `/mcp` like any agent; its key is held in
   memory only. The agent gets the account with `read` and `draft` only (draft-only send mode, no send, organize or
   trash) and the Workspace connection at "ask", so risky calls really wait for approval. It inherits nothing else and
-  lists every tool directly. It is deleted when the run ends, also after a failure or Ctrl-C.
+  lists every tool directly. It is deleted when the run ends, also after a failure, Ctrl-C, SIGTERM or SIGHUP.
 
 What it does, in order (tool names as the extension lists them; agents see `<slug>__<name>`):
 
+0. **Earlier runs.** First the daemon sweeps what earlier runs left:
+   - their `xaq-smoke-*` agents are deleted;
+   - their temp dirs are taken out of `attachmentDirs`, and their leftover dirs in the private smoke directory are
+     removed.
+
+   Their drafts that still exist (found in the audit log), and `xaq-smoke-*` folders in Drive that aren't in the
+   trash, are listed under **From earlier runs (check these)**. They are never deleted for you, and they don't fail
+   this run.
 1. **Reads.** These print names, the subject, kinds and sizes, never content.
    - Drive: `drive_search` for the newest Doc, Sheet and Slides file, then `drive_list_folder` on the top of My
      Drive. For each file: `drive_get`, then `docs_read`, `sheets_read` or `slides_read`, then `drive_export` (as
      markdown, csv or text).
    - Gmail: `search_threads` (`has:attachment`) and `get_thread`/`get_message` pick ONE email with attachments.
-     Then `list_attachments`, and `get_attachment` extracts each attachment.
+     Then `list_attachments`, and `get_attachment` extracts each attachment it shows inline. The run decides that
+     from the listed type and size:
+     - PDF, DOCX, XLSX, PPTX and CSV under 25 MB;
+     - images (PNG, JPEG, GIF, WebP) under 5 MB;
+     - text and HTML.
+
+     Anything else would be saved to disk on xaq's machine, so it is never requested; the table says "skipped (would
+     be saved to disk)". If an answer still carries a saved path, the step fails and the path is listed under Left
+     behind.
 2. **Scratch folder.** `drive_create_folder` creates `xaq-smoke-<ts>` at the top of My Drive. If that fails, nothing
    is written.
 3. **Docs.** `docs_create` from markdown, in the folder. Then `docs_append`, `docs_replace_text` (exactly 2 matches),
@@ -216,7 +232,9 @@ What it does, in order (tool names as the extension lists them; agents see `<slu
      the image.
    - `slides_delete_slide` must come back pending. The command approves it and checks that the slide is gone.
 6. **Draft.**
-   - The command writes a file into a new temp dir and adds that dir to `attachmentDirs`.
+   - The command writes a file into a new temp dir and adds that dir to `attachmentDirs`. The temp dir sits in a
+     private directory, `$XDG_CACHE_HOME/xaq-smoke` (default `~/.cache/xaq-smoke`), mode 0700, never the shared
+     `/tmp`.
    - `create_draft` makes ONE draft addressed to the account's own address. It has two attachments: the temp file
      (`{ path }`) and the scratch doc as PDF (`{ drive_file_id, export_as: "pdf" }`).
    - The daemon checks the draft: the recipient, 2 attachments, names and sizes. Then it deletes the draft.
@@ -230,10 +248,13 @@ What it does, in order (tool names as the extension lists them; agents see `<slu
 - Before every write, the target must be the scratch folder itself, or a file this run created whose parents
   (`drive_get`) include the folder. This covers files passed as arguments too, such as `driveFileId` and the
   draft's `drive_file_id`.
-- A create call whose new file isn't in the folder is never written to again, and it's reported.
+- Every file argument is required. The one exception is `slides_insert_image`'s `driveFileId`, which can be
+  replaced by `imageUrl`.
+- A create call whose new file isn't in the folder is never written to again. It's reported by its real name, with a
+  warning to check it before removing anything, since it may be an existing file.
 - Tools outside the run's list are refused, `docs_overwrite` for one.
-- The draft must be addressed to exactly the account's own address, with no Cc, no Bcc and no thread. Its local
-  attachment must come from the run's temp dir.
+- The draft must be addressed to exactly the account's own address, with no Cc, no Bcc and no thread. Each
+  attachment must have exactly one source, and only a temp-dir file or a scratch-folder file is allowed.
 - The command approves a pending call only after checking that it is its own: the agent, the connection, the tool
   and the exact arguments.
 - A ledger of everything created drives the cleanup and the leftover check.
@@ -241,18 +262,24 @@ What it does, in order (tool names as the extension lists them; agents see `<slu
 **Report:** a PASS/FAIL table per tool and step, then **Left behind**, which should say "nothing". The leftover check
 looks for:
 - the folder or any of its files not in the trash;
-- the draft still in Gmail;
+- anything in Drive named after the run and not in the trash. This catches a file whose create answer was lost;
+- the draft still in Gmail, plus any other draft the agent made according to the audit log;
+- a saved copy of an email attachment;
 - the agent or its settings still stored;
 - `attachmentDirs` not as before;
 - the temp dir still on disk;
-- an earlier run's `xaq-smoke-*` agent.
+- any other `xaq-smoke-*` agent, also when this run's agent was never created.
 
 `--json` prints the same as JSON on stdout (the progress goes to stderr). The exit code is 0 only when every step
 passed and nothing was left behind. It is 130 after Ctrl-C, 1 otherwise. A step skipped because the account has no
 such file or email also makes the exit code non-zero.
 
-**Ctrl-C:** the first press lets the current call finish, starts no new step, then cleans up and reports. A second
-press quits at once and lists what may be left.
+**Ctrl-C, SIGTERM, SIGHUP:**
+- The first Ctrl-C lets the current call finish, starts no new step, then runs the full cleanup and reports.
+- SIGTERM and SIGHUP always do the same, however often they arrive.
+- A second Ctrl-C quits early. First it deletes the agent, restores `attachmentDirs` and removes the temp dir, each
+  for at most a few seconds. Then it lists what may be left; the next run's sweep picks up the rest.
+- Printing can't stop the cleanup: when the terminal goes away (EIO, EPIPE), further output is dropped.
 
 Admin API used only by this command (console session and CSRF header, like every `/api` route). Each draft route
 acts only on a draft that the run's agent created (per the audit log), that is in the ledger the command sends,
@@ -264,7 +291,8 @@ account itself.
 | `POST /api/smoke/agents` `{name, accountId, connectionId}` | The temporary agent (`name` must be `xaq-smoke-<UTC timestamp>`) → `AgentWithKey` |
 | `POST /api/smoke/drafts/inspect` `{agentId, accountId, draftId, ledger}` | The draft's subject, recipients and attachments (names, types, sizes) |
 | `POST /api/smoke/drafts/delete` `{agentId, accountId, draftId, ledger}` | Deletes it (Gmail `drafts.delete`) |
-| `POST /api/smoke/leftovers` `{agentId, accountId, draftIds}` | Whether the agent, its settings or the drafts still exist, plus any other `xaq-smoke-*` agents |
+| `POST /api/smoke/leftovers` `{agentId \| null, accountId, draftIds}` | Whether the agent or its settings still exist, which drafts still exist (the given ones plus those the agent made, from the audit log), and any other `xaq-smoke-*` agents |
+| `POST /api/smoke/sweep` `{}` | Earlier runs: deletes their `xaq-smoke-*` agents, removes `xaq-smoke-*` dirs from `attachmentDirs`, and lists their drafts that still exist → `{deletedAgents, removedDirs, drafts}` |
 
 ## Commands and configuration
 

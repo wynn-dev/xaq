@@ -52,10 +52,14 @@ export interface FakeWorkspace {
   fault(tool: string, fn: (args: Json) => void): void;
   /** docs_create answers with this id instead of the new doc's (an extension bug the guards must catch). */
   wrongDocId: string | null;
+  /** onCreate: called for every file added after it's set (a test mirrors new docs into the fake Google's Drive). */
+  hooks: { onCreate: ((f: FakeFile) => void) | null };
   /** In the trash, itself or through a parent. */
   isTrashed(id: string): boolean;
   /** A doc exported as PDF (the A1 shim uses it for drive_file_id). */
   exportPdf(id: string): { filename: string; bytes: Buffer };
+  /** Adds a file directly (a test's "earlier run" folder, a create whose answer got lost). */
+  addFile(f: { id?: string; name: string; kind: Kind; parents?: string[] }): FakeFile;
 }
 
 const READ = { readOnlyHint: true, destructiveHint: false };
@@ -92,6 +96,7 @@ export function fakeWorkspace(): FakeWorkspace {
   const writes: FakeWorkspace["writes"] = [];
   const calls: FakeWorkspace["calls"] = [];
   const faults = new Map<string, (args: Json) => void>();
+  const hooks: FakeWorkspace["hooks"] = { onCreate: null };
   let seq = 0;
   let clock = Date.parse("2026-10-01T00:00:00Z");
   const nextId = (p: string) => `${p}${(++seq).toString(36).padStart(4, "0")}`;
@@ -114,6 +119,7 @@ export function fakeWorkspace(): FakeWorkspace {
       shared: f.shared ?? false,
     };
     files.set(file.id, file);
+    hooks.onCreate?.(file);
     return file;
   };
 
@@ -160,8 +166,10 @@ export function fakeWorkspace(): FakeWorkspace {
     writes,
     calls,
     wrongDocId: null,
+    hooks,
     fault: (t, fn) => faults.set(t, fn),
     isTrashed,
+    addFile: (f) => add(f),
     exportPdf(id) {
       const f = get(id, "doc");
       return { filename: `${f.name}.pdf`, bytes: Buffer.concat([Buffer.from("%PDF-1.7\n"), Buffer.from(f.text)]) };
@@ -173,7 +181,7 @@ export function fakeWorkspace(): FakeWorkspace {
     // ── Drive ──
     tool("drive_search", READ, obj({ name: str, text: str, type: str, folderId: str, pageSize: num, pageToken: str }), (a) => {
       const found = [...files.values()]
-        .filter((f) => !isTrashed(f.id) && (!a.type || a.type === "any" || f.kind === a.type))
+        .filter((f) => !isTrashed(f.id) && (!a.type || a.type === "any" || f.kind === a.type) && (!a.name || f.name.includes(String(a.name))))
         .sort((x, y) => y.modifiedTime.localeCompare(x.modifiedTime))
         .slice(0, Number(a.pageSize ?? 25));
       return ok(found.map((f) => f.name).join("\n"), { files: found.map(summary), nextPageToken: null });
