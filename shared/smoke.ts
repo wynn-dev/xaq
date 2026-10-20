@@ -6,6 +6,7 @@
 //   POST /api/smoke/drafts/inspect  SmokeDraftInput          → SmokeDraftView
 //   POST /api/smoke/drafts/delete   SmokeDraftInput          → { deleted: true }
 //   POST /api/smoke/leftovers       SmokeLeftoversInput      → SmokeLeftovers
+//   POST /api/smoke/sweep           {}                       → SmokeSweep (earlier runs' leftovers)
 
 /** A run's marker: `xaq-smoke-<UTC timestamp>`, e.g. xaq-smoke-20261019T203000Z. Names the agent and the folder. */
 export const SMOKE_NAME_RE = /^xaq-smoke-\d{8}T\d{6}Z$/;
@@ -47,9 +48,10 @@ export interface SmokeDraftView {
 }
 
 export interface SmokeLeftoversInput {
-  agentId: string;
+  /** The run's agent; null when it was never created (the other checks still run). */
+  agentId: string | null;
   accountId: string;
-  /** Drafts the run created: each must be gone. */
+  /** Drafts the run recorded. The daemon adds every draft the agent created according to the audit log. */
   draftIds: string[];
 }
 
@@ -58,8 +60,22 @@ export interface SmokeLeftovers {
   agent: boolean;
   /** The agent's per-agent settings (tool mode) are still stored. */
   agentSettings: boolean;
-  /** Drafts of draftIds that still exist in Gmail. */
+  /** Drafts (the ledger's and the audit log's) that still exist in Gmail. */
   drafts: string[];
   /** Other agents named like a smoke run (an earlier run that couldn't clean up). */
   otherSmokeAgents: { id: string; name: string }[];
 }
+
+/**
+ * POST /api/smoke/sweep: what earlier runs left, at the start of a run. Their agents are deleted and their temp dirs
+ * taken out of attachmentDirs; drafts they made that still exist are only reported, for the owner to check.
+ */
+export interface SmokeSweep {
+  deletedAgents: { id: string; name: string }[];
+  /** attachmentDirs entries named xaq-smoke-… that were removed. */
+  removedDirs: string[];
+  drafts: { draftId: string; account: string; agent: string }[];
+}
+
+/** An attachmentDirs entry a smoke run added: its last segment starts with xaq-smoke-. */
+export const isSmokeDir = (dir: string): boolean => /(^|[\\/])xaq-smoke-[^\\/]*[\\/]?$/.test(dir);

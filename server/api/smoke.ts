@@ -4,11 +4,12 @@
 //   at "ask", nothing inherited, tools listed directly);
 // - read and delete the run's draft (there is no draft-delete tool): only a draft the run's agent created (the audit
 //   log says so), whose id is in the command's ledger and whose subject carries the run's marker;
-// - report what a run left behind.
+// - report what a run left behind, and at the start of a run sweep what earlier runs left (their agents deleted,
+//   their temp dirs out of attachmentDirs, their drafts reported).
 
 import { z } from "zod";
 import type { AgentWithKey } from "../../shared/types.ts";
-import { SMOKE_NAME_RE, type SmokeDraftView, type SmokeLeftovers, smokeSubjectPrefix } from "../../shared/smoke.ts";
+import { isSmokeDir, SMOKE_NAME_RE, type SmokeDraftView, type SmokeLeftovers, type SmokeSweep, smokeSubjectPrefix } from "../../shared/smoke.ts";
 import { setAgentSearchSettings } from "../broker/search/mode.ts";
 import type { AppContext } from "../context.ts";
 import { asHttpError } from "../google/http.ts";
@@ -19,7 +20,7 @@ import { ADMIN_ACTOR, readBody, router } from "./util.ts";
 const id = z.string().min(1).max(200);
 const AgentInput = z.object({ name: z.string().regex(SMOKE_NAME_RE, "must be xaq-smoke-<UTC timestamp>"), accountId: id, connectionId: id }).strict();
 const DraftInput = z.object({ agentId: id, accountId: id, draftId: id, ledger: z.array(id).max(20) }).strict();
-const LeftoversInput = z.object({ agentId: id, accountId: id, draftIds: z.array(id).max(20) }).strict();
+const LeftoversInput = z.object({ agentId: id.nullable(), accountId: id, draftIds: z.array(id).max(20) }).strict();
 
 const refused = (message: string) => new HttpError(403, "not_a_smoke_draft", message);
 const addressOf = (v: string) => (/<([^>]+)>/.exec(v)?.[1] ?? v).trim().toLowerCase();
@@ -120,27 +121,79 @@ export function smokeApi(ctx: AppContext) {
     return c.json({ deleted: true });
   });
 
+  /** Whether a draft still exists in Gmail (404 = gone). */
+  const draftExists = async (accountId: string, draftId: string): Promise<boolean> => {
+    try {
+      await ctx.google.gmail(accountId).getDraft(draftId);
+      return true;
+    } catch (err) {
+      if (err instanceof GoogleApiError && err.status === 404) return false;
+      throw badRequest(`Couldn't check draft ${draftId}: ${(err as Error).message}`);
+    }
+  };
+
+  /** The drafts `agentId` created according to the audit log, with their accounts, minus those a smoke run deleted. */
+  const auditedDrafts = (agentId: string): { draftId: string; accountId: string }[] =>
+    ctx.db.all<{ draftId: string; accountId: string }>(
+      `SELECT DISTINCT target AS draftId, account_id AS accountId FROM audit_log
+        WHERE actor_type = 'agent' AND actor_id = ? AND action = 'create_draft' AND outcome = 'ok' AND target IS NOT NULL AND account_id IS NOT NULL
+          AND target NOT IN (SELECT target FROM audit_log WHERE action = 'smoke.draft_delete' AND target IS NOT NULL)`,
+      agentId,
+    );
+
   app.post("/smoke/leftovers", async (c) => {
     const body = await readBody(c, LeftoversInput);
     if (!ctx.accounts.get(body.accountId)) throw notFound("Account");
+    // The ledger's drafts, and any the agent created that the command never recorded (a lost answer).
+    const candidates = new Map<string, string>(body.draftIds.map((d) => [d, body.accountId]));
+    if (body.agentId) for (const d of auditedDrafts(body.agentId)) candidates.set(d.draftId, d.accountId);
     const drafts: string[] = [];
-    for (const draftId of body.draftIds) {
-      try {
-        await ctx.google.gmail(body.accountId).getDraft(draftId);
-        drafts.push(draftId);
-      } catch (err) {
-        if (!(err instanceof GoogleApiError && err.status === 404)) throw badRequest(`Couldn't check draft ${draftId}: ${(err as Error).message}`);
-      }
-    }
+    for (const [draftId, accountId] of candidates) if (ctx.accounts.get(accountId) && (await draftExists(accountId, draftId))) drafts.push(draftId);
     const out: SmokeLeftovers = {
-      agent: !!ctx.policy.getAgent(body.agentId),
-      agentSettings: !!ctx.db.get("SELECT 1 AS x FROM settings WHERE key = ?", `broker.search:${body.agentId}`),
+      agent: !!body.agentId && !!ctx.policy.getAgent(body.agentId),
+      agentSettings: !!body.agentId && !!ctx.db.get("SELECT 1 AS x FROM settings WHERE key = ?", `broker.search:${body.agentId}`),
       drafts,
       otherSmokeAgents: ctx.policy
         .listAgents()
         .filter((a) => a.id !== body.agentId && SMOKE_NAME_RE.test(a.name))
         .map((a) => ({ id: a.id, name: a.name })),
     };
+    return c.json(out);
+  });
+
+  // Earlier runs' leftovers, at the start of a run (before its own agent exists): their agents are deleted, their temp
+  // dirs taken out of attachmentDirs, and their drafts that still exist reported (never deleted here).
+  app.post("/smoke/sweep", async (c) => {
+    await readBody(c, z.object({}).strict());
+    const deletedAgents: SmokeSweep["deletedAgents"] = [];
+    for (const a of ctx.policy.listAgents().filter((x) => SMOKE_NAME_RE.test(x.name))) {
+      ctx.policy.deleteAgent(a.id);
+      deletedAgents.push({ id: a.id, name: a.name });
+    }
+    const before = ctx.settings.get().attachmentDirs;
+    const removedDirs = before.filter(isSmokeDir);
+    if (removedDirs.length) ctx.settings.update({ attachmentDirs: before.filter((d) => !isSmokeDir(d)) });
+    // Every smoke agent there ever was (the audit log keeps their ids), most recent first, bounded.
+    const runs = ctx.db.all<{ agentId: string; detail: string | null }>(
+      "SELECT target AS agentId, detail FROM audit_log WHERE action = 'smoke.agent_create' AND target IS NOT NULL ORDER BY id DESC LIMIT 20",
+    );
+    const drafts: SmokeSweep["drafts"] = [];
+    for (const run of runs) {
+      let name = run.agentId;
+      try {
+        name = (JSON.parse(run.detail ?? "{}") as { name?: string }).name ?? name;
+      } catch {
+        // The id will do.
+      }
+      for (const d of auditedDrafts(run.agentId)) {
+        const account = ctx.accounts.get(d.accountId);
+        if (account && (await draftExists(account.id, d.draftId))) drafts.push({ draftId: d.draftId, account: account.email, agent: name });
+      }
+    }
+    const out: SmokeSweep = { deletedAgents, removedDirs, drafts };
+    if (deletedAgents.length || removedDirs.length) {
+      ctx.audit.record({ ...ADMIN_ACTOR, action: "smoke.sweep", outcome: "ok", detail: { agents: deletedAgents.map((a) => a.name), dirs: removedDirs.length } });
+    }
     return c.json(out);
   });
 

@@ -10,25 +10,76 @@ import type { SmokeFlags } from "./run.ts";
 const GROUP = "MCP connections (on xaq's machine):";
 
 /**
- * Ctrl-C (and SIGTERM, SIGHUP): the first one stops the run after the current call and cleanup runs; a second one
- * quits at once, saying what may be left. Returns the remover.
+ * A line printer that can't kill the run: once the stream fails (EIO or EPIPE from a terminal that went away, e.g.
+ * after SIGHUP), later lines are dropped instead of throwing or crashing on an unhandled 'error'.
  */
-export function installSmokeSignals(controller: AbortController, opts: { print: (line: string) => void; exit: (code: number) => void; leftovers: () => string }): () => void {
-  let count = 0;
-  const handler = () => {
-    count++;
-    if (count === 1) {
-      opts.print("\nStopping after the current call, then cleaning up. Press Ctrl-C again to quit without cleaning up.");
-      controller.abort();
-      return;
-    }
-    opts.print(`\nQuit without cleaning up. ${opts.leftovers()}`);
-    opts.exit(130);
+export function safeWriter(stream: NodeJS.WritableStream): { print: (line?: string) => void; dispose: () => void } {
+  let dead = false;
+  const onError = () => {
+    dead = true;
   };
-  const sigs = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
-  for (const s of sigs) process.on(s, handler);
+  stream.on("error", onError);
+  return {
+    print(line = "") {
+      if (dead) return;
+      try {
+        stream.write(`${line}\n`, (err) => {
+          if (err) dead = true;
+        });
+      } catch {
+        dead = true;
+      }
+    },
+    dispose: () => stream.removeListener("error", onError),
+  };
+}
+
+export interface SmokeSignalOptions {
+  print: (line: string) => void;
+  exit: (code: number) => void;
+  /** The second Ctrl-C: the quick part of cleanup (agent, attachmentDirs), bounded. */
+  fastCleanup: () => Promise<void>;
+  /** What may still be there, in a sentence. */
+  leftovers: () => string;
+  /** Upper bound on the second Ctrl-C's cleanup before quitting anyway (default 8 s). */
+  quitWithinMs?: number;
+}
+
+/**
+ * Signals during a run. SIGTERM and SIGHUP (a closed terminal, a stopped service) always act like the first Ctrl-C:
+ * no new step starts and the run's full cleanup runs. The first Ctrl-C does the same; a second one runs the quick
+ * cleanup (delete the agent, restore attachmentDirs) with a short timeout, says what may be left and quits.
+ * Returns the remover.
+ */
+export function installSmokeSignals(controller: AbortController, opts: SmokeSignalOptions): () => void {
+  let interrupts = 0;
+  let quitting = false;
+  const stop = (why: string) => {
+    if (controller.signal.aborted) return;
+    opts.print(`\n${why}: stopping after the current call, then cleaning up.${why === "Ctrl-C" ? " Press Ctrl-C again to quit sooner (only the agent and attachmentDirs are cleaned up then)." : ""}`);
+    controller.abort();
+  };
+  const onInt = () => {
+    interrupts++;
+    if (interrupts === 1) return stop("Ctrl-C");
+    if (quitting) return;
+    quitting = true;
+    opts.print("\nQuitting: deleting the temporary agent and restoring attachmentDirs first…");
+    const deadline = new Promise<void>((r) => setTimeout(r, opts.quitWithinMs ?? 8000).unref?.());
+    void Promise.race([opts.fastCleanup().catch(() => {}), deadline]).then(() => {
+      opts.print(`Quit before the cleanup finished. ${opts.leftovers()}`);
+      opts.exit(130);
+    });
+  };
+  const onTerm = () => stop("SIGTERM");
+  const onHup = () => stop("SIGHUP");
+  process.on("SIGINT", onInt);
+  process.on("SIGTERM", onTerm);
+  process.on("SIGHUP", onHup);
   return () => {
-    for (const s of sigs) process.removeListener(s, handler);
+    process.removeListener("SIGINT", onInt);
+    process.removeListener("SIGTERM", onTerm);
+    process.removeListener("SIGHUP", onHup);
   };
 }
 
@@ -62,48 +113,48 @@ Example:
       const { connectAgentMcp } = await import("./agent.ts");
       const { SmokeRun } = await import("./run.ts");
       const { renderReport } = await import("./report.ts");
-      const out = (line = "") => (o.json ? process.stderr : process.stdout).write(`${line}\n`);
       if (!o.scratch) {
         throw new Error(
           "smoke google-workspace runs live on the connected Google account: it reads existing files and mail, and writes only into a new scratch folder and ONE draft to the account itself, which it removes again. Pass --scratch to run it.",
         );
       }
+      const out = safeWriter(o.json ? process.stderr : process.stdout);
+      const err = o.json ? out : safeWriter(process.stderr);
+      const json = o.json ? safeWriter(process.stdout) : null;
       const channel = openAdminChannel({ dataDir: resolveDataDir(o.data, { quiet: true }) });
       const prompter = new TerminalPrompter(!!o.yes, { input: process.stdin, output: o.json ? process.stderr : process.stdout });
       const controller = new AbortController();
       const run = new SmokeRun(o, {
         admin: channel,
         connectMcp: (key) => connectAgentMcp(channel.baseUrl, key),
-        print: out,
+        print: out.print,
         confirm: (q) => prompter.confirm(q, false),
         signal: controller.signal,
       });
       const remove = installSmokeSignals(controller, {
-        print: (l) => process.stderr.write(`${l}\n`),
+        print: (l) => err.print(l),
+        fastCleanup: () => run.fastCleanup(3000),
         exit: (code) => {
           channel.close();
           process.exit(code);
         },
         leftovers: () => {
-          const l = run.ledger;
-          const parts = [
-            l.agent && `the agent ${l.agent.name}`,
-            l.folder && `the Drive folder ${l.folder.name}`,
-            ...[...l.drafts].filter(([, d]) => !d.deleted).map(([id]) => `the draft ${id}`),
-            l.tempDir && `attachmentDirs may still list ${l.tempDir}`,
-          ].filter(Boolean);
-          return parts.length ? `These may be left: ${parts.join("; ")}.` : "Nothing was created yet.";
+          const left = run.pendingLeftovers();
+          return left.length ? `These may be left: ${left.join("; ")}. The next run removes the agent and the attachmentDirs entry and lists the rest.` : "Nothing was left.";
         },
       });
       try {
         const report = await run.run();
-        if (o.json) process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-        else for (const l of ["", ...renderReport(report)]) out(l);
+        if (json) json.print(JSON.stringify(report, null, 2));
+        else for (const l of ["", ...renderReport(report)]) out.print(l);
         process.exitCode = report.ok ? 0 : report.interrupted ? 130 : 1;
       } finally {
         remove();
         prompter.close();
         channel.close();
+        out.dispose();
+        if (err !== out) err.dispose();
+        json?.dispose();
       }
     });
 }

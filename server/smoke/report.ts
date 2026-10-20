@@ -21,6 +21,11 @@ export interface SmokeReport {
   steps: StepResult[];
   /** Everything the run couldn't clean up, in plain words; empty when nothing was left. */
   leftBehind: string[];
+  /**
+   * What earlier runs left that the sweep can't remove (their drafts, their Drive folders), for the owner to check.
+   * Not this run's doing, so it doesn't fail the run.
+   */
+  earlier: string[];
   interrupted: boolean;
   /** Every step passed and nothing was left behind. */
   ok: boolean;
@@ -44,6 +49,10 @@ export function renderReport(r: SmokeReport): string[] {
   out.push("", pc.bold("Left behind"));
   if (!r.leftBehind.length) out.push("  nothing");
   else for (const l of r.leftBehind) out.push(pc.red(`  - ${safeText(l, 300)}`));
+  if (r.earlier.length) {
+    out.push("", pc.bold("From earlier runs (check these)"));
+    for (const l of r.earlier) out.push(pc.yellow(`  - ${safeText(l, 300)}`));
+  }
   out.push("", r.ok ? pc.green("PASS: every step passed and nothing was left behind.") : pc.red("FAIL: see the table and the left-behind list above."));
   return out;
 }

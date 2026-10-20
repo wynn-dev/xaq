@@ -78,6 +78,13 @@ export interface DriveFacts {
 
 export type DriveGet = (fileId: string) => Promise<DriveFacts>;
 
+/** File arguments that may be left out (the tool takes another source instead). */
+const OPTIONAL_FILE_ARGS: ReadonlySet<string> = new Set(["driveFileId"]);
+/** create_draft attachment sources (writer A1): an item has exactly one. */
+const SOURCE_KEYS = ["path", "drive_file_id", "content_base64", "message_id"] as const;
+/** Other keys an attachment item may carry (attachment_id goes with message_id). */
+const ITEM_KEYS: ReadonlySet<string> = new Set(["export_as", "filename", "mime_type", "attachment_id"]);
+
 export class ScratchGuard {
   constructor(
     private readonly ledger: Ledger,
@@ -104,7 +111,8 @@ export class ScratchGuard {
     }
     for (const key of spec.file ?? []) {
       const value = args[key];
-      if (value === undefined) continue;
+      // Every file argument is required, except slides_insert_image's driveFileId (it may take imageUrl instead).
+      if (value === undefined && OPTIONAL_FILE_ARGS.has(key)) continue;
       await this.checkFile(tool, key, value);
     }
   }
@@ -134,6 +142,12 @@ export class ScratchGuard {
     const atts = args.attachments;
     if (!Array.isArray(atts)) return;
     for (const a of atts as Record<string, unknown>[]) {
+      if (!a || typeof a !== "object" || Array.isArray(a)) throw new GuardError("create_draft: an attachment must be an object");
+      // Exactly one source per item (message_id + attachment_id together count as one), and no keys beyond it.
+      const sources = SOURCE_KEYS.filter((k) => a[k] !== undefined);
+      if (sources.length !== 1) throw new GuardError(`create_draft: each attachment needs exactly one source, not ${sources.length ? sources.join(" + ") : "none"}`);
+      const extra = Object.keys(a).filter((k) => !(SOURCE_KEYS as readonly string[]).includes(k) && !ITEM_KEYS.has(k));
+      if (extra.length) throw new GuardError(`create_draft: unexpected attachment keys ${extra.join(", ")}`);
       if (typeof a.path === "string") {
         const dir = this.ledger.tempDir;
         const abs = resolve(a.path);

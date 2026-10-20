@@ -1,24 +1,29 @@
 // `xaq smoke google-workspace --scratch`: a live end-to-end check of Gmail attachments and the google-workspace
-// extension on a real account, safe by construction (docs/reference.md, "smoke google-workspace").
+// extension on a real account, safe by construction (docs/reference.md, "Live check").
 //
+// - First, earlier runs' leftovers are swept: their agents deleted, their temp dirs taken out of attachmentDirs, and
+//   their drafts and Drive folders reported for the owner to check.
 // - Reads anywhere: a few existing Drive files (newest Doc, Sheet, Slides) and ONE email with attachments. Only
-//   names, the subject, kinds and sizes are printed, never content.
+//   names, the subject, kinds and sizes are printed, never content. Only attachments get_attachment shows inline are
+//   extracted: anything it would save to disk is skipped, and a saved copy fails the step and is listed.
 // - Every write goes into ONE new Drive folder named after the run (xaq-smoke-<UTC timestamp>), through
 //   ScratchGuard (guards.ts): the target must be that folder or a file this run created whose drive_get parents
 //   include it. The only mail is ONE draft to the account's own address, deleted again; nothing is ever sent.
 // - Tool calls go through /mcp as a temporary agent (mail read + draft, the Workspace connection at "ask"), so risky
 //   calls really come back pending; the command approves its own calls (checked: agent, tool, exact arguments)
 //   through the admin API.
-// - Cleanup always runs (also on a failed step or Ctrl-C): the draft deleted, the folder trashed (drive_trash,
-//   approved), the agent deleted, attachmentDirs restored, the temp dir removed. Then the leftover check.
+// - Cleanup always runs (also on a failed step, Ctrl-C, SIGTERM or SIGHUP): the draft deleted, the folder trashed
+//   (drive_trash, approved), the agent deleted, attachmentDirs restored, the temp dir removed. Then the leftover
+//   check. A second Ctrl-C runs fastCleanup (agent and attachmentDirs only, bounded) and quits.
 
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { Account, AgentWithKey, ConnectionView, McpCallApprovalView } from "../../shared/types.ts";
-import { type SmokeDraftView, type SmokeLeftovers, smokeName, smokeSubjectPrefix } from "../../shared/smoke.ts";
+import { isSmokeDir, SMOKE_NAME_RE, type SmokeDraftView, type SmokeLeftovers, type SmokeSweep, smokeName, smokeSubjectPrefix } from "../../shared/smoke.ts";
 import type { AdminChannel } from "../connections-cli/admin.ts";
 import { NPX } from "../listen/version.ts";
+import { MAX_ATTACHMENT_BYTES } from "../mail/agent.ts";
 import { type AgentMcp, type CallOutcome } from "./agent.ts";
 import { type DriveFacts, GuardError, type Ledger, newLedger, READ_TOOLS, ScratchGuard, WRITE_TARGETS } from "./guards.ts";
 import { solidPng } from "./png.ts";
@@ -39,6 +44,51 @@ export const MAIL_TOOLS = ["search_threads", "get_thread", "get_message", "list_
 /** A fixed public https image (Google's own logo), for slides_insert_image's imageUrl path. */
 export const PUBLIC_IMAGE_URL = "https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png";
 
+/**
+ * What get_attachment (writer A2, server/mcp/attachments.ts) shows inline instead of saving to disk: images up to
+ * MAX_ATTACHMENT_BYTES, PDF/DOCX/XLSX/PPTX/CSV up to PARSE_LIMITS.inputBytes (25 MB), text and HTML at any size
+ * (it reads the first part). Everything else, and anything over those, is saved: the run doesn't ask for it.
+ */
+export const INLINE_DOCUMENT_MAX_BYTES = 25 * 1024 * 1024;
+const INLINE_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const DOCUMENT_TYPES: Record<string, string> = {
+  "application/pdf": "pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.ms-word.document.macroenabled.12": "docx",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.ms-excel.sheet.macroenabled.12": "xlsx",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+  "application/vnd.ms-powerpoint.presentation.macroenabled.12": "pptx",
+  "text/csv": "csv",
+  "text/tab-separated-values": "csv",
+  "application/csv": "csv",
+};
+const DOCUMENT_EXTS: Record<string, string> = { pdf: "pdf", docx: "docx", docm: "docx", xlsx: "xlsx", xlsm: "xlsx", pptx: "pptx", pptm: "pptx", csv: "csv", tsv: "csv" };
+export const SKIPPED_WOULD_SAVE = "skipped (would be saved to disk)";
+
+export interface ListedAttachment {
+  id: string;
+  filename: string;
+  mimeType: string;
+  /** Bytes; NaN when the listing didn't say. */
+  size: number;
+}
+
+/** The kind get_attachment would show inline, or null when it would save the file to disk (so the run skips it). */
+export function inlineKind(a: Pick<ListedAttachment, "filename" | "mimeType" | "size">): string | null {
+  const m = a.mimeType.toLowerCase().split(";")[0]!.trim();
+  const ext = /\.([a-z0-9]{1,8})$/i.exec(a.filename)?.[1]?.toLowerCase() ?? "";
+  const generic = !m || m === "application/octet-stream" || m === "application/zip" || m === "binary/octet-stream";
+  const known = Number.isFinite(a.size) && a.size >= 0;
+  if (INLINE_IMAGE_TYPES.has(m)) return known && a.size < MAX_ATTACHMENT_BYTES ? "image" : null;
+  const doc = DOCUMENT_TYPES[m] ?? (generic ? DOCUMENT_EXTS[ext] : undefined);
+  if (doc) return known && a.size < INLINE_DOCUMENT_MAX_BYTES ? doc : null;
+  if (m === "text/html" || /^html?$/.test(ext)) return "html";
+  if (m.startsWith("text/") || /^application\/(json|xml|x-yaml|yaml|javascript|x-ndjson|ld\+json)$/.test(m)) return "text";
+  if (generic && /^(txt|md|json|ics|xml|ya?ml|log)$/.test(ext)) return "text";
+  return null;
+}
+
 export interface SmokeFlags {
   scratch?: boolean;
   yes?: boolean;
@@ -51,14 +101,17 @@ export interface SmokeDeps {
   admin: Pick<AdminChannel, "request" | "baseUrl">;
   /** An MCP client on /mcp with this key (default: the SDK client on admin.baseUrl). */
   connectMcp: (apiKey: string) => Promise<AgentMcp>;
-  /** Progress and the plan (stderr with --json). */
+  /** Progress and the plan (stderr with --json). May throw (a dead terminal): the run ignores that. */
   print: (line?: string) => void;
   /** Asked once, after the plan; --yes answers it. */
   confirm: (question: string) => Promise<boolean>;
-  /** Ctrl-C: no new step starts, cleanup runs. */
+  /** Ctrl-C, SIGTERM, SIGHUP: no new step starts, cleanup runs. */
   signal: AbortSignal;
   now?: () => Date;
-  /** Where the temp dir for the local attachment goes (default os.tmpdir()). */
+  /**
+   * The directory under which the run keeps its private (0700) `xaq-smoke` directory for the draft's local file.
+   * Default $XDG_CACHE_HOME or ~/.cache: never the shared /tmp.
+   */
   tmpRoot?: string;
   imageUrl?: string;
   /** get_call_status polling while an approved call runs. */
@@ -83,34 +136,19 @@ class Interrupted extends Error {
 interface SettingsView {
   publicUrl: string;
   brokerUpstreams?: boolean;
-  /** Writer A1's setting: directories create_draft may attach local files from. */
+  /** Directories create_draft may attach local files from. */
   attachmentDirs?: string[];
 }
 
-/**
- * A google-workspace connection's Google binding (writer C's ConnectionView `google`): the account it's signed in as
- * and the scopes it lacks. Typed here until this branch is rebased onto C.
- */
-interface GoogleBinding {
-  email: string | null;
-  accountId?: string | null;
-  scopes?: string[];
-  granted?: string[];
-  missing?: string[];
-}
-
-const googleOf = (c: ConnectionView): GoogleBinding | null => (c as ConnectionView & { google?: GoogleBinding | null }).google ?? null;
-
-/** The Google account the connection is signed in as (`google.email`), or null. */
+/** The Google account the connection is signed in as (ConnectionView `google.email`), or null. */
 export function boundAccountEmail(c: ConnectionView): string | null {
-  const email = googleOf(c)?.email;
+  const email = c.google?.email;
   return typeof email === "string" && email ? email : null;
 }
 
 /** Scopes the extension needs that the connection's sign-in lacks: `google.missing`, else from grantedScopes. */
 function missingScopes(c: ConnectionView): string[] {
-  const g = googleOf(c);
-  if (Array.isArray(g?.missing)) return g.missing;
+  if (c.google && Array.isArray(c.google.missing)) return c.google.missing.map((m) => m.scope);
   if (c.preset === WORKSPACE_PRESET && c.grantedScopes) return WORKSPACE_SCOPES.filter((s) => !c.grantedScopes!.includes(s));
   return [];
 }
@@ -166,9 +204,12 @@ export function planLines(marker: string, account: string, connection: Connectio
   return [
     `xaq smoke google-workspace will run as a temporary agent ${marker}, through /mcp:`,
     "",
+    "First: earlier smoke runs' agents are deleted and their temp dirs taken out of attachmentDirs; their drafts",
+    "and Drive folders are listed for you to check.",
     "Reads (existing files and mail, read only; prints names, the subject, kinds and sizes, never content):",
     "  - Drive: search the newest Doc, Sheet and Slides file, list the top of My Drive, get, read and export each",
-    "  - Gmail: ONE email with attachments: list its attachments and extract each with get_attachment",
+    "  - Gmail: ONE email with attachments: list its attachments and extract each one get_attachment shows",
+    "    inline (anything it would save to disk is skipped)",
     `Writes (only inside a new Drive folder "${marker}" at the top of My Drive; every write is checked first):`,
     "  - Docs: create a doc from markdown, append, find and replace (count checked), comment, read back",
     "  - Sheets: create a sheet, write a range, append rows, read back",
@@ -177,9 +218,9 @@ export function planLines(marker: string, account: string, connection: Connectio
     "    slide through the approval path",
     `  - Gmail: ONE draft to ${account} only, with a local file and a scratch-folder file attached; checked, then`,
     "    deleted. Nothing is ever sent.",
-    "Cleanup, also on failure or Ctrl-C: the folder goes to the Drive trash (drive_trash, approved here), the draft",
-    `is deleted, the agent is deleted, attachmentDirs is restored. Temporary changes until then: the agent (mail read`,
-    `and draft on ${account}, ${connection.slug} at "ask") and a temp dir added to attachmentDirs.`,
+    "Cleanup, also on failure, Ctrl-C, SIGTERM or SIGHUP: the folder goes to the Drive trash (drive_trash, approved",
+    "here), the draft is deleted, the agent is deleted, attachmentDirs is restored. Temporary changes until then:",
+    `the agent (mail read and draft on ${account}, ${connection.slug} at "ask") and a private temp dir in attachmentDirs.`,
   ];
 }
 
@@ -197,18 +238,34 @@ function canonical(v: unknown): string {
   return JSON.stringify(v);
 }
 
-/** Attachments from list_attachments: its structured list when there is one, else the `name (type, size, attachment_id: x)` lines. */
-export function parseAttachmentList(out: CallOutcome): { id: string; filename: string }[] {
+/** "2.5 KB" (server/mail/content.ts formatSize) → bytes; NaN when it can't be read. */
+function sizeOf(text: string): number {
+  const m = /^([\d.]+)\s*(B|KB|MB|GB)$/i.exec(text.trim());
+  if (!m) return Number.NaN;
+  const unit = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 }[m[2]!.toUpperCase() as "B"]!;
+  return Math.ceil(Number(m[1]) * unit);
+}
+
+/**
+ * Attachments from list_attachments: its structured list (A2: attachmentId, filename, mimeType, size), else the
+ * `name (type, size, … attachment_id: x …)` lines.
+ */
+export function parseAttachmentList(out: CallOutcome): ListedAttachment[] {
   const s = out.structured?.attachments;
   if (Array.isArray(s)) {
     return s
-      .map((a: Record<string, unknown>) => ({ id: String(a.attachment_id ?? a.attachmentId ?? a.id ?? ""), filename: String(a.filename ?? a.name ?? "") }))
+      .map((a: Record<string, unknown>) => ({
+        id: String(a.attachmentId ?? a.attachment_id ?? a.id ?? ""),
+        filename: String(a.filename ?? a.name ?? ""),
+        mimeType: String(a.mimeType ?? a.mime_type ?? ""),
+        size: typeof a.size === "number" ? a.size : Number.NaN,
+      }))
       .filter((a) => a.id);
   }
-  const found: { id: string; filename: string }[] = [];
+  const found: ListedAttachment[] = [];
   for (const segment of out.text.split(/;|\n/)) {
-    const m = /^\s*(?:Attachments:\s*)?(?:[-*]|\d+\.)?\s*(.+?) \([^()]*attachment_id: ([^)\s]+)\)/.exec(segment);
-    if (m) found.push({ filename: m[1]!.trim(), id: m[2]! });
+    const m = /^\s*(?:Attachments:\s*)?(?:[-*]|\d+\.)?\s*(.+?) \(([^,()]*), ([^,()]*)[^()]*?attachment_id: ([^)\s;·]+)/.exec(segment);
+    if (m) found.push({ filename: m[1]!.trim(), mimeType: m[2]!.trim(), size: sizeOf(m[3]!), id: m[4]! });
   }
   return found;
 }
@@ -226,17 +283,45 @@ export function describeExtraction(out: CallOutcome): string {
   return `text, ${body.length} chars`;
 }
 
+/** A get_attachment answer that saved the file to disk (A2: structuredContent.attachment.savedPath). */
+export function savedPathOf(out: CallOutcome): string | null {
+  const a = out.structured?.attachment as { savedPath?: unknown } | undefined;
+  return a && typeof a.savedPath === "string" && a.savedPath ? a.savedPath : null;
+}
+
+/**
+ * The run's private directory for the draft's local file: `<root>/xaq-smoke`, mode 0700, a real directory this user
+ * owns (never a symlink, never the shared /tmp). Created when missing; its mode is reset when it exists.
+ */
+export function privateSmokeDir(root?: string): string {
+  const base = root ?? (process.env.XDG_CACHE_HOME?.startsWith("/") ? process.env.XDG_CACHE_HOME : join(homedir(), ".cache"));
+  const dir = join(base, "xaq-smoke");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const st = lstatSync(dir);
+  if (!st.isDirectory() || st.isSymbolicLink()) throw new Error(`${dir} isn't a plain directory; remove it and run again.`);
+  if (typeof process.getuid === "function" && st.uid !== process.getuid()) throw new Error(`${dir} belongs to another user; remove it and run again.`);
+  chmodSync(dir, 0o700);
+  return dir;
+}
+
+/** Waits for `p` at most `ms`; the timeout wins silently. */
+const within = <T>(p: Promise<T>, ms: number): Promise<T | undefined> =>
+  Promise.race([p, new Promise<undefined>((r) => setTimeout(r, ms).unref?.())]);
+
 export class SmokeRun {
   readonly marker: string;
   readonly ledger: Ledger;
   private readonly steps: StepResult[] = [];
   private readonly leftBehind: string[] = [];
+  /** Earlier runs' leftovers the owner should check (not this run's: they don't fail it). */
+  private readonly earlier: string[] = [];
   private readonly guard: ScratchGuard;
   private mcp: AgentMcp | null = null;
   private account: Account | null = null;
   private connection: ConnectionView | null = null;
   private previousDirs: string[] | null = null;
   private dirsChanged = false;
+  private agentDeleted = false;
   private cleaning = false;
   private interrupted = false;
   private readonly stamp: string;
@@ -253,9 +338,18 @@ export class SmokeRun {
 
   // ───────────── Plumbing ─────────────
 
+  /** Printing never stops the run (or its cleanup): a closed terminal (EIO, EPIPE) is ignored. */
+  private print(line = ""): void {
+    try {
+      this.deps.print(line);
+    } catch {
+      // The terminal went away; the report is still returned.
+    }
+  }
+
   private record(tool: string, step: string, status: StepResult["status"], detail: string): void {
     this.steps.push({ tool, step, status, detail });
-    this.deps.print(`  ${status.padEnd(4)}  ${tool} · ${step}${detail ? ` · ${detail}` : ""}`);
+    this.print(`  ${status.padEnd(4)}  ${tool} · ${step}${detail ? ` · ${detail}` : ""}`);
   }
 
   /** Runs one step; a thrown Skip is SKIP, anything else FAIL. Returns whether it passed. */
@@ -352,7 +446,8 @@ export class SmokeRun {
     const folder = this.ledger.folder!;
     const f = await this.driveFacts(id);
     if (!f.parents.includes(folder.id)) {
-      this.ledger.strays.set(id, { kind, name });
+      // Its real name (it may be an existing file the extension answered with by mistake).
+      this.ledger.strays.set(id, { kind, name: f.name || name });
       throw new GuardError(`the new ${kind} ${id} isn't in the scratch folder, so nothing more is written to it`);
     }
     this.ledger.files.set(id, { kind, name });
@@ -378,11 +473,11 @@ export class SmokeRun {
     this.account = account;
     this.connection = connection;
 
-    for (const l of planLines(this.marker, account.email, connection)) this.deps.print(l);
-    this.deps.print();
+    for (const l of planLines(this.marker, account.email, connection)) this.print(l);
+    this.print();
     if (!(await this.deps.confirm("Run it?"))) throw new SmokeSetupError("Nothing was done.");
 
-    this.deps.print();
+    this.print();
     try {
       await this.main();
     } finally {
@@ -390,12 +485,21 @@ export class SmokeRun {
       await this.cleanup();
     }
     if (this.deps.signal.aborted) this.interrupted = true;
-    return finish({ marker: this.marker, account: account.email, connection: connection.slug, steps: this.steps, leftBehind: this.leftBehind, interrupted: this.interrupted });
+    return finish({
+      marker: this.marker,
+      account: account.email,
+      connection: connection.slug,
+      steps: this.steps,
+      leftBehind: this.leftBehind,
+      earlier: this.earlier,
+      interrupted: this.interrupted,
+    });
   }
 
   private async main(): Promise<void> {
     const account = this.account!;
     const connection = this.connection!;
+    await this.sweep();
     const created = await this.step("xaq", "create the temporary agent", async () => {
       const r = await this.deps.admin.request<AgentWithKey>("POST", "/api/smoke/agents", { name: this.marker, accountId: account.id, connectionId: connection.id });
       this.ledger.agent = { id: r.agent.id, name: r.agent.name };
@@ -411,6 +515,7 @@ export class SmokeRun {
       return `${wanted.length} tools`;
     });
     if (!tools) return;
+    await this.earlierFolders();
 
     await this.driveReads();
     await this.mailReads();
@@ -422,6 +527,46 @@ export class SmokeRun {
     await this.sheets();
     await this.slides();
     await this.draft(doc);
+  }
+
+  // ───────────── Earlier runs ─────────────
+
+  /** Daemon side: earlier runs' agents deleted, their temp dirs out of attachmentDirs, their drafts listed. */
+  private async sweep(): Promise<void> {
+    await this.step("xaq", "sweep earlier runs' leftovers", async () => {
+      const s = await this.deps.admin.request<SmokeSweep>("POST", "/api/smoke/sweep", {});
+      for (const d of s.drafts) this.earlier.push(`An earlier run's (${d.agent}) draft ${d.draftId} is still in ${d.account}: check it in Gmail (Drafts) and delete it.`);
+      // Their temp dirs on disk: only ever inside this user's private smoke directory.
+      let removed = 0;
+      try {
+        const mine = privateSmokeDir(this.deps.tmpRoot);
+        for (const name of readdirSync(mine)) {
+          if (!isSmokeDir(name)) continue;
+          rmSync(join(mine, name), { recursive: true, force: true });
+          removed++;
+        }
+      } catch {
+        // Nothing there, or not ours to remove: the run makes its own later.
+      }
+      const parts = [
+        `${s.deletedAgents.length} agent(s) deleted${s.deletedAgents.length ? ` (${s.deletedAgents.map((a) => a.name).join(", ")})` : ""}`,
+        `${s.removedDirs.length} attachmentDirs entr${s.removedDirs.length === 1 ? "y" : "ies"} removed`,
+        `${removed} temp dir(s) removed`,
+        `${s.drafts.length} draft(s) to check`,
+      ];
+      return parts.join(", ");
+    });
+  }
+
+  /** Earlier runs' scratch folders still out of the trash: listed for the owner (they're not this run's). */
+  private async earlierFolders(): Promise<void> {
+    await this.step("drive_search", "earlier runs' scratch folders", async () => {
+      const out = await this.read("drive_search", { name: "xaq-smoke-", type: "folder", pageSize: 50 });
+      const files = (Array.isArray(out.structured?.files) ? out.structured.files : []) as { id: string; name: string }[];
+      const old = files.filter((f) => SMOKE_NAME_RE.test(f.name) && f.name !== this.marker);
+      for (const f of old) this.earlier.push(`An earlier run's Drive folder "${f.name}" (${f.id}) isn't in the trash: check it and trash it.`);
+      return `${old.length} to check`;
+    });
   }
 
   // ───────────── Reads ─────────────
@@ -496,7 +641,7 @@ export class SmokeRun {
       }
       throw new Skip("the thread's messages have no attachments");
     });
-    let attachments: { id: string; filename: string }[] = [];
+    let attachments: ListedAttachment[] = [];
     await this.step("list_attachments", "list its attachments", async () => {
       const m = this.need(message as { id: string; subject: string } | null, "a message with attachments");
       const out = await this.rawCall("list_attachments", { account, message_id: m.id });
@@ -507,10 +652,19 @@ export class SmokeRun {
     });
     for (const a of attachments.slice(0, 10)) {
       await this.step("get_attachment", `extract "${a.filename}"`, async () => {
+        // Only what get_attachment shows inline: anything it would save to disk (a copy of the owner's file on
+        // this machine, under a quota that may delete older saved files) is never asked for.
+        const kind = inlineKind(a);
+        if (!kind) return SKIPPED_WOULD_SAVE;
         const m = message as { id: string; subject: string } | null;
         const out = await this.rawCall("get_attachment", { account, message_id: m!.id, attachment_id: a.id });
+        const saved = savedPathOf(out);
+        if (saved) {
+          this.leftBehind.push(`A copy of the email attachment "${a.filename}" was saved at ${saved}: delete it.`);
+          throw new Error(`get_attachment saved "${a.filename}" to disk (${saved}) instead of showing it`);
+        }
         if (out.isError) throw new Error(out.text);
-        return describeExtraction(out);
+        return `${kind}: ${describeExtraction(out)}`;
       });
     }
   }
@@ -711,12 +865,12 @@ export class SmokeRun {
     const own = this.account!.email;
     let local: { path: string; size: number } | null = null;
     let draftId: string | null = null;
-    await this.step("xaq", "allow a temp dir in attachmentDirs", async () => {
-      const dir = mkdtempSync(join(this.deps.tmpRoot ?? tmpdir(), "xaq-smoke-"));
+    await this.step("xaq", "allow a private temp dir in attachmentDirs", async () => {
+      const dir = mkdtempSync(join(privateSmokeDir(this.deps.tmpRoot), `${this.marker}-`));
       this.ledger.tempDir = dir;
       const path = join(dir, `${this.marker}.txt`);
       const bytes = Buffer.from(`${this.marker}\nA local file attached by xaq smoke google-workspace.\n${"0123456789abcdef".repeat(64)}\n`);
-      writeFileSync(path, bytes);
+      writeFileSync(path, bytes, { mode: 0o600 });
       local = { path, size: bytes.length };
       const settings = await this.deps.admin.request<SettingsView>("GET", "/api/settings");
       this.previousDirs = [...(settings.attachmentDirs ?? [])];
@@ -774,8 +928,57 @@ export class SmokeRun {
 
   // ───────────── Cleanup and the leftover check ─────────────
 
+  private async deleteAgent(): Promise<void> {
+    const agent = this.ledger.agent;
+    if (!agent || this.agentDeleted) return;
+    await this.deps.admin.request("DELETE", `/api/agents/${encodeURIComponent(agent.id)}`);
+    this.agentDeleted = true;
+  }
+
+  private async restoreDirs(): Promise<void> {
+    if (!this.dirsChanged || !this.previousDirs) return;
+    await this.deps.admin.request("PATCH", "/api/settings", { attachmentDirs: this.previousDirs });
+    this.dirsChanged = false;
+  }
+
+  private removeTempDir(): void {
+    if (this.ledger.tempDir) rmSync(this.ledger.tempDir, { recursive: true, force: true });
+  }
+
+  /**
+   * The second Ctrl-C: only what matters most and is quick (the agent's key stops working, attachmentDirs is back,
+   * the temp file goes), each bounded by `timeoutMs`. The Drive folder and a draft stay; the caller lists them.
+   */
+  async fastCleanup(timeoutMs = 3000): Promise<void> {
+    await within(
+      this.deleteAgent().catch(() => {}),
+      timeoutMs,
+    );
+    await within(
+      this.restoreDirs().catch(() => {}),
+      timeoutMs,
+    );
+    try {
+      this.removeTempDir();
+    } catch {
+      // Listed by the caller.
+    }
+  }
+
+  /** What may still be there right now (the second Ctrl-C prints it). */
+  pendingLeftovers(): string[] {
+    const l = this.ledger;
+    return [
+      l.agent && !this.agentDeleted ? `the agent ${l.agent.name}` : null,
+      l.folder ? `the Drive folder ${l.folder.name} (${l.folder.id})` : null,
+      ...[...l.drafts].filter(([, d]) => !d.deleted).map(([id]) => `the draft ${id}`),
+      this.dirsChanged && l.tempDir ? `attachmentDirs still lists ${l.tempDir}` : null,
+      l.tempDir && existsSync(l.tempDir) ? `the temp dir ${l.tempDir}` : null,
+    ].filter((x): x is string => !!x);
+  }
+
   private async cleanup(): Promise<void> {
-    if (this.deps.signal.aborted) this.deps.print("Interrupted: cleaning up (this takes a moment)…");
+    if (this.deps.signal.aborted) this.print("Interrupted: cleaning up (this takes a moment)…");
     const agent = this.ledger.agent;
     for (const [id, d] of this.ledger.drafts) {
       if (d.deleted) continue;
@@ -785,6 +988,7 @@ export class SmokeRun {
       });
     }
     const folder = this.ledger.folder;
+    const reported = new Set<string>();
     if (folder) {
       await this.step("drive_trash", "cleanup: trash the scratch folder through the approval path", async () => {
         const { approved } = await this.ws("drive_trash", { fileId: folder.id });
@@ -795,6 +999,7 @@ export class SmokeRun {
       });
       // The leftover check on Drive, while the agent can still look.
       for (const [id, f] of [[folder.id, { kind: "folder", name: folder.name }] as const, ...this.ledger.files]) {
+        reported.add(id);
         try {
           if (!(await this.driveFacts(id)).trashed) this.leftBehind.push(`Drive ${f.kind} "${f.name}" (${id}) is not in the trash.`);
         } catch (err) {
@@ -802,23 +1007,43 @@ export class SmokeRun {
         }
       }
     }
-    for (const [id, f] of this.ledger.strays) this.leftBehind.push(`Drive ${f.kind} "${f.name}" (${id}) was created outside the scratch folder: check Drive and remove it.`);
+    for (const [id, f] of this.ledger.strays) {
+      reported.add(id);
+      this.leftBehind.push(`Drive ${f.kind} "${f.name}" (${id}) came back from a create call but isn't in the scratch folder. It may be an existing file: check it before removing anything.`);
+    }
+    // Creates the ledger never recorded (a lost answer): anything carrying the run's name and not in the trash.
+    if (this.mcp) {
+      try {
+        const out = await this.read("drive_search", { name: this.marker, pageSize: 50 }, true);
+        const files = (Array.isArray(out.structured?.files) ? out.structured.files : []) as { id: string; name: string; type?: string }[];
+        for (const f of files) {
+          if (reported.has(f.id)) continue;
+          this.leftBehind.push(`Drive ${f.type ?? "file"} "${f.name}" (${f.id}) carries this run's name and isn't in the trash: check it and trash it.`);
+        }
+      } catch (err) {
+        this.leftBehind.push(`Couldn't search Drive for files named ${this.marker}: ${errText(err)}`);
+      }
+    }
 
     await this.mcp?.close().catch(() => {});
     this.mcp = null;
-    if (agent) {
+    if (agent && !this.agentDeleted) {
       await this.step("xaq", "cleanup: delete the temporary agent", async () => {
-        await this.deps.admin.request("DELETE", `/api/agents/${encodeURIComponent(agent.id)}`);
+        await this.deleteAgent();
         return agent.name;
       });
     }
     if (this.dirsChanged && this.previousDirs) {
       await this.step("xaq", "cleanup: restore attachmentDirs", async () => {
-        await this.deps.admin.request("PATCH", "/api/settings", { attachmentDirs: this.previousDirs });
+        await this.restoreDirs();
         return `${this.previousDirs!.length} dir(s), as before`;
       });
     }
-    if (this.ledger.tempDir) rmSync(this.ledger.tempDir, { recursive: true, force: true });
+    try {
+      this.removeTempDir();
+    } catch {
+      // Reported by the leftover check.
+    }
     await this.leftovers();
   }
 
@@ -826,12 +1051,18 @@ export class SmokeRun {
     const agent = this.ledger.agent;
     if (this.ledger.tempDir && existsSync(this.ledger.tempDir)) this.leftBehind.push(`The temp dir ${this.ledger.tempDir} still exists.`);
     try {
-      if (agent && this.account) {
-        const l = await this.deps.admin.request<SmokeLeftovers>("POST", "/api/smoke/leftovers", { agentId: agent.id, accountId: this.account.id, draftIds: [...this.ledger.drafts.keys()] });
-        if (l.agent) this.leftBehind.push(`The temporary agent ${agent.name} (${agent.id}) still exists: delete it in the console (Agents).`);
+      if (this.account) {
+        // Always asked, also when the agent was never created: other smoke agents are listed either way, and the
+        // daemon adds every draft the agent created according to the audit log (one the ledger missed included).
+        const l = await this.deps.admin.request<SmokeLeftovers>("POST", "/api/smoke/leftovers", {
+          agentId: agent?.id ?? null,
+          accountId: this.account.id,
+          draftIds: [...this.ledger.drafts.keys()],
+        });
+        if (agent && l.agent) this.leftBehind.push(`The temporary agent ${agent.name} (${agent.id}) still exists: delete it in the console (Agents).`);
         if (l.agentSettings) this.leftBehind.push(`The temporary agent's settings (tool mode) are still stored.`);
         for (const d of l.drafts) this.leftBehind.push(`The draft ${d} still exists in ${this.account.email}: delete it in Gmail (Drafts).`);
-        for (const a of l.otherSmokeAgents) this.leftBehind.push(`An earlier smoke run's agent ${a.name} (${a.id}) still exists: delete it in the console (Agents).`);
+        for (const a of l.otherSmokeAgents) this.leftBehind.push(`Another smoke run's agent ${a.name} (${a.id}) exists: delete it in the console (Agents).`);
       }
       if (this.previousDirs) {
         const s = await this.deps.admin.request<SettingsView>("GET", "/api/settings");
@@ -841,9 +1072,4 @@ export class SmokeRun {
       this.leftBehind.push(`The leftover check couldn't finish: ${errText(err)}`);
     }
   }
-}
-
-export async function runSmoke(flags: SmokeFlags, deps: SmokeDeps): Promise<{ report: SmokeReport; exitCode: number }> {
-  const report = await new SmokeRun(flags, deps).run();
-  return { report, exitCode: report.ok ? 0 : report.interrupted ? 130 : 1 };
 }
