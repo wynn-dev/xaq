@@ -15,6 +15,7 @@ const SettingsPatch = z
     approvalTtlHours: z.number(),
     webhookAllowlist: z.array(z.string()),
     brokerUpstreams: z.boolean(),
+    attachmentDirs: z.array(z.string()),
   })
   .partial()
   .strict() satisfies z.ZodType<Partial<Settings>>;

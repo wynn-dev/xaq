@@ -22,6 +22,12 @@ export const CALENDAR_LIST_SCOPE = `${G}calendar.calendarlist.readonly`;
 export const CALENDAR_FREEBUSY_SCOPE = `${G}calendar.events.freebusy`;
 
 /**
+ * Read any Drive file the user can open (restricted scope). Optional: attaching Drive files to mail
+ * (server/mail/drive-files.ts) needs it; the Google Workspace extension's opt-in asks for it.
+ */
+export const DRIVE_READONLY_SCOPE = `${G}drive.readonly`;
+
+/**
  * Google Calendar: the minimal set covering every calendar tool (docs/calendar.md). All three are needed
  * for Account.calendar.status "active"; with granular consent a user can untick some (missingScopes).
  */
@@ -48,10 +54,8 @@ export const describeScopes = (scopes: readonly string[]): string => scopes.map(
 // ───────────── Google Workspace files (Drive, Docs, Sheets, Slides) ─────────────
 // Used by the official google-workspace code extension (docs/EXTENSIONS.md "Google accounts for code extensions")
 // and by core's own Drive use (Gmail's attach-from-Drive). Never part of what an account is connected with: they're
-// added incrementally (include_granted_scopes) when the user opts in.
+// added incrementally (include_granted_scopes) when the user opts in. DRIVE_READONLY_SCOPE is defined above.
 
-/** Read every file in the user's Drive, and its metadata (restricted scope). */
-export const DRIVE_READONLY_SCOPE = `${G}drive.readonly`;
 /** Create files, and edit or delete the files this app created or the user opened with it (non-sensitive). */
 export const DRIVE_FILE_SCOPE = `${G}drive.file`;
 /** See, edit, create and delete Google Docs documents (sensitive). */

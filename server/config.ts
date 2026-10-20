@@ -19,7 +19,7 @@ export interface Config {
   /**
    * Base URLs for Google APIs. Overridable so tests can point at test/fake-google.ts.
    * Defaults: https://oauth2.googleapis.com, https://accounts.google.com, https://gmail.googleapis.com, https://pubsub.googleapis.com,
-   * https://www.googleapis.com (Calendar: paths start with /calendar/v3).
+   * https://www.googleapis.com (Calendar: paths start with /calendar/v3), https://www.googleapis.com (Drive: /drive/v3).
    */
   google: {
     oauthBase: string;
@@ -28,8 +28,9 @@ export interface Config {
     pubsubBase: string;
     calendarBase: string;
     /**
-     * Other Google APIs a code extension's account access names (Drive, Docs, Sheets, Slides; server/google/apis.ts):
-     * one base for all of them (tests: the fake). Unset: each API's own https://<service>.
+     * Drive, Docs, Sheets and Slides (core's Drive client, server/google/drive.ts, and a code extension's API probe,
+     * server/google/apis.ts): one base for all of them (tests: the fake). Unset: Drive uses https://www.googleapis.com
+     * and the probe each API's own https://<service>.
      */
     apisBase?: string;
   };

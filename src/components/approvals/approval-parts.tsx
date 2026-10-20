@@ -1,4 +1,4 @@
-import type { Address, Approval } from "@shared/types";
+import type { Address, Approval, AttachmentSource } from "@shared/types";
 import { ChevronDownIcon, PaperclipIcon } from "lucide-react";
 import { useState } from "react";
 import { ToneBadge } from "@/components/common";
@@ -72,24 +72,52 @@ export function BodyPreview({ body, className }: { body: string; className?: str
   );
 }
 
+/** Where an attached file came from, in words: the path read, the source message, or the Drive file. */
+export function attachmentSourceText(source: AttachmentSource | undefined): string | null {
+  switch (source?.kind) {
+    case "path":
+      return `from ${source.path}${source.requested ? ` (asked for ${source.requested})` : ""} on xaq's machine`;
+    case "message":
+      return `from message ${source.messageId} (its attachment ${source.filename})`;
+    case "drive":
+      return `from Google Drive: ${source.name} (${source.fileId})${source.exportedAs ? `, exported as ${source.exportedAs.toUpperCase()}` : ""}`;
+    case "forward":
+      return `original file of message ${source.messageId}`;
+    case "upload":
+      return "sent by the agent in the call";
+    default:
+      return null;
+  }
+}
+
 export function Attachments({ items }: { items: Approval["attachments"] }) {
   if (!items.length) return null;
   return (
     <ul className="flex flex-wrap gap-2">
-      {items.map((f, i) => (
-        <li key={i} className="flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs">
-          <PaperclipIcon className="size-3.5 text-muted-foreground" />
-          <span className="max-w-48 truncate">
-            <Visible text={f.filename} />
-          </span>
-          {f.mimeType && (
-            <span className="max-w-40 truncate text-muted-foreground">
-              <Visible text={f.mimeType} />
+      {items.map((f, i) => {
+        const source = attachmentSourceText(f.source);
+        return (
+          <li key={i} className="flex max-w-full flex-col gap-0.5 rounded-md border px-2 py-1 text-xs">
+            <span className="flex items-center gap-1.5">
+              <PaperclipIcon className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="max-w-48 truncate">
+                <Visible text={f.filename} />
+              </span>
+              {f.mimeType && (
+                <span className="max-w-40 truncate text-muted-foreground">
+                  <Visible text={f.mimeType} />
+                </span>
+              )}
+              <span className="text-muted-foreground">{fmtBytes(f.size)}</span>
             </span>
-          )}
-          <span className="text-muted-foreground">{fmtBytes(f.size)}</span>
-        </li>
-      ))}
+            {source && (
+              <span className="break-all text-muted-foreground">
+                <Visible text={source} />
+              </span>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }

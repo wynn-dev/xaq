@@ -14,7 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { api, toastError } from "@/lib/api";
 import { KIND_LABEL } from "@/lib/labels";
 import { keys } from "@/lib/queries";
-import { Attachments, BodyPreview, ExpiryCountdown, Recipients } from "./approval-parts";
+import { Attachments, attachmentSourceText, BodyPreview, ExpiryCountdown, Recipients } from "./approval-parts";
 import { calendarApprovalTexts, calendarVerb, isCalendarApproval } from "./calendar-approval";
 import { CalendarApprovalBody } from "./calendar-approval-body";
 
@@ -96,7 +96,7 @@ export function ApprovalCard({ approval: a }: { approval: Approval }) {
               a.body,
               a.reason,
               ...[...a.to, ...a.cc, ...a.bcc].flatMap((x) => [x.name, x.email]),
-              ...a.attachments.map((f) => f.filename),
+              ...a.attachments.flatMap((f) => [f.filename, attachmentSourceText(f.source)]),
             )) && <HiddenCharsWarning what={cal ? "This change" : undefined} />}
         {a.reason && (
           <div className="flex gap-2 rounded-lg border-l-2 border-chart-1 bg-chart-1/5 px-3 py-2 text-sm">

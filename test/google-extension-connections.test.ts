@@ -177,7 +177,7 @@ describe.skipIf(codeExtensionNodeProblem() !== null)("a google extension, store 
     expect(after.map((c) => c.state)).toEqual(["enabled", "enabled", "enabled", "enabled"]);
 
     // The child asks for its credentials and uses them: Drive and Docs take the token, Gmail refuses it.
-    fake.addFile(ME, { id: "doc1", name: "Plan" });
+    fake.drive.addFile(ME, { id: "doc1", name: "Plan", mimeType: "application/vnd.google-apps.document" });
     const s = await source(created.id);
     const refreshesBefore = fake.refreshes.length;
     const out = JSON.parse(

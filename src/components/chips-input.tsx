@@ -15,6 +15,7 @@ export function ChipsInput({
   validate,
   className,
   onPendingChange,
+  lines = false,
   "aria-describedby": describedBy,
 }: {
   id?: string;
@@ -25,6 +26,8 @@ export function ChipsInput({
   className?: string;
   /** Told whether text is typed but not added yet (or invalid), so forms can refuse to save around it. */
   onPendingChange?: (pending: boolean) => void;
+  /** One entry per line (Enter adds it), for values that may contain spaces or commas, such as paths. */
+  lines?: boolean;
   "aria-describedby"?: string;
 }) {
   const [draft, setDraft] = useState("");
@@ -41,7 +44,7 @@ export function ChipsInput({
 
   const commit = (raw: string) => {
     const parts = raw
-      .split(/[\s,;]+/)
+      .split(lines ? /[\r\n]+/ : /[\s,;]+/)
       .map((p) => p.trim())
       .filter(Boolean);
     if (!parts.length) return true;
@@ -93,7 +96,7 @@ export function ChipsInput({
             setError(null);
           }}
           onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === "," || (e.key === " " && draft.trim())) {
+            if (e.key === "Enter" || (!lines && (e.key === "," || (e.key === " " && draft.trim())))) {
               e.preventDefault();
               commit(draft);
             } else if (e.key === "Backspace" && !draft && value.length) {
@@ -103,7 +106,7 @@ export function ChipsInput({
           onBlur={() => draft.trim() && commit(draft)}
           onPaste={(e) => {
             const text = e.clipboardData.getData("text");
-            if (/[\s,;]/.test(text)) {
+            if ((lines ? /[\r\n]/ : /[\s,;]/).test(text)) {
               e.preventDefault();
               commit(draft + text);
             }

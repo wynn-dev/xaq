@@ -1,5 +1,5 @@
 /**
- * In-memory fake of every Google endpoint xaq calls (OAuth, Gmail REST, Pub/Sub REST), served by
+ * In-memory fake of every Google endpoint xaq calls (OAuth, Gmail REST, Pub/Sub REST, Calendar, Drive read-only), served by
  * node:http on 127.0.0.1:<random port>. Deterministic and fast; used by unit tests and the end-to-end test.
  *
  *   const g = await startFakeGoogle();
@@ -78,10 +78,10 @@
  * events; invitees may only change their own response (403 forbiddenForNonOrganizer); insert with an id that exists → 409,
  * with an id that isn't base32hex (a-v0-9, 5–1024 chars) → 400. Unexpanded listings include cancelled occurrences of live series.
  *
- * Google Workspace files (code extensions' Google access; config.google.apisBase points here): GET /drive/v3/about,
- * /drive/v3/files(/:id), /v1/documents/:id, /v4/spreadsheets/:id, /v1/presentations/:id. Each checks the token, then
- * the API (disableApi("drive" | "docs" | "sheets" | "slides") → 403 SERVICE_DISABLED), then its scopes.
- *   addFile(email, { id?, name, mimeType? }) → id      a Drive file (default a Google Doc)
+ * Google Workspace files (code extensions' Google access; config.google.apisBase points here), on the Drive store
+ * (`g.drive.addFile`): GET /drive/v3/about, /drive/v3/files, /v1/documents/:id, /v4/spreadsheets/:id,
+ * /v1/presentations/:id. Each checks the token, then the API (disableApi("drive" | "docs" | "sheets" | "slides") → 403
+ * SERVICE_DISABLED), then its scopes.
  *   tokenScopes(accessToken)                           the scopes an issued token carries (bookkeeping for downscoping)
  *   refreshes                                          every refresh grant: the `scope` asked for and what was issued
  * The refresh grant honours `scope` like RFC 6749 §6: a subset of the refresh token's scopes gets a token limited to
@@ -166,8 +166,6 @@ export interface FakeGoogle {
   ignoreRefreshScope: boolean;
   /** A downscoped refresh's answer (and token) also carries openid, userinfo.email and email. Default false. */
   refreshAddsIdentity: boolean;
-  /** Drive files per user (files.list, files.get; Docs/Sheets/Slides documents.get read their name). */
-  addFile(email: string, file: { id?: string; name: string; mimeType?: string }): string;
   failNext(rule: FailRule): void;
   sent(email: string): GmailMessage[];
   drafts(email: string): { id: string; message: GmailMessage }[];
@@ -189,6 +187,34 @@ export interface FakeGoogle {
   uploads: { path: string; uploadType: string; metadata: Record<string, unknown>; size: number }[];
   /** Google Calendar (routes under /calendar/v3). See the header comment. */
   calendar: FakeCalendar;
+  /** Google Drive, read-only (routes under /drive/v3). See FakeDrive. */
+  drive: FakeDrive;
+}
+
+/** A file in a fake Drive. Google-native files (mimeType application/vnd.google-apps.*) have no content, only exports. */
+export interface FakeDriveFileInput {
+  id?: string;
+  name: string;
+  mimeType: string;
+  /** Bytes of a regular file (alt=media). */
+  content?: Buffer;
+  /** What files.get reports as `size` (default: the content's length; null: none, like Google-native files). */
+  size?: string | null;
+  /** Export results by MIME type; other supported types get a generated stub. */
+  exports?: Record<string, Buffer>;
+  trashed?: boolean;
+}
+
+/**
+ * Google Drive v3, the parts xaq reads (files.get metadata, alt=media downloads, files.export), per account. Routes
+ * need drive.readonly or drive (else 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT). Unknown ids → 404 notFound; alt=media
+ * on a Google-native file → 403 fileNotDownloadable; export of a regular file → 403 fileNotExportable; an export
+ * over 10 MB → 403 exportSizeLimitExceeded, like Google.
+ */
+export interface FakeDrive {
+  addFile(email: string, file: FakeDriveFileInput): string;
+  /** How many bytes each alt=media / export response sent (to check nothing large was fetched). */
+  served: { id: string; kind: "media" | "export"; bytes: number }[];
 }
 
 /** An email Google Calendar would have sent for a write (sendUpdates). */
@@ -545,7 +571,11 @@ const serviceDisabled = (service: keyof typeof SERVICES) => {
           reason: "SERVICE_DISABLED",
           domain: "googleapis.com",
           // Newer error bodies carry the enable link (activationUrl is optional in Google's ErrorInfo).
-          metadata: { service: host, consumer: "projects/123456789", ...(service === "calendar" || service === "docs" ? { activationUrl, serviceTitle: name } : {}) },
+          metadata: {
+            service: host,
+            consumer: "projects/123456789",
+            ...(service === "calendar" || service === "drive" || service === "docs" ? { activationUrl, serviceTitle: name } : {}),
+          },
         },
       ],
     },
@@ -1480,7 +1510,7 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
   };
   const canWrite = (c: FakeCal) => c.entry.accessRole === "owner" || c.entry.accessRole === "writer";
 
-  function calendarBearer(req: IncomingMessage, scopes: string[]): Token {
+  function calendarBearer(req: IncomingMessage, scopes: string[], api: "calendar" | "drive" = "calendar"): Token {
     const t = accessTokens.get((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
     if (!valid(t) || t.expiresAt < Date.now()) {
       throw apiError(401, "Request had invalid authentication credentials. Expected OAuth 2 access token.", "authError");
@@ -1490,7 +1520,7 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
         details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT", domain: "googleapis.com" }],
       });
     }
-    if (disabled.has("calendar")) throw serviceDisabled("calendar");
+    if (disabled.has(api)) throw serviceDisabled(api);
     return t;
   }
 
@@ -2024,18 +2054,87 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     notify,
   };
 
-  // ───── Google Workspace files: Drive, Docs, Sheets, Slides (code extensions' Google access) ─────
-  // Each route checks the token like Google: valid, the API on in the project (403 SERVICE_DISABLED), then one of
-  // the API's scopes (403 ACCESS_TOKEN_SCOPE_INSUFFICIENT). A token minted for Gmail only never passes here, and one
-  // minted for these scopes never passes the Gmail routes.
+  // ───── Google Drive (read-only) ─────
+
+  const DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive"];
+  /** Google's export formats per native type (the subset xaq uses, plus html for docs). */
+  const DRIVE_EXPORTS: Record<string, string[]> = {
+    "application/vnd.google-apps.document": [
+      "application/pdf",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "text/plain",
+      "text/markdown",
+      "text/html",
+    ],
+    "application/vnd.google-apps.spreadsheet": ["application/pdf", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "text/csv"],
+    "application/vnd.google-apps.presentation": ["application/pdf", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "text/plain"],
+    "application/vnd.google-apps.drawing": ["application/pdf", "image/png"],
+  };
+  const driveFiles = new Map<string, Map<string, FakeDriveFileInput & { id: string }>>();
+  let nextDriveId = 1;
+  const driveFile = (req: IncomingMessage, rawId: string) => {
+    const t = calendarBearer(req, DRIVE_SCOPES, "drive");
+    const f = driveFiles.get(t.email)?.get(decodeURIComponent(rawId));
+    if (!f) throw apiError(404, `File not found: ${decodeURIComponent(rawId)}.`, "notFound");
+    return f;
+  };
+  const webViewLink = (f: FakeDriveFileInput & { id: string }) =>
+    f.mimeType.startsWith("application/vnd.google-apps.")
+      ? `https://docs.google.com/${f.mimeType.slice("application/vnd.google-apps.".length)}/d/${f.id}/edit?usp=drivesdk`
+      : `https://drive.google.com/file/d/${f.id}/view?usp=drivesdk`;
+  const sendBytes = (res: ServerResponse, mimeType: string, data: Buffer) => {
+    res.writeHead(200, { "content-type": mimeType, "content-length": String(data.length) });
+    // Large bodies in chunks, so a client that stops reading early is seen (the socket closes).
+    for (let i = 0; i < data.length; i += 1 << 20) res.write(data.subarray(i, i + (1 << 20)));
+    res.end();
+  };
+
+  on("GET", /^\/drive\/v3\/files\/([^/]+)$/, (req, url, _b, m, res) => {
+    const f = driveFile(req, m[1]!);
+    if (url.searchParams.get("alt") === "media") {
+      if (f.mimeType.startsWith("application/vnd.google-apps.")) {
+        throw apiError(403, "Only files with binary content can be downloaded. Use Export with Docs Editors files.", "fileNotDownloadable");
+      }
+      const data = f.content ?? Buffer.alloc(0);
+      driveApi.served.push({ id: f.id, kind: "media", bytes: data.length });
+      sendBytes(res, f.mimeType, data);
+      return;
+    }
+    const size = f.size === undefined ? (f.content ? String(f.content.length) : undefined) : (f.size ?? undefined);
+    return { id: f.id, name: f.name, mimeType: f.mimeType, ...(size !== undefined ? { size } : {}), webViewLink: webViewLink(f), trashed: !!f.trashed };
+  });
+
+  on("GET", /^\/drive\/v3\/files\/([^/]+)\/export$/, (req, url, _b, m, res) => {
+    const f = driveFile(req, m[1]!);
+    const formats = DRIVE_EXPORTS[f.mimeType];
+    if (!formats) throw apiError(403, "Export only supports Docs Editors files.", "fileNotExportable");
+    const mime = url.searchParams.get("mimeType") ?? "";
+    if (!formats.includes(mime)) throw apiError(400, "The requested conversion is not supported.", "badRequest");
+    const data = f.exports?.[mime] ?? Buffer.from(mime === "application/pdf" ? `%PDF-1.7\n% ${f.name} exported\n%%EOF\n` : `${f.name} exported as ${mime}\n`);
+    if (data.length > 10 * 1024 * 1024) throw apiError(403, "This file is too large to be exported.", "exportSizeLimitExceeded");
+    driveApi.served.push({ id: f.id, kind: "export", bytes: data.length });
+    sendBytes(res, mime, data);
+  });
+
+  const driveApi: FakeDrive = {
+    served: [],
+    addFile(email, file) {
+      const key = email.toLowerCase();
+      box(key);
+      const id = file.id ?? `1fakeDrive${String(nextDriveId++).padStart(6, "0")}Xy`;
+      let files = driveFiles.get(key);
+      if (!files) driveFiles.set(key, (files = new Map()));
+      files.set(id, { ...file, id });
+      return id;
+    },
+  };
+
+  // ───── Google Workspace files: Docs, Sheets, Slides, Drive about/list (code extensions' Google access) ─────
+  // Same store as Drive above. Each route checks the token like Google: valid, the API on in the project (403
+  // SERVICE_DISABLED), then one of the API's scopes (403 ACCESS_TOKEN_SCOPE_INSUFFICIENT). A token minted for Gmail
+  // only never passes here, and one minted for these scopes never passes the Gmail routes.
 
   const W = "https://www.googleapis.com/auth/";
-  const files = new Map<string, Map<string, { id: string; name: string; mimeType: string }>>();
-  const filesOf = (email: string) => {
-    let m = files.get(email.toLowerCase());
-    if (!m) files.set(email.toLowerCase(), (m = new Map()));
-    return m;
-  };
   function workspaceBearer(req: IncomingMessage, api: FakeApi, scopes: string[]): Token {
     const t = accessTokens.get((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
     if (!valid(t) || t.expiresAt < Date.now()) throw apiError(401, "Request had invalid authentication credentials. Expected OAuth 2 access token.", "authError");
@@ -2047,23 +2146,19 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     }
     return t;
   }
-  const DRIVE_ANY = ["drive", "drive.readonly", "drive.file", "drive.metadata.readonly"];
-  const fileOr404 = (email: string, id: string, mime?: string) => {
+  const filesOf = (email: string) => driveFiles.get(email.toLowerCase()) ?? new Map<string, FakeDriveFileInput & { id: string }>();
+  const fileOr404 = (email: string, id: string, mime: string) => {
     const f = filesOf(email).get(id);
-    if (!f || (mime && f.mimeType !== mime)) throw apiError(404, `Requested entity was not found.`, "notFound");
+    if (!f || f.mimeType !== mime || f.trashed) throw apiError(404, `Requested entity was not found.`, "notFound");
     return f;
   };
   on("GET", /^\/drive\/v3\/about$/, (req) => {
-    const t = workspaceBearer(req, "drive", DRIVE_ANY);
+    const t = workspaceBearer(req, "drive", ["drive", "drive.readonly", "drive.file", "drive.metadata.readonly"]);
     return { kind: "drive#about", user: { emailAddress: t.email } };
   });
   on("GET", /^\/drive\/v3\/files$/, (req) => {
     const t = workspaceBearer(req, "drive", ["drive", "drive.readonly", "drive.metadata.readonly"]);
-    return { kind: "drive#fileList", files: [...filesOf(t.email).values()] };
-  });
-  on("GET", /^\/drive\/v3\/files\/([^/]+)$/, (req, _url, _b, m) => {
-    const t = workspaceBearer(req, "drive", DRIVE_ANY);
-    return fileOr404(t.email, decodeURIComponent(m[1]!));
+    return { kind: "drive#fileList", files: [...filesOf(t.email).values()].map((f) => ({ id: f.id, name: f.name, mimeType: f.mimeType })) };
   });
   on("GET", /^\/v1\/documents\/([^/]+)$/, (req, _url, _b, m) => {
     const t = workspaceBearer(req, "docs", ["documents", "documents.readonly", "drive", "drive.readonly", "drive.file"]);
@@ -2261,12 +2356,7 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
       return t ? { email: t.email, scopes: [...t.scopes] } : null;
     },
     issued: () => [...accessTokens].map(([accessToken, t]) => ({ accessToken, email: t.email, scopes: [...t.scopes] })),
-    addFile(email, file) {
-      box(email);
-      const id = file.id ?? `file-${randomBytes(6).toString("hex")}`;
-      filesOf(email).set(id, { id, name: file.name, mimeType: file.mimeType ?? "application/vnd.google-apps.document" });
-      return id;
-    },
+    drive: driveApi,
   };
   return fake;
 }

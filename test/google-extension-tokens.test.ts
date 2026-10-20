@@ -280,7 +280,7 @@ describe("core's helper (Gmail's attach-from-Drive)", () => {
     expect(accountHasScopes(ctx, account.id, [DRIVE_READONLY_SCOPE])).toBe(true);
     const t = await googleAccessToken(ctx, account.id, [DRIVE_READONLY_SCOPE]);
     expect(t.scopes).toEqual([DRIVE_READONLY_SCOPE]);
-    fake.addFile(ME, { id: "f1", name: "Budget", mimeType: "application/vnd.google-apps.spreadsheet" });
+    fake.drive.addFile(ME, { id: "f1", name: "Budget", mimeType: "application/vnd.google-apps.spreadsheet" });
     const res = await fetch(`${fake.url}/drive/v3/files/f1`, { headers: { authorization: `Bearer ${t.accessToken}` } });
     expect(await res.json()).toMatchObject({ id: "f1", name: "Budget" });
   });
@@ -305,11 +305,13 @@ describe("the API-enabled probe", () => {
     const on = await probeGoogleApis(ctx, account.id, WORKSPACE_APIS, WORKSPACE_SCOPES);
     expect(on.map((c) => [c.service, c.state])).toEqual(WORKSPACE_APIS.map((a) => [a.service, "enabled"]));
     fake.disableApi("docs", true);
-    fake.disableApi("drive", true);
+    fake.disableApi("slides", true);
     const off = await probeGoogleApis(ctx, account.id, WORKSPACE_APIS, WORKSPACE_SCOPES);
+    // Google's own activationUrl when it sends one (Docs), else the API Library page in the project (Slides).
     expect(off[0]).toMatchObject({ state: "disabled", enableUrl: "https://console.developers.google.com/apis/api/docs.googleapis.com/overview?project=123456789" });
-    expect(off[3]).toMatchObject({ state: "disabled", enableUrl: "https://console.cloud.google.com/apis/library/drive.googleapis.com?project=fake-project" });
+    expect(off[2]).toMatchObject({ state: "disabled", enableUrl: "https://console.cloud.google.com/apis/library/slides.googleapis.com?project=fake-project" });
     expect(off[1]!.state).toBe("enabled");
+    expect(off[3]!.state).toBe("enabled");
     // Every probe token was downscoped: never one with the account's Gmail access.
     for (const r of fake.refreshes.filter((x) => x.requested)) expect(r.issued ?? []).not.toContain(GMAIL_SCOPE);
   });
