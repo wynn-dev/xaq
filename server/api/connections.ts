@@ -410,8 +410,7 @@ export function connectionsApi(ctx: AppContext) {
           return c.json<StartConnectResult>({ status: "error", message: err instanceof HttpError && err.hint ? `${err.message} ${err.hint}` : errorMessage(err) }, 400);
         }
       }
-      ctx.broker.invalidate({ connectionId: googleConnection });
-      ctx.broker.attach(googleConnection);
+      // The consent's onDone bound the account and re-listed the tools (server/extensions/google-auth.ts).
       const v = view(googleConnection);
       if (v.status !== "active") return c.json<StartConnectResult>({ status: "error", message: v.statusReason ?? `${v.name} didn't get access.` }, 400);
       return c.json<StartConnectResult>({ status: "connected", connection: v });

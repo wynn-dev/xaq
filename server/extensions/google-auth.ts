@@ -23,7 +23,7 @@ import { googleProjectId, probeGoogleApis, type GoogleApiCheck } from "../google
 import { callbackMode } from "../google/client.ts";
 import { startConnect as startGoogleConsent } from "../google/oauth.ts";
 import { googleAccessToken } from "../google/scoped.ts";
-import { isExtensionScope, scopeGrants, scopeWithout } from "../google/scopes.ts";
+import { IDENTITY_TOKEN_SCOPES, isExtensionScope, scopeGrants, scopeWithout } from "../google/scopes.ts";
 import { AccountNeedsReauthError, DownscopeError, ScopesNotGrantedError } from "../google/types.ts";
 import { errorMessage, HttpError } from "../util/errors.ts";
 import { GOOGLE_ACCOUNT_INPUT, type GoogleAuth } from "./google-setup.ts";
@@ -133,8 +133,9 @@ export function googleTokenDeps(ctx: AppContext, connectionId: string, preset: G
       if (st.problem || !st.account) throw new SourceError("needs_reauth", st.problem ?? `Pick the Google account ${preset.displayName} works as: Reconnect.`);
       try {
         const t = await untilAborted(googleAccessToken(ctx, st.account.id, st.granted), signal);
-        // Second lock: whatever the token manager says, nothing outside the manifest's scopes reaches the child.
-        const outside = t.scopes.filter((s) => !want.includes(s) || !isExtensionScope(s));
+        // Second lock: whatever the token manager says, nothing outside the manifest's scopes reaches the child, except
+        // the identity scopes Google may add (they can't read mail or files). Core scopes are refused even if listed.
+        const outside = t.scopes.filter((s) => !IDENTITY_TOKEN_SCOPES.includes(s) && (!want.includes(s) || !isExtensionScope(s)));
         if (outside.length) throw new DownscopeError(`The token had access outside ${preset.displayName}'s (${outside.join(", ")}), so xaq didn't hand it over.`);
         expiresAt = t.expiresAt;
         // Tool output that echoes it is scrubbed like a stored credential.
@@ -172,26 +173,29 @@ export function startGoogleConnect(
   if (raw && !account) return { status: "error", message: `${raw.slice(0, 100)} isn't connected to xaq. Add it on the Accounts page first, then pick it here.` };
   if (!account) return { status: "error", message: `Pick the Google account ${preset.displayName} works as (one connected to xaq).` };
   if (account.status === "needs_reauth") return { status: "error", message: `${account.email} needs to be reconnected on the Accounts page first.` };
-  ctx.db.run("UPDATE connections SET google_account_id = ?, auth_type = 'oauth', updated_at = ? WHERE id = ?", account.id, now(), conn.id);
   const have = accountScopes(account);
   if (scopes.every((s) => have.includes(s))) {
-    // Nothing to ask Google: the account already allowed all of it (another connection, or core's own use).
-    // A reconnect brings a disabled (killed) connection back, as for any connection kind.
-    ctx.db.run("UPDATE connections SET status = 'active', status_reason = NULL, updated_at = ? WHERE id = ?", now(), conn.id);
-    syncGoogleConnections(ctx, presetFor, { touch: conn.id });
+    // Nothing to ask Google: the account already allowed all of it (another connection, or core's own use). Bound now.
+    bindAccount(ctx, conn.id, account.id, presetFor);
     return { status: "connected" };
   }
-  // A reconnect of a disabled connection comes back on (as for any reconnect); its status then follows its access.
-  ctx.db.run("UPDATE connections SET status = 'needs_reauth', status_reason = ?, updated_at = ? WHERE id = ? AND status IN ('disabled', 'error')", `Waiting for you to allow access on Google's screen.`, now(), conn.id);
-  syncGoogleConnections(ctx, presetFor);
+  // The account is bound only once Google's consent comes back with some of the access (onDone, keyed by the pending
+  // attempt's state): an abandoned or refused re-pick leaves the connection on the account it had.
   try {
     const r = startGoogleConsent(ctx, {
       reauthAccountId: account.id,
       extension: {
         connectionId: conn.id,
         displayName: preset.displayName,
+        connectionName: conn.name,
         scopes,
-        onDone: () => syncGoogleConnections(ctx, presetFor, { touch: conn.id }),
+        onDone: (accountId, granted) => {
+          if (accountId !== account.id || !scopes.some((s) => granted.includes(s))) return syncGoogleConnections(ctx, presetFor);
+          bindAccount(ctx, conn.id, accountId, presetFor);
+          // The connect call closed the starting child: list the tools again now, as a callback does for OAuth.
+          ctx.broker.invalidate({ connectionId: conn.id });
+          ctx.broker.attach(conn.id);
+        },
       },
     });
     return { status: "authorize", authorizeUrl: r.authUrl, callbackMode: r.callbackMode, redirectUri: callbackMode(ctx).redirectUri };
@@ -199,6 +203,21 @@ export function startGoogleConnect(
     if (err instanceof HttpError) return { status: "error", message: err.hint ? `${err.message} ${err.hint}` : err.message };
     throw err;
   }
+}
+
+/**
+ * Binds the connection to the account and brings it back on: a reconnect re-enables a disabled (killed) connection, as
+ * for any connection kind; its status then follows its access (syncGoogleConnections), and updated_at changes so the
+ * console and CLI see the sign-in landed.
+ */
+function bindAccount(ctx: AppContext, connectionId: string, accountId: string, presetFor: (id: string | null) => IntegrationPreset | null): void {
+  ctx.db.run(
+    "UPDATE connections SET google_account_id = ?, auth_type = 'oauth', status = CASE WHEN status IN ('disabled', 'error') THEN 'needs_reauth' ELSE status END, updated_at = ? WHERE id = ?",
+    accountId,
+    now(),
+    connectionId,
+  );
+  syncGoogleConnections(ctx, presetFor, { touch: connectionId });
 }
 
 /** "Check again": is each of the extension's APIs on in the project, checked as `account` (an email or id)? */

@@ -128,7 +128,8 @@ repo's `scripts/validate.mjs`) checks the shape; a few rules below are only the 
 - **`code.auth` of type `google`:** official extensions only (validator only: the schema lives in the official repo).
   `validateManifest(raw, { official })` refuses it for a third-party manifest, before reading its scopes, so the
   store refuses such an install (and `resolve`) with `invalid`, and `presetFromManifest` refuses it again for a store
-  row that isn't official. Keys `type`, `scopes` and `apis`, all required, nothing else.
+  row that isn't official. Keys `type`, `scopes` and `apis`, all required, nothing else. The name `google-workspace` is
+  reserved (`OFFICIAL_NAMES`): no third-party extension can take it, even offline.
   - `scopes`: 1 to 20 unique `https://www.googleapis.com/auth/<name>` URLs. Never Gmail, Calendar, Pub/Sub or Cloud:
     any name starting `gmail`, `calendar`, `pubsub` or `cloud-platform` is refused, and so is `https://mail.google.com/`
     (`EXTENSION_SCOPE_RE` and `CORE_ONLY_SCOPES` in `server/google/scopes.ts`; the schema has the same pattern).
@@ -270,7 +271,9 @@ in. Core side: `server/extensions/google-auth.ts` (binding, connect, tokens, sta
   account id). It's kept in `connections.google_account_id` (migration 12, `ON DELETE SET NULL`). Nothing else per
   connection is stored: the refresh token stays the account's.
 - **Connecting** (`POST /api/connections/:id/connect` with `inputs.google_account`, or Reconnect with the bound one):
-  - when the account already granted every manifest scope, it's connected at once;
+  - the picked account is bound only when it already granted every manifest scope (connected at once) or once its
+    consent comes back with some of them (kept with the pending attempt): an abandoned or cancelled re-pick leaves the
+    connection on its old account. A successful consent re-lists the connection's tools at once;
   - otherwise Google's consent for exactly the manifest's scopes on top of what the account has
     (`include_granted_scopes=true`, `login_hint`, the existing client and `/oauth/callback`, as "Add Calendar" does).
     It never asks for Calendar on its own, and a later account reconnect asks again for scopes the account had;
@@ -288,7 +291,8 @@ in. Core side: `server/extensions/google-auth.ts` (binding, connect, tokens, sta
     that scope, which "MUST NOT include any scope not originally granted"). Google's client libraries send it the same
     way (google-auth's `refresh_grant`: "If present, all scopes must be authorized for the refresh token").
   - **Fail closed:** the token is handed over only when Google's response names its `scope` and every scope is within
-    what was asked for, and within the manifest's (checked twice). Otherwise it's dropped (`DownscopeError`, the
+    what was asked for, and within the manifest's (checked twice). Identity scopes Google may add (`openid`,
+    `userinfo.email`, `userinfo.profile`, `email`, `profile`) are accepted: they can't read mail or files. Otherwise it's dropped (`DownscopeError`, the
     extension gets needs_reauth). An extension never receives a token that can read or send Gmail.
   - Cached per account and scope set until a minute before it expires, dropped when the account's refresh token
     changes; one refresh in flight per account and scope set. Never written over the account's own token or scopes.

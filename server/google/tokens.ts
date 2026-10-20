@@ -15,7 +15,7 @@ import {
   REQUEST_TIMEOUT_MS,
   sleep,
 } from "./http.ts";
-import { missingScopes } from "./scopes.ts";
+import { IDENTITY_TOKEN_SCOPES, missingScopes } from "./scopes.ts";
 import { AccountNeedsReauthError, DownscopeError, GoogleApiError, ScopesNotGrantedError } from "./types.ts";
 
 /** A downscoped access token (TokenManager.scopedAccessToken). */
@@ -23,7 +23,7 @@ export interface ScopedToken {
   accessToken: string;
   /** Epoch milliseconds. */
   expiresAt: number;
-  /** The scopes Google says the token has: always within the ones asked for. */
+  /** The scopes Google says the token has: within the ones asked for, plus at most identity scopes Google added. */
   scopes: string[];
 }
 
@@ -216,7 +216,9 @@ export class TokenManager {
     // more, and the token is dropped: it may carry the account's whole grant (Gmail included).
     const granted = (res.scope ?? "").split(/\s+/).filter(Boolean);
     if (!granted.length) throw new DownscopeError("Google didn't say which access the downscoped token has, so xaq didn't use it.");
-    const extra = granted.filter((s) => !want.includes(s));
+    // Identity scopes Google may add on its own (openid, userinfo.email/profile) can't read mail or files: accepted.
+    // Anything else outside the request drops the token.
+    const extra = granted.filter((s) => !want.includes(s) && !IDENTITY_TOKEN_SCOPES.includes(s));
     if (extra.length) {
       this.ctx.log.child("google").warn("A downscoped token came back with more access than asked for; dropped", { email: row.email, extra });
       throw new DownscopeError(`Google returned a token with more access than asked for (${extra.join(", ")}), so xaq didn't use it.`);

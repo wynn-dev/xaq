@@ -9,8 +9,9 @@ export const OFFICIAL_REPO = "xaq-extensions";
 /**
  * The official extensions core knows of (the bootstrap pins, docs/EXTENSIONS.md "Migration"): a third-party extension
  * can't take these names even when the registry can't be read. The registry index's names are refused too.
+ * google-workspace has no bootstrap pin; it's reserved because it uses connected Google accounts.
  */
-export const OFFICIAL_NAMES: readonly string[] = ["notion", "t3code", "whoop", "brightspace"];
+export const OFFICIAL_NAMES: readonly string[] = ["notion", "t3code", "whoop", "brightspace", "google-workspace"];
 
 /** Where sources are fetched from. Overridable (tests point them at a fake GitHub). */
 export interface ExtensionUrls {

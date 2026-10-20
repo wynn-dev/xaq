@@ -263,6 +263,8 @@ export interface ExtensionConsent {
   connectionId: string;
   /** The extension's display name ("Google Workspace"), for the messages. */
   displayName: string;
+  /** The connection's name, for "click Reconnect on <name>" (default: displayName). */
+  connectionName?: string;
   scopes: readonly string[];
   onDone?: (accountId: string, granted: string[]) => void;
 }
@@ -276,8 +278,10 @@ const extensionAttempts = new WeakMap<AppContext, Map<string, ExtensionAttempt>>
 function rememberExtensionAttempt(ctx: AppContext, state: string, a: Omit<ExtensionAttempt, "at">): void {
   let m = extensionAttempts.get(ctx);
   if (!m) extensionAttempts.set(ctx, (m = new Map()));
+  // Expired ones go; then, when full, only the oldest pending ones (Map keeps insertion order), never the rest.
   const cutoff = Date.now() - STATE_TTL_MS;
-  for (const [k, v] of m) if (v.at < cutoff || m.size >= COMPLETED_MAX) m.delete(k);
+  for (const [k, v] of m) if (v.at < cutoff) m.delete(k);
+  while (m.size >= COMPLETED_MAX) m.delete(m.keys().next().value!);
   m.set(state, { ...a, at: Date.now() });
 }
 
@@ -299,12 +303,15 @@ export function describeMissing(missing: readonly string[]): string {
   return missing.map((s) => `${scopeGrants(s)}${scopeWithout(s) ? ` (without it, ${scopeWithout(s)})` : ""}`).join("; ");
 }
 
+/** The console's own button for another try: Reconnect on the connection (Connections → <name>). */
+const reconnectIt = (a: ExtensionAttempt) => `click Reconnect on ${a.connectionName ?? a.displayName} (Connections → ${a.connectionName ?? a.displayName})`;
+
 const extensionCancelled = (a: ExtensionAttempt) =>
   new HttpError(
     400,
     "oauth_access_denied",
     `You cancelled giving ${a.displayName} access to ${a.email}, so nothing changed: the account's mail keeps working as before.`,
-    `To try again, click Allow access for ${a.displayName} and choose Continue on Google's screens, leaving its permissions ticked.`,
+    `To try again, ${reconnectIt(a)} and choose Continue on Google's screens, leaving its permissions ticked.`,
   );
 
 const extensionBlocked = (ctx: AppContext, a: ExtensionAttempt) =>
@@ -312,7 +319,7 @@ const extensionBlocked = (ctx: AppContext, a: ExtensionAttempt) =>
     400,
     "oauth_admin_policy_enforced",
     `Your Google Workspace admin doesn't allow xaq's app this access, so nothing changed for ${a.email}: its mail is unaffected.`,
-    `Ask your admin to trust the app: Admin console → Security → API controls → App access control → trust the OAuth client ID ${clientCredentials(ctx).clientId}. Then allow access for ${a.displayName} again.`,
+    `Ask your admin to trust the app: Admin console → Security → API controls → App access control → trust the OAuth client ID ${clientCredentials(ctx).clientId}. Then ${reconnectIt(a)}.`,
   );
 
 /** Saved, but some of the extension's permissions were unticked: what's missing and what won't work. */
@@ -324,7 +331,7 @@ const extensionNotGranted = (a: ExtensionAttempt, missing: string[]) => {
     none
       ? `${a.displayName} didn't get access to ${a.email}: every one of its permissions was unticked on Google's screen. The account's mail keeps working as before.`
       : `${a.displayName} got only part of the access it asks for on ${a.email}. Not granted: ${describeMissing(missing)}. The rest works, and the account's mail is unaffected.`,
-    `To grant the rest, click Allow access for ${a.displayName} again and tick every box on Google's screen.`,
+    `To grant the rest, ${reconnectIt(a)} and tick every box on Google's screen.`,
   );
 };
 
@@ -640,7 +647,7 @@ async function exchange(ctx: AppContext, st: StateRow, code: string, state: stri
           : calendar?.addingTo
             ? `You were adding Google Calendar to ${target.email}, but signed in to Google as ${email}, so nothing changed for ${target.email}: its mail keeps working.${other}`
             : `You were reconnecting ${target.email}, but signed in to Google as ${email}, so ${target.email} is still not reconnected.${other}`,
-        `${ext ? `Click Allow access for ${ext.displayName}` : calendar?.addingTo ? `Click Add Calendar for ${target.email}` : `Reconnect ${target.email}`} again and pick ${target.email} in Google's account chooser (choose "Use another account" if it isn't listed). ` +
+        `${ext ? `Click Reconnect on ${ext.connectionName ?? ext.displayName}` : calendar?.addingTo ? `Click Add Calendar for ${target.email}` : `Reconnect ${target.email}`} again and pick ${target.email} in Google's account chooser (choose "Use another account" if it isn't listed). ` +
           `If Google skips the chooser, sign out of ${email} at accounts.google.com in this browser first, or use a private window.`,
       );
     }

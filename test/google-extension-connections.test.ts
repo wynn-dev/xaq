@@ -258,6 +258,60 @@ describe.skipIf(codeExtensionNodeProblem() !== null)("a google extension, store 
     expect(await body(await request(`/api/connections/${a.id}`))).toMatchObject({ status: "needs_reauth", google: { accountId: null, email: null } });
   });
 
+  it("after the consent the connection lists its tools on its own (nothing here attaches it); identity scopes in Google's answer are fine", async () => {
+    await extensionStore(ctx).install(NAME, { confirmThirdParty: false });
+    await connectFakeAccount(ctx, fake, ME);
+    const c = await createConnection("gws-own");
+    const start = await body(await request(`/api/connections/${c.id}/connect`, { method: "POST", json: { inputs: { google_account: ME } } }));
+    const back = await consentAt(start.authorizeUrl, ME);
+    const page = await request(`${back.pathname}${back.search}`);
+    expect(page.status).toBe(200);
+    // The page reports to the console's connection sign-in, with this connection.
+    const html = await page.text();
+    expect(html).toContain(`"connectionId":"${c.id}"`);
+    expect(html).toContain('"ok":true');
+    const until = Date.now() + 15_000;
+    let view = await body(await request(`/api/connections/${c.id}`));
+    while (view.tools.total === 0 && Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 100));
+      view = await body(await request(`/api/connections/${c.id}`));
+    }
+    expect(view).toMatchObject({ status: "active", google: { email: ME } });
+    expect(view.tools.total).toBeGreaterThan(0);
+    // Google adds identity scopes to the downscoped answer: the child still gets its token.
+    fake.refreshAddsIdentity = true;
+    const s = ctx.broker.source(c.id)!;
+    const out = JSON.parse(textOf(await s.callTool("authfetch", { urls: [`${fake.url}/drive/v3/about`, `${fake.url}/gmail/v1/users/me/profile`] }, ctl(c.id)))) as {
+      results: { status: number }[];
+    };
+    expect(out.results.map((r) => r.status)).toEqual([200, 403]);
+  });
+
+  it("a re-pick binds the new account only once its consent succeeds: an abandoned or cancelled one keeps the old account", async () => {
+    await extensionStore(ctx).install(NAME, { confirmThirdParty: false });
+    const me = await connectFakeAccount(ctx, fake, ME);
+    const ops = await connectFakeAccount(ctx, fake, OPS);
+    const c = await createConnection("gws-repick");
+    await connectAs(c.id, ME);
+    const repick = () => request(`/api/connections/${c.id}/connect`, { method: "POST", json: { inputs: { google_account: OPS } } }).then(body);
+    // Abandoned: the consent never comes back.
+    expect((await repick()).status).toBe("authorize");
+    expect(await body(await request(`/api/connections/${c.id}`))).toMatchObject({ status: "active", google: { accountId: me.id } });
+    // Cancelled on Google's screen: the page tells the console (it stops waiting), and nothing changes.
+    const start = await repick();
+    fake.consentAs(OPS, { deny: true });
+    const back = new URL((await fetch(start.authorizeUrl, { redirect: "manual" })).headers.get("location")!);
+    const page = await request(`${back.pathname}${back.search}`);
+    expect(page.status).toBe(400);
+    const html = await page.text();
+    expect(html).toContain(`"connectionId":"${c.id}"`);
+    expect(html).toContain("oauth_access_denied");
+    expect(html).toContain(`click Reconnect on`);
+    expect(await body(await request(`/api/connections/${c.id}`))).toMatchObject({ status: "active", google: { accountId: me.id } });
+    // Completed: now it's OPS.
+    expect(await connectAs(c.id, OPS)).toMatchObject({ status: "active", google: { accountId: ops.id, email: OPS } });
+  });
+
   it("paste mode: the address Google lands on finishes the extension's connection through /api/connections/finish", async () => {
     await extensionStore(ctx).install(NAME, { confirmThirdParty: false });
     await connectFakeAccount(ctx, fake, ME);

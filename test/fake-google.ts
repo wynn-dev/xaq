@@ -164,6 +164,8 @@ export interface FakeGoogle {
   refreshes: { email: string; requested: string[] | null; issued: string[] | null }[];
   /** Answer refreshes with the whole grant whatever `scope` asks (a server that doesn't downscope). Default false. */
   ignoreRefreshScope: boolean;
+  /** A downscoped refresh's answer (and token) also carries openid, userinfo.email and email. Default false. */
+  refreshAddsIdentity: boolean;
   /** Drive files per user (files.list, files.get; Docs/Sheets/Slides documents.get read their name). */
   addFile(email: string, file: { id?: string; name: string; mimeType?: string }): string;
   failNext(rule: FailRule): void;
@@ -1032,7 +1034,9 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
         throw oauthFail(400, "invalid_scope", "Some requested scopes were not granted by the user.");
       }
       // ignoreRefreshScope: a server that ignores `scope` and answers with the whole grant (what xaq must refuse).
-      const scopes = fake.ignoreRefreshScope ? rt.scopes : (requested ?? rt.scopes);
+      // refreshAddsIdentity: a downscoped answer that also names the identity scopes (Google may add them).
+      const base = fake.ignoreRefreshScope ? rt.scopes : (requested ?? rt.scopes);
+      const scopes = fake.refreshAddsIdentity && requested ? [...new Set([...base, "openid", "https://www.googleapis.com/auth/userinfo.email", "email"])] : base;
       fake.refreshes.push({ email: rt.email, requested, issued: [...scopes] });
       return {
         access_token: issueAccess(rt.email, scopes),
@@ -2251,6 +2255,7 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     calendar: calendarApi,
     refreshes: [],
     ignoreRefreshScope: false,
+    refreshAddsIdentity: false,
     tokenScopes(accessToken) {
       const t = accessTokens.get(accessToken);
       return t ? { email: t.email, scopes: [...t.scopes] } : null;

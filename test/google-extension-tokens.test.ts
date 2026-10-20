@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AppContext } from "../server/context.ts";
 import { getRow } from "../server/google/accounts.ts";
 import { probeGoogleApis } from "../server/google/apis.ts";
-import { startConnect } from "../server/google/oauth.ts";
+import { extensionConsentConnection, startConnect } from "../server/google/oauth.ts";
 import { googleRuntime } from "../server/google/runtime.ts";
 import { accountHasScopes, accountMissingScopes, googleAccessToken, grantedScopes } from "../server/google/scoped.ts";
 import { DOCS_SCOPE, DRIVE_FILE_SCOPE, DRIVE_READONLY_SCOPE, GMAIL_SCOPE, SHEETS_SCOPE, SLIDES_SCOPE, WORKSPACE_SCOPES } from "../server/google/scopes.ts";
@@ -181,6 +181,31 @@ describe("downscoped tokens (the refresh grant's scope)", () => {
     fake.ignoreRefreshScope = false;
     const t = await googleAccessToken(ctx, account.id, [DRIVE_READONLY_SCOPE]);
     expect(fake.tokenScopes(t.accessToken)!.scopes).toEqual([DRIVE_READONLY_SCOPE]);
+  });
+
+  it("accepts identity scopes Google adds to a downscoped answer (they can't read mail or files), nothing else", async () => {
+    const account = await connectWithWorkspace();
+    fake.refreshAddsIdentity = true;
+    const t = await googleAccessToken(ctx, account.id, [DRIVE_READONLY_SCOPE]);
+    expect(t.scopes).toEqual(expect.arrayContaining([DRIVE_READONLY_SCOPE, "openid", `https://www.googleapis.com/auth/userinfo.email`, "email"]));
+    expect(t.scopes).not.toContain(GMAIL_SCOPE);
+    expect((await driveAbout(t.accessToken)).status).toBe(200);
+    expect((await gmailProfile(t.accessToken)).status).toBe(403);
+    // Identity on top of the whole grant is still refused: Gmail is outside the request.
+    fake.ignoreRefreshScope = true;
+    await expect(googleAccessToken(ctx, account.id, [DOCS_SCOPE])).rejects.toThrow(DownscopeError);
+  });
+
+  it("the pending-consent memory evicts only the oldest attempt when full", async () => {
+    const account = await connectFakeAccount(ctx, fake, ME);
+    const states: string[] = [];
+    for (let i = 0; i < 201; i++) {
+      const r = startConnect(ctx, { reauthAccountId: account.id, extension: { connectionId: `con_${i}`, displayName: "Google Workspace", scopes: WORKSPACE_SCOPES } });
+      states.push(new URL(r.authUrl).searchParams.get("state")!);
+    }
+    expect(extensionConsentConnection(ctx, states[0]!)).toBeNull();
+    expect(extensionConsentConnection(ctx, states[1]!)).toBe("con_1");
+    expect(extensionConsentConnection(ctx, states[200]!)).toBe("con_200");
   });
 
   it("access revoked outside xaq (invalid_scope): re-reads the account's scopes and says what's missing", async () => {

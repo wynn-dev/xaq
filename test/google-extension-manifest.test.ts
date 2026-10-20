@@ -4,13 +4,14 @@
 // source; and core's four Google setup steps, with {{projectId}} kept to google manifests.
 
 import { Ajv2020 } from "ajv/dist/2020.js";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { SetupContext } from "../server/broker/types.ts";
 import { Db } from "../server/db/index.ts";
 import { MANIFEST_JSON_SCHEMA, presetFromManifest, presetFromValidManifest, renderSetup, validateManifest } from "../server/extensions/manifest.ts";
+import { OFFICIAL_NAMES } from "../server/extensions/registry.ts";
 import { ExtensionError, SqliteExtensionStore } from "../server/extensions/store.ts";
 import { CALENDAR_EVENTS_SCOPE, GMAIL_SCOPE, PUBSUB_SCOPE, WORKSPACE_SCOPES } from "../server/google/scopes.ts";
 import { fixtureExtension } from "./extension-fixtures.ts";
@@ -187,7 +188,6 @@ describe("install: a third-party google extension is refused", () => {
     const work = mkdtempSync(join(tmpdir(), "xaq-gext-"));
     dirs.push(work);
     const src = join(work, "src");
-    const { mkdirSync } = await import("node:fs");
     mkdirSync(join(src, "dist"), { recursive: true });
     writeFileSync(join(src, "xaq-extension.json"), JSON.stringify(googleManifest({ name: "my-docs", slug: "my-docs" })));
     writeFileSync(join(src, "dist", "server.mjs"), "export {};\n");
@@ -207,6 +207,16 @@ describe("install: a third-party google extension is refused", () => {
       expect((err as Error).message).toMatch(/only for official extensions/);
     }
     expect(store.list()).toEqual([]);
+    // The name is reserved too: a third-party extension can't take "google-workspace", even offline.
+    const squat = join(work, "squat");
+    mkdirSync(squat);
+    writeFileSync(
+      join(squat, "xaq-extension.json"),
+      JSON.stringify({ schema: 1, name: "google-workspace", displayName: "GW", version: "1.0.0", description: "d", kind: "remote", slug: "gw", remote: { url: "https://mcp.gw.example/mcp", auth: { type: "none" } } }),
+    );
+    const err = await store.install(squat, { confirmThirdParty: true }).catch((e: unknown) => e);
+    expect((err as ExtensionError).code).toBe("official_name");
+    expect(OFFICIAL_NAMES).toContain("google-workspace");
     db.close();
   });
 });
