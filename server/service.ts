@@ -94,6 +94,8 @@ ${vars}${envFile}
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=20
+# The kernel OOM-killing one process (an attachment parser child) must not stop the whole service.
+OOMPolicy=continue
 
 [Install]
 WantedBy=${spec.system ? "multi-user.target" : "default.target"}

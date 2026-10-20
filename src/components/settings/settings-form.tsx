@@ -32,6 +32,7 @@ interface FormValues {
   attachmentDirs: string[];
   pairingEnabled: boolean;
   brokerUpstreams: boolean;
+  attachmentSaveDir: string;
 }
 
 const toForm = (s: Settings): FormValues => ({
@@ -46,6 +47,7 @@ const toForm = (s: Settings): FormValues => ({
   attachmentDirs: s.attachmentDirs ?? [],
   pairingEnabled: s.pairingEnabled,
   brokerUpstreams: s.brokerUpstreams,
+  attachmentSaveDir: s.attachmentSaveDir,
 });
 
 // The patch below only carries changed fields.
@@ -61,6 +63,7 @@ const fromForm = (v: FormValues): Settings => ({
   attachmentDirs: v.attachmentDirs,
   pairingEnabled: v.pairingEnabled,
   brokerUpstreams: v.brokerUpstreams,
+  attachmentSaveDir: v.attachmentSaveDir.trim(),
 });
 
 const intError = (label: string, min: number, max: number) => (v: string) => {
@@ -246,6 +249,33 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
             <form.Field name="retentionDays" validators={{ onChange: ({ value }) => intError("Retention", 1, 3650)(value) }}>
               {(field) => (
                 <NumberField field={field} label="Keep history for" unit="days" description="Events, webhook deliveries, audit entries and decided approvals older than this are deleted." />
+              )}
+            </form.Field>
+            <form.Field
+              name="attachmentSaveDir"
+              validators={{ onChange: ({ value }) => (value.trim() && !value.trim().startsWith("/") ? "Use an absolute path, or leave it empty." : undefined) }}
+            >
+              {(field) => (
+                <Field data-invalid={!field.state.meta.isValid} className="sm:col-span-2">
+                  <FieldLabel htmlFor={field.name}>Attachment folder</FieldLabel>
+                  <Input
+                    id={field.name}
+                    className="font-mono"
+                    spellCheck={false}
+                    placeholder="attachments/ in the data directory"
+                    value={field.state.value}
+                    onBlur={field.handleBlur}
+                    onChange={(e) => field.handleChange(e.target.value)}
+                    aria-invalid={!field.state.meta.isValid}
+                  />
+                  {!field.state.meta.isValid ? (
+                    <FieldError>{field.state.meta.errors.join(" ")}</FieldError>
+                  ) : (
+                    <FieldDescription>
+                      Where get_attachment saves files it can't show as text, on this server. Only files xaq saved there are ever deleted: after 7 days, or oldest first past 1 GB in total. It must be yours and not writable by everyone.
+                    </FieldDescription>
+                  )}
+                </Field>
               )}
             </form.Field>
           </FieldGroup>

@@ -3,6 +3,7 @@
 // the extension-to-host protocol, prompts and resources, the lifecycle (integrity, crash restarts, SIGTERM/SIGKILL)
 // and the limits. Real child processes, no network.
 
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -178,9 +179,33 @@ describe("spawn", () => {
     expect(NODE_HAS_ALLOW_NET).toBe(process.allowedNodeEnvironmentFlags.has("--allow-net"));
     // The preload is a data: URL (no file-system allow) that pins every signal route.
     expect(CHILD_PRELOAD).toMatch(/^data:text\/javascript,/);
-    for (const k of ['"kill"', '"_kill"', '"_debugProcess"', '"_debugEnd"', '"setPriority"', "syncBuiltinESMExports", "writable:false", "configurable:false", 'process.on("SIGUSR1"']) {
+    for (const k of ['"kill"', '"_kill"', '"_debugProcess"', '"_debugEnd"', '"setPriority"', '"setFlagsFromString"', "syncBuiltinESMExports", "writable:false", "configurable:false", 'process.on("SIGUSR1"']) {
       expect(CHILD_PRELOAD).toContain(k);
     }
+  });
+
+  it("the preload pins v8.setFlagsFromString on every route (no --allow-natives-syntax for extensions)", () => {
+    // Runs on any Node: this checks the preload itself, under the same --permission flags the host passes.
+    const probe = `
+      import v8, { setFlagsFromString as named } from "node:v8";
+      import { createRequire } from "node:module";
+      const out = {};
+      const routes = {
+        defaultImport: () => v8.setFlagsFromString("--allow-natives-syntax"),
+        namedImport: () => named("--allow-natives-syntax"),
+        dynamicImport: async () => (await import("node:v8")).setFlagsFromString("--allow-natives-syntax"),
+        builtin: () => process.getBuiltinModule("node:v8").setFlagsFromString("--allow-natives-syntax"),
+        require: () => createRequire("/x.js")("v8").setFlagsFromString("--allow-natives-syntax"),
+        unpin: () => { Object.defineProperty(v8, "setFlagsFromString", { value: () => {} }); },
+      };
+      for (const [k, f] of Object.entries(routes)) {
+        try { await f(); out[k] = "ALLOWED"; } catch (e) { out[k] = "denied: " + e.message; }
+      }
+      console.log(JSON.stringify(out));`;
+    const r = spawnSync(process.execPath, ["--permission", "--no-experimental-sqlite", "--import", CHILD_PRELOAD, "--input-type=module", "-e", probe], { env: {}, encoding: "utf8" });
+    const out = JSON.parse(r.stdout.trim().split("\n").at(-1)!) as Record<string, string>;
+    for (const k of ["defaultImport", "namedImport", "dynamicImport", "builtin", "require"]) expect(out[k], k).toBe("denied: v8.setFlagsFromString is disabled for xaq extensions");
+    expect(out.unpin).toMatch(/^denied: Cannot redefine property: setFlagsFromString/);
   });
 
   it.skipIf(!NODE_OK)("the live child got exactly that argv, cwd = its state dir (0700), and only the contract's environment", async () => {

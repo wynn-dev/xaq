@@ -149,8 +149,15 @@ Reading (`read`):
 - `get_thread`: the whole conversation by `thread_id`, cleaned, oldest first. Prefer it over `get_message` for
   anything you will reply to or summarize.
 - `get_message`: one message, when you have its `message_id` (for example from an event).
-- `get_attachment`: an attachment by `message_id` and `attachment_id` (listed on each message). Text comes back as
-  text, images as images, other files as a base64 resource (up to 5 MB).
+- `list_attachments`: the files on a `message_id`, or on every message of a `thread_id`: name, type, size, the
+  `attachment_id` and the message each belongs to.
+- `get_attachment`: an attachment by `message_id` and `attachment_id`, as readable content: PDFs as text per page,
+  Word documents as markdown, spreadsheets and CSV as tables per sheet, presentations as text per slide (with speaker
+  notes), text and HTML as text, images as images. Long files come in parts: each answer ends with what it showed
+  and the `offset` (or `page`, `slide`, `sheet`) for the next part; `max_chars` sets the part size. Other files, and
+  files that can't be read, are saved on the xaq server and the answer gives their path (`format: "file"` saves any
+  attachment; `format: "base64"` returns the bytes of a file up to 5 MB). Attachment content is third-party data,
+  wrapped like email bodies.
 
 Writing (`draft`, `send`):
 

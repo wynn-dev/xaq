@@ -14,8 +14,10 @@
 //   non-configurable, on the module objects `getBuiltinModule("node:process")` / `("os")` and `require` return; then
 //   `syncBuiltinESMExports` so `import { setPriority } from "node:os"` gets the thrower too). So the child can't
 //   SIGUSR1 xaq into opening its inspector, kill xaq or another process of the same user, or lower xaq's priority.
-//   It also ignores SIGUSR1 itself. Only OS-level isolation closes this fully. Verified on 22.13.0, 22.23.3, 24.22.0
-//   and 26.12.0, every route (default, named and dynamic imports, getBuiltinModule).
+//   It also ignores SIGUSR1 itself. v8.setFlagsFromString is pinned the same way (it could turn on
+//   --allow-natives-syntax, and from there memory-corruption primitives). Only OS-level isolation closes this fully.
+//   Verified on 22.13.0, 22.23.3, 24.22.0 and 26.12.0, every route (default, named and dynamic imports,
+//   getBuiltinModule).
 // - The Node floor (codeExtensionNodeProblem): releases before the 2026 permission-model fixes have known bypasses.
 
 import { chmodSync, lstatSync, mkdirSync, readdirSync, rmSync } from "node:fs";
@@ -26,7 +28,7 @@ export const XAQ_EXT_PROTOCOL = "1";
 
 /** Loaded before the extension's entry (a data: URL needs no file-system allow). See the header. */
 export const CHILD_PRELOAD =
-  'data:text/javascript,const deny=(o,k,m)=>Object.defineProperty(o,k,{value(){throw new Error(m)},writable:false,configurable:false});for(const k of ["kill","_kill","_debugProcess","_debugEnd"])deny(process,k,"Signals are disabled for xaq extensions");deny(process.getBuiltinModule("node:os"),"setPriority","os.setPriority is disabled for xaq extensions");process.getBuiltinModule("node:module").syncBuiltinESMExports();process.on("SIGUSR1",()=>{});';
+  'data:text/javascript,const deny=(o,k,m)=>Object.defineProperty(o,k,{value(){throw new Error(m)},writable:false,configurable:false});for(const k of ["kill","_kill","_debugProcess","_debugEnd"])deny(process,k,"Signals are disabled for xaq extensions");deny(process.getBuiltinModule("node:os"),"setPriority","os.setPriority is disabled for xaq extensions");deny(process.getBuiltinModule("node:v8"),"setFlagsFromString","v8.setFlagsFromString is disabled for xaq extensions");process.getBuiltinModule("node:module").syncBuiltinESMExports();process.on("SIGUSR1",()=>{});';
 
 /**
  * The oldest release of each Node line that may run code extensions: the latest security release with
