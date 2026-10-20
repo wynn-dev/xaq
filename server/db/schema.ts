@@ -496,4 +496,10 @@ export const MIGRATIONS: string[] = [
     installed_at TEXT NOT NULL
   );
   `,
+  /* 12: code extensions with a Google account (docs/EXTENSIONS.md "Google accounts for code extensions"). Additive. */ `
+  -- The connected Google account a connection of an extension with "code.auth": { "type": "google" } works as, picked
+  -- in its setup. Its tokens stay the account's (accounts.refresh_token_enc): the connection only gets downscoped
+  -- access tokens. NULL for every other connection, and once the account is removed from xaq (it then needs setup).
+  ALTER TABLE connections ADD COLUMN google_account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL;
+  `,
 ];

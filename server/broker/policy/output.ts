@@ -2,6 +2,7 @@
 // (ANSI, invisible characters), scrubbed of this connection's secrets, truncated and nonce-wrapped, with every
 // xaq delimiter escaped inside. structuredContent is validated against the pinned outputSchema.
 
+import { handedTokens } from "../../extensions/handed-tokens.ts";
 import { escapeDelimiters, stripInvisible, truncateText } from "../../mail/content.ts";
 import { randomToken } from "../../util/ids.ts";
 import type { ContentBlock, CredentialStore, ToolResult } from "../types.ts";
@@ -64,7 +65,8 @@ export function makeScrubber(secrets: (string | null | undefined)[]): Scrubber {
 
 /** This connection's decrypted secrets: access and refresh tokens, and the static header's value (and its token part). */
 export function connectionSecrets(credentials: Pick<CredentialStore, "tokens" | "header" | "client">, connectionId: string): string[] {
-  const out: string[] = [];
+  // Tokens handed to a code extension that no store holds (a Google extension's downscoped ones).
+  const out: string[] = handedTokens(connectionId);
   try {
     // The OAuth client registration / user app (client_secret, a WHOOP app's secret…): every secret-named string.
     const c = credentials.client(connectionId);

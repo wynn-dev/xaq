@@ -8,6 +8,8 @@
 
 import { classifyTool } from "../broker/catalog/classify.ts";
 import type { IntegrationPreset, PresetAuth, SetupContext, SetupStep, ToolClass, ToolDef } from "../broker/types.ts";
+import { CORE_ONLY_SCOPES, EXTENSION_SCOPE_RE, GOOGLE_SERVICE_RE, isExtensionScope } from "../google/scopes.ts";
+import { googleSetupSteps } from "./google-setup.ts";
 import { codeExtensionSource } from "./host/index.ts";
 import { computeIntegrity } from "./integrity.ts";
 import type { InstalledExtension } from "./store.ts";
@@ -38,8 +40,20 @@ export type RemoteAuth =
    */
   | { type: "mcp_oauth"; broadScopes?: string[]; scopeNotes?: { scope: string; note: string }[] };
 
+/** One Google API a `google` auth needs on in the user's Cloud project: `docs.googleapis.com`, "Google Docs API". */
+export interface GoogleApi {
+  service: string;
+  label: string;
+}
+
 export type CodeAuth =
   | { type: "none" }
+  /**
+   * Official extensions only: a connection is bound to one of xaq's connected Google accounts and gets access tokens
+   * downscoped to exactly `scopes`, added to the account by incremental consent (docs/EXTENSIONS.md "Google accounts
+   * for code extensions"). Never Gmail, Calendar or Pub/Sub scopes.
+   */
+  | { type: "google"; scopes: string[]; apis: GoogleApi[] }
   | {
       type: "user_app";
       authorizeUrl: string;
@@ -106,7 +120,11 @@ const ENTRY_RE = /^(?!\/)(?!.*(^|\/)\.\.?(\/|$))[A-Za-z0-9_./-]{1,200}\.(mjs|js)
 /** xaq's own event prefixes (shared/types.ts): an extension that names its events can't be called like one. */
 const RESERVED_NAMES = new Set(["message", "thread", "label", "account", "sync", "calendar", "connection", "approval", "xaq"]);
 const TEMPLATE_VARS = ["publicUrl", "redirectUri", "webhookUrl"] as const;
-type TemplateVar = (typeof TEMPLATE_VARS)[number];
+/** Only in a manifest with a `google` code.auth: the install's Google Cloud project ID (never at the start of a link). */
+const PROJECT_ID_VAR = "projectId";
+type TemplateVar = (typeof TEMPLATE_VARS)[number] | typeof PROJECT_ID_VAR;
+/** What the project ID reads as when xaq doesn't know it (the Google step of the setup wizard isn't done). */
+export const UNKNOWN_PROJECT_ID = "YOUR_PROJECT_ID";
 const TEMPLATE_RE = /\{\{\s*([^{}]*?)\s*\}\}/g;
 /** A link built on one of the install's addresses: the variable, then a path, query, fragment or nothing. */
 const TEMPLATE_LINK_RE = /^\{\{\s*(publicUrl|redirectUri|webhookUrl)\s*\}\}([/?#]|$)/;
@@ -174,12 +192,20 @@ function httpsUrl(v: unknown, path: string): string {
   return s;
 }
 
-/** Template variables used in a string; unknown ones are refused. */
-function templateVars(s: string, path: string): TemplateVar[] {
+/** Template variables used in a string; unknown ones are refused. {{projectId}} only with `projectId` (a google auth). */
+function templateVars(s: string, path: string, projectId = false): TemplateVar[] {
   const out: TemplateVar[] = [];
   for (const m of s.matchAll(TEMPLATE_RE)) {
     const name = m[1]!;
-    if (!(TEMPLATE_VARS as readonly string[]).includes(name)) fail(path, `uses {{${name.slice(0, 40)}}}: only {{publicUrl}}, {{redirectUri}} and {{webhookUrl}} are available`);
+    const known = (TEMPLATE_VARS as readonly string[]).includes(name) || (projectId && name === PROJECT_ID_VAR);
+    if (!known) {
+      fail(
+        path,
+        name === PROJECT_ID_VAR
+          ? 'uses {{projectId}}, which only an extension with "code.auth": { "type": "google" } can use'
+          : `uses {{${name.slice(0, 40)}}}: only {{publicUrl}}, {{redirectUri}} and {{webhookUrl}} are available${projectId ? ", and {{projectId}}" : ""}`,
+      );
+    }
     out.push(name as TemplateVar);
   }
   // A stray brace pair left after removing the valid ones is a typo ({{publicUrl}, {publicUrl}}).
@@ -187,9 +213,9 @@ function templateVars(s: string, path: string): TemplateVar[] {
   return out;
 }
 
-function templated(v: unknown, path: string, opts: { max: number; multiline?: boolean }, used: Set<TemplateVar>): string {
+function templated(v: unknown, path: string, opts: { max: number; multiline?: boolean; projectId?: boolean }, used: Set<TemplateVar>): string {
   const s = str(v, path, opts);
-  for (const name of templateVars(s, path)) used.add(name);
+  for (const name of templateVars(s, path, opts.projectId)) used.add(name);
   return s;
 }
 
@@ -209,28 +235,33 @@ function noTemplate(s: string, path: string): string {
   return s;
 }
 
-function validateStep(v: unknown, path: string): ManifestSetupStep {
+function validateStep(v: unknown, path: string, projectId = false): ManifestSetupStep {
   const o = obj(v, path, ["id", "title", "body", "link", "copy", "input", "when"], ["id", "title", "body"]);
   const used = new Set<TemplateVar>();
+  if (o.id !== undefined && typeof o.id === "string" && o.id.startsWith("google-")) fail(`${path}.id`, 'can\'t start with "google-": xaq uses those for its own Google steps');
   const step: ManifestSetupStep = {
     id: str(o.id, `${path}.id`, { max: 32, re: STEP_ID_RE, what: "lowercase letters, digits and dashes" }),
-    title: templated(o.title, `${path}.title`, { max: 120 }, used),
-    body: templated(o.body, `${path}.body`, { max: 4000, multiline: true }, used),
+    title: templated(o.title, `${path}.title`, { max: 120, projectId }, used),
+    body: templated(o.body, `${path}.body`, { max: 4000, multiline: true, projectId }, used),
   };
   if (o.link !== undefined) {
     const l = obj(o.link, `${path}.link`, ["label", "url"], ["label", "url"]);
-    const label = templated(l.label, `${path}.link.label`, { max: 120 }, used);
-    const url = templated(l.url, `${path}.link.url`, { max: 2048 }, used);
+    const label = templated(l.label, `${path}.link.label`, { max: 120, projectId }, used);
+    // {{projectId}} can't be the start of a link (TEMPLATE_LINK_RE), only after an https host: it never picks the host.
+    const url = templated(l.url, `${path}.link.url`, { max: 2048, projectId }, used);
     // A link is either an https URL or one of this install's own addresses, followed by a path, query, fragment or
     // nothing (so `{{publicUrl}}@evil.example` can't turn the install's address into a user name).
     if (/^\{\{/.test(url)) {
       if (!TEMPLATE_LINK_RE.test(url)) fail(`${path}.link.url`, "must be {{publicUrl}}, {{redirectUri}} or {{webhookUrl}} followed by /, ?, # or nothing");
     } else httpsUrl(url, `${path}.link.url`);
+    // {{projectId}} only in the path, query or fragment of a link: never in its host.
+    const at = url.search(/\{\{\s*projectId\s*\}\}/);
+    if (at >= 0 && !/^https:\/\/[^/?#{}]+[/?#]/.test(url.slice(0, at))) fail(`${path}.link.url`, "can use {{projectId}} only after the host (in the path, query or fragment)");
     step.link = { label, url };
   }
   if (o.copy !== undefined) {
     const c = obj(o.copy, `${path}.copy`, ["label", "value"], ["label", "value"]);
-    step.copy = { label: templated(c.label, `${path}.copy.label`, { max: 120 }, used), value: templated(c.value, `${path}.copy.value`, { max: 2048 }, used) };
+    step.copy = { label: templated(c.label, `${path}.copy.label`, { max: 120, projectId }, used), value: templated(c.value, `${path}.copy.value`, { max: 2048, projectId }, used) };
   }
   if (o.input !== undefined) {
     const i = obj(o.input, `${path}.input`, ["key", "label", "secret", "pattern", "placeholder"], ["key", "label"]);
@@ -337,16 +368,51 @@ function validateRemote(v: unknown): NonNullable<Manifest["remote"]> {
   return remote;
 }
 
-function validateCode(v: unknown, name: string): NonNullable<Manifest["code"]> {
+function validateGoogleAuth(a: Obj, official: boolean): Extract<CodeAuth, { type: "google" }> {
+  // Checked before anything else: a third-party manifest never gets as far as naming Google scopes.
+  if (!official) {
+    fail("code.auth", 'of type "google" is only for official extensions (from wynn-dev/xaq-extensions): it uses your connected Google accounts');
+  }
+  obj(a, "code.auth", ["type", "scopes", "apis"], ["type", "scopes", "apis"]);
+  const scopes = strList(
+    a.scopes,
+    "code.auth.scopes",
+    (s, p) => {
+      const scope = str(s, p, { max: 200 });
+      if (!/^https:\/\/www\.googleapis\.com\/auth\/[a-z0-9][a-z0-9._-]{0,99}$/.test(scope)) fail(p, "must be a Google API scope URL (https://www.googleapis.com/auth/…)");
+      if (!isExtensionScope(scope)) fail(p, "is a Gmail, Calendar, Pub/Sub or Cloud scope: those stay with xaq's core and an extension can never ask for them");
+      return scope;
+    },
+    20,
+  );
+  if (!scopes.length) fail("code.auth.scopes", "must list at least one scope");
+  if (!Array.isArray(a.apis)) fail("code.auth.apis", "must be an array of { service, label }");
+  if (a.apis.length > 20) fail("code.auth.apis", "must have at most 20 entries");
+  const apis = a.apis.map((x: unknown, i: number) => {
+    const p = `code.auth.apis[${i}]`;
+    const e = obj(x, p, ["service", "label"], ["service", "label"]);
+    return {
+      service: str(e.service, `${p}.service`, { max: 100, re: GOOGLE_SERVICE_RE, what: 'a Google API service name such as "docs.googleapis.com"' }),
+      label: noTemplate(str(e.label, `${p}.label`, { max: 80 }), `${p}.label`),
+    };
+  });
+  const services = apis.map((x) => x.service);
+  if (new Set(services).size !== services.length) fail("code.auth.apis", "names a service twice");
+  return { type: "google", scopes, apis };
+}
+
+function validateCode(v: unknown, name: string, official: boolean): NonNullable<Manifest["code"]> {
   const o = obj(v, "code", ["entry", "node", "auth", "network", "events"], ["entry", "auth"]);
   const code: NonNullable<Manifest["code"]> = {
     entry: str(o.entry, "code.entry", { max: 200, re: ENTRY_RE, what: "a relative path to one .mjs or .js file inside the extension" }),
     auth: { type: "none" },
   };
   if (o.node !== undefined) code.node = str(o.node, "code.node", { max: 64, re: /^[<>=^~ 0-9.x|*-]+$/, what: 'a semver range such as ">=22.13"' });
-  const a = obj(o.auth, "code.auth", ["type", "authorizeUrl", "tokenUrl", "scopes", "clientIdInput", "clientSecretInput", "refreshScope"], ["type"]);
+  const a = obj(o.auth, "code.auth", ["type", "authorizeUrl", "tokenUrl", "scopes", "clientIdInput", "clientSecretInput", "refreshScope", "apis"], ["type"]);
   if (a.type === "none") {
     if (Object.keys(a).length > 1) fail("code.auth", 'of type "none" takes no other keys');
+  } else if (a.type === "google") {
+    code.auth = validateGoogleAuth(a, official);
   } else if (a.type === "user_app") {
     obj(a, "code.auth", ["type", "authorizeUrl", "tokenUrl", "scopes", "clientIdInput", "clientSecretInput", "refreshScope"], ["authorizeUrl", "tokenUrl", "scopes", "clientIdInput", "clientSecretInput"]);
     code.auth = {
@@ -360,7 +426,7 @@ function validateCode(v: unknown, name: string): NonNullable<Manifest["code"]> {
     if (a.refreshScope !== undefined) code.auth.refreshScope = str(a.refreshScope, "code.auth.refreshScope", { max: 1000, re: SCOPE_LIST_RE, what: "OAuth scopes separated by single spaces" });
     if (code.auth.clientIdInput === code.auth.clientSecretInput) fail("code.auth", "needs different inputs for the client id and secret");
   } else {
-    fail("code.auth.type", 'must be "user_app" or "none"');
+    fail("code.auth.type", 'must be "user_app", "google" or "none"');
   }
   if (o.network !== undefined) code.network = strList(o.network, "code.network", (s, p) => str(s, p, { max: 253, re: HOST_RE, what: "a lowercase host name" }), 50);
   if (o.events !== undefined) {
@@ -380,8 +446,12 @@ function validateCode(v: unknown, name: string): NonNullable<Manifest["code"]> {
   return code;
 }
 
-/** Validates a parsed `xaq-extension.json`. Throws ManifestError naming the first problem. Returns a fresh copy. */
-export function validateManifest(raw: unknown): Manifest {
+/**
+ * Validates a parsed `xaq-extension.json`. Throws ManifestError naming the first problem. Returns a fresh copy.
+ * `official`: the extension comes from the official registry. Only then may it use `"code.auth": { "type": "google" }`
+ * (a third-party one is refused here, so at install too); the default is third-party.
+ */
+export function validateManifest(raw: unknown, opts: { official?: boolean } = {}): Manifest {
   const o = obj(
     raw,
     "the manifest",
@@ -408,8 +478,9 @@ export function validateManifest(raw: unknown): Manifest {
   } else {
     if (o.remote !== undefined) fail("remote", 'is only for "kind": "remote"');
     if (o.code === undefined) fail("code", 'is required for "kind": "code"');
-    m.code = validateCode(o.code, name);
+    m.code = validateCode(o.code, name, opts.official === true);
   }
+  const projectId = m.code?.auth.type === "google";
   if (o.reconnectPolicy !== undefined) {
     const r = obj(o.reconnectPolicy, "reconnectPolicy", ["maxLifetimeDays", "idleDays", "tokenLifetimeCapDays"]);
     m.reconnectPolicy = {};
@@ -420,7 +491,7 @@ export function validateManifest(raw: unknown): Manifest {
   if (o.setup !== undefined) {
     if (!Array.isArray(o.setup)) fail("setup", "must be an array");
     if (o.setup.length > 30) fail("setup", "must have at most 30 steps");
-    m.setup = o.setup.map((s, i) => validateStep(s, `setup[${i}]`));
+    m.setup = o.setup.map((s, i) => validateStep(s, `setup[${i}]`, projectId));
     const ids = m.setup.map((s) => s.id);
     if (new Set(ids).size !== ids.length) fail("setup", "has two steps with the same id");
     const keys = m.setup.flatMap((s) => (s.input ? [s.input.key] : []));
@@ -533,6 +604,33 @@ export const MANIFEST_JSON_SCHEMA = {
                 refreshScope: stringOf(1000, { pattern: SCOPE_LIST_RE.source }),
               },
             },
+            // Official extensions only (the validator's rule: the schema lives in the official repo).
+            {
+              type: "object",
+              additionalProperties: false,
+              required: ["type", "scopes", "apis"],
+              properties: {
+                type: { const: "google" },
+                scopes: {
+                  type: "array",
+                  minItems: 1,
+                  maxItems: 20,
+                  uniqueItems: true,
+                  items: stringOf(200, { pattern: EXTENSION_SCOPE_RE.source, not: { enum: [...CORE_ONLY_SCOPES] } }),
+                },
+                apis: {
+                  type: "array",
+                  maxItems: 20,
+                  uniqueItems: true,
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["service", "label"],
+                    properties: { service: stringOf(100, { pattern: GOOGLE_SERVICE_RE.source }), label: stringOf(80, noTemplate$) },
+                  },
+                },
+              },
+            },
           ],
         },
         network: { type: "array", maxItems: 50, uniqueItems: true, items: stringOf(253, { pattern: HOST_RE.source }) },
@@ -611,13 +709,16 @@ export const MANIFEST_JSON_SCHEMA = {
 
 /** The manifest's setup steps for this install: `when` applied, {{variables}} filled in. */
 export function renderSetup(steps: readonly ManifestSetupStep[], ctx: SetupContext): SetupStep[] {
-  const vars: Record<TemplateVar, string> = { publicUrl: ctx.publicUrl, redirectUri: ctx.redirectUri, webhookUrl: ctx.webhookUrl ?? "" };
-  const fill = (s: string) => s.replace(TEMPLATE_RE, (_, name: string) => vars[name as TemplateVar]);
+  // {{projectId}} validated only in a google manifest; outside a link it is shown as is, inside one it's encoded.
+  const projectId = ctx.google?.projectId ?? UNKNOWN_PROJECT_ID;
+  const vars: Record<TemplateVar, string> = { publicUrl: ctx.publicUrl, redirectUri: ctx.redirectUri, webhookUrl: ctx.webhookUrl ?? "", projectId };
+  const fill = (s: string) => s.replace(TEMPLATE_RE, (_, name: string) => vars[name as TemplateVar] ?? "");
+  const fillUrl = (s: string) => s.replace(TEMPLATE_RE, (_, name: string) => (name === PROJECT_ID_VAR ? encodeURIComponent(projectId) : (vars[name as TemplateVar] ?? "")));
   const out: SetupStep[] = [];
   for (const s of steps) {
     if (s.when === "webhookUrl" && !ctx.webhookUrl) continue;
     const step: SetupStep = { id: s.id, title: fill(s.title), body: fill(s.body) };
-    if (s.link) step.link = { label: fill(s.link.label), url: fill(s.link.url) };
+    if (s.link) step.link = { label: fill(s.link.label), url: fillUrl(s.link.url) };
     if (s.copy) step.copy = { label: fill(s.copy.label), value: fill(s.copy.value) };
     if (s.input) step.input = { ...s.input };
     out.push(step);
@@ -703,9 +804,14 @@ export function presetFromValidManifest(m: Manifest, ext: InstalledExtension | n
     };
   }
   const c = m.code!;
-  const auth: PresetAuth = c.auth.type === "user_app" ? { ...c.auth, scopes: [...c.auth.scopes] } : { type: "none" };
+  // A google auth survives only for an official extension (validateManifest refuses it otherwise; this is the second lock).
+  const google = c.auth.type === "google" && opts.official ? { type: "google" as const, scopes: [...c.auth.scopes], apis: c.auth.apis.map((a) => ({ ...a })) } : null;
+  if (c.auth.type === "google" && !google) throw new ManifestError(`${MANIFEST_FILE}: code.auth of type "google" is only for official extensions`);
+  const auth: PresetAuth = c.auth.type === "user_app" ? { ...c.auth, scopes: [...c.auth.scopes] } : (google ?? { type: "none" });
   return {
     ...base,
+    // A google auth: core's four Google steps (account, APIs, consent, done) come first, then the manifest's own.
+    ...(google ? { setupSteps: (ctx: SetupContext) => [...googleSetupSteps(m.displayName, google, ctx), ...renderSetup(setup, ctx)] } : {}),
     kind: "native",
     auth,
     // The code host (server/extensions/host): one sandboxed child per connection. Before every start it re-checks
@@ -726,7 +832,7 @@ function verifyInstall(ext: InstalledExtension): boolean {
 
 /** The IntegrationPreset of an installed extension. Throws ManifestError when its manifest is invalid or not its own. */
 export function presetFromManifest(ext: InstalledExtension): IntegrationPreset {
-  const m = validateManifest(ext.manifest);
+  const m = validateManifest(ext.manifest, { official: ext.official });
   if (m.name !== ext.name) throw new ManifestError(`${MANIFEST_FILE}: name is "${m.name}", but the extension is installed as "${ext.name}"`);
   if (m.kind !== ext.kind) throw new ManifestError(`${MANIFEST_FILE}: kind is "${m.kind}", but the extension is installed as "${ext.kind}"`);
   return presetFromValidManifest(m, ext, { official: ext.official });

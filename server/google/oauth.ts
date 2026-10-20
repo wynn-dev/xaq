@@ -11,7 +11,19 @@ import { callbackMode, clientCredentials, markRedirectVerified } from "./client.
 import { asHttpError, buildUrl, REQUEST_TIMEOUT_MS } from "./http.ts";
 import { provisioningPrincipal } from "./pubsub.ts";
 import { postToken, refreshExpiry, refreshExpiryKind, type TokenResponse } from "./tokens.ts";
-import { CALENDAR_SCOPES, describeScopes, EXTRA_SCOPE_SETS, GMAIL_SCOPE, hasScopes, MAIL_SCOPES, missingScopes, PUBSUB_SCOPE } from "./scopes.ts";
+import {
+  CALENDAR_SCOPES,
+  describeScopes,
+  EXTRA_SCOPE_SETS,
+  GMAIL_SCOPE,
+  hasScopes,
+  IDENTITY_TOKEN_SCOPES,
+  MAIL_SCOPES,
+  missingScopes,
+  PUBSUB_SCOPE,
+  scopeGrants,
+  scopeWithout,
+} from "./scopes.ts";
 import { GoogleApiError } from "./types.ts";
 
 export { GMAIL_SCOPE, PUBSUB_SCOPE };
@@ -123,12 +135,13 @@ const oauthError = (ctx: AppContext, code: string, description?: string | null, 
  */
 export function startConnect(
   ctx: AppContext,
-  opts: { reauthAccountId?: string; scopes?: ExtraScopeName[]; mailOnly?: boolean } = {},
+  opts: { reauthAccountId?: string; scopes?: ExtraScopeName[]; mailOnly?: boolean; extension?: ExtensionConsent } = {},
 ): ConnectAccountResponse {
   const { clientId } = clientCredentials(ctx);
   const extra = new Set(opts.scopes ?? []);
   if (opts.mailOnly && extra.has("calendar")) throw badRequest("A mail-only connection can't add Google Calendar.", "Leave out either mailOnly or scopes [\"calendar\"].");
-  const calendarWanted = !opts.mailOnly && calendarEnabled(ctx);
+  const ext = opts.extension ?? null;
+  if (ext && (!opts.reauthAccountId || extra.size || opts.mailOnly)) throw badRequest("An extension's consent is for one connected account, and only for the extension's access.");
   let reauthId = opts.reauthAccountId;
   if (!reauthId && extra.has("pubsub")) {
     reauthId = provisioningPrincipal(ctx)?.id;
@@ -139,11 +152,19 @@ export function startConnect(
   // A reconnect asks again for extra scopes the account had: after a revocation Google forgets them,
   // and the Pub/Sub principal would otherwise come back without Pub/Sub access.
   const had = reauthId ? accountScopes(getRow(ctx, reauthId)!) : [];
+  // An extension's consent asks for the extension's scopes on top of what the account has: never for Calendar on its
+  // own (that's Add Calendar's job), so the user sees only the new permissions.
+  const calendarWanted = !opts.mailOnly && calendarEnabled(ctx) && (!ext || CALENDAR_SCOPES.some((s) => had.includes(s)));
   for (const [name, set] of Object.entries(EXTRA_SCOPE_SETS) as [ExtraScopeName, readonly string[]][]) {
     if (set.some((s) => had.includes(s)) && (name !== "calendar" || calendarWanted)) extra.add(name);
   }
   if (calendarWanted) extra.add("calendar");
-  const scopes = [...new Set([...BASE_SCOPES, ...[...extra].flatMap((x) => EXTRA_SCOPE_SETS[x])])];
+  // Scopes the account granted outside xaq's named sets (an extension's earlier consent) are asked again too, so a
+  // reconnect never drops them; include_granted_scopes keeps them anyway while Google still has them.
+  const kept = had.filter(
+    (s) => s.startsWith("https://www.googleapis.com/auth/") && !BASE_SCOPES.includes(s) && !IDENTITY_TOKEN_SCOPES.includes(s) && !Object.values(EXTRA_SCOPE_SETS).some((set: readonly string[]) => set.includes(s)),
+  );
+  const scopes = [...new Set([...BASE_SCOPES, ...[...extra].flatMap((x) => EXTRA_SCOPE_SETS[x]), ...kept, ...(ext?.scopes ?? [])])];
   const { mode, redirectUri } = callbackMode(ctx);
   const state = randomToken(32);
   const verifier = b64url(randomBytes(48));
@@ -158,6 +179,7 @@ export function startConnect(
     now(),
   );
   if (extra.has("calendar")) rememberCalendarAttempt(ctx, state, addingCalendarTo);
+  if (ext && reauth) rememberExtensionAttempt(ctx, state, { ...ext, email: reauth.email });
   const authUrl = buildUrl(ctx.config.google.authBase, "/o/oauth2/v2/auth", {
     client_id: clientId,
     redirect_uri: redirectUri,
@@ -232,8 +254,98 @@ const calendarNotGranted = (email: string, missing: string[]) => {
   );
 };
 
+/**
+ * A code extension's incremental consent (docs/EXTENSIONS.md "Google accounts for code extensions"): exactly its
+ * manifest's scopes, on top of what one connected account already granted, for one connection. `onDone` runs once
+ * Google answered and the account's tokens and granted scopes were saved (with what was granted).
+ */
+export interface ExtensionConsent {
+  connectionId: string;
+  /** The extension's display name ("Google Workspace"), for the messages. */
+  displayName: string;
+  /** The connection's name, for "click Reconnect on <name>" (default: displayName). */
+  connectionName?: string;
+  scopes: readonly string[];
+  onDone?: (accountId: string, granted: string[]) => void;
+}
+
+interface ExtensionAttempt extends ExtensionConsent {
+  email: string;
+  at: number;
+}
+const extensionAttempts = new WeakMap<AppContext, Map<string, ExtensionAttempt>>();
+
+function rememberExtensionAttempt(ctx: AppContext, state: string, a: Omit<ExtensionAttempt, "at">): void {
+  let m = extensionAttempts.get(ctx);
+  if (!m) extensionAttempts.set(ctx, (m = new Map()));
+  // Expired ones go; then, when full, only the oldest pending ones (Map keeps insertion order), never the rest.
+  const cutoff = Date.now() - STATE_TTL_MS;
+  for (const [k, v] of m) if (v.at < cutoff) m.delete(k);
+  while (m.size >= COMPLETED_MAX) m.delete(m.keys().next().value!);
+  m.set(state, { ...a, at: Date.now() });
+}
+
+function takeExtensionAttempt(ctx: AppContext, state: string): ExtensionAttempt | null {
+  const m = extensionAttempts.get(ctx);
+  const hit = m?.get(state);
+  m?.delete(state);
+  return hit && hit.at >= Date.now() - STATE_TTL_MS ? hit : null;
+}
+
+/** The connection a pending extension consent is for (paste mode routes the pasted address by it); not consumed. */
+export function extensionConsentConnection(ctx: AppContext, state: string): string | null {
+  const hit = state ? extensionAttempts.get(ctx)?.get(state) : undefined;
+  return hit && hit.at >= Date.now() - STATE_TTL_MS ? hit.connectionId : null;
+}
+
+/** Plain words for unticked extension scopes: what each would have allowed, and what won't work without it. */
+export function describeMissing(missing: readonly string[]): string {
+  return missing.map((s) => `${scopeGrants(s)}${scopeWithout(s) ? ` (without it, ${scopeWithout(s)})` : ""}`).join("; ");
+}
+
+/** The console's own button for another try: Reconnect on the connection (Connections → <name>). */
+const reconnectIt = (a: ExtensionAttempt) => `click Reconnect on ${a.connectionName ?? a.displayName} (Connections → ${a.connectionName ?? a.displayName})`;
+
+const extensionCancelled = (a: ExtensionAttempt) =>
+  new HttpError(
+    400,
+    "oauth_access_denied",
+    `You cancelled giving ${a.displayName} access to ${a.email}, so nothing changed: the account's mail keeps working as before.`,
+    `To try again, ${reconnectIt(a)} and choose Continue on Google's screens, leaving its permissions ticked.`,
+  );
+
+const extensionBlocked = (ctx: AppContext, a: ExtensionAttempt) =>
+  new HttpError(
+    400,
+    "oauth_admin_policy_enforced",
+    `Your Google Workspace admin doesn't allow xaq's app this access, so nothing changed for ${a.email}: its mail is unaffected.`,
+    `Ask your admin to trust the app: Admin console → Security → API controls → App access control → trust the OAuth client ID ${clientCredentials(ctx).clientId}. Then ${reconnectIt(a)}.`,
+  );
+
+/** Saved, but some of the extension's permissions were unticked: what's missing and what won't work. */
+const extensionNotGranted = (a: ExtensionAttempt, missing: string[]) => {
+  const none = missing.length === new Set(a.scopes).size;
+  return new HttpError(
+    400,
+    "oauth_extension_not_granted",
+    none
+      ? `${a.displayName} didn't get access to ${a.email}: every one of its permissions was unticked on Google's screen. The account's mail keeps working as before.`
+      : `${a.displayName} got only part of the access it asks for on ${a.email}. Not granted: ${describeMissing(missing)}. The rest works, and the account's mail is unaffected.`,
+    `To grant the rest, ${reconnectIt(a)} and tick every box on Google's screen.`,
+  );
+};
+
 /** What a Google error on the redirect or the token endpoint means for this consent. */
-function consentError(ctx: AppContext, code: string, description: string | null, redirectUri: string | undefined, calendar: CalendarAttempt | null): HttpError {
+function consentError(
+  ctx: AppContext,
+  code: string,
+  description: string | null,
+  redirectUri: string | undefined,
+  calendar: CalendarAttempt | null,
+  ext: ExtensionAttempt | null = null,
+): HttpError {
+  if (ext && code === "access_denied") return extensionCancelled(ext);
+  if (ext && code === "admin_policy_enforced") return extensionBlocked(ctx, ext);
   if (calendar?.addingTo && code === "access_denied") return calendarCancelled(calendar.addingTo);
   if (calendar?.addingTo && code === "admin_policy_enforced") return calendarBlocked(ctx, calendar.addingTo);
   return oauthError(ctx, code, description, redirectUri, !!calendar);
@@ -454,15 +566,16 @@ export async function completeConnect(ctx: AppContext, code: string, state: stri
   if (done) throw new AlreadyConnectedError(done.email);
   const st = takeState(ctx, state);
   const calendar = takeCalendarAttempt(ctx, state);
+  const ext = takeExtensionAttempt(ctx, state);
   try {
-    return await exchange(ctx, st, code, state, calendar);
+    return await exchange(ctx, st, code, state, calendar, ext);
   } catch (err) {
     rememberFailed(ctx, state, err);
     throw err;
   }
 }
 
-async function exchange(ctx: AppContext, st: StateRow, code: string, state: string, calendar: CalendarAttempt | null): Promise<Account> {
+async function exchange(ctx: AppContext, st: StateRow, code: string, state: string, calendar: CalendarAttempt | null, ext: ExtensionAttempt | null = null): Promise<Account> {
   if (!code) throw new HttpError(400, "oauth_no_code", "Google didn't return an authorization code.", "Start the connection again from the console.");
   const { clientId, clientSecret } = clientCredentials(ctx);
   let tokens: TokenResponse;
@@ -477,7 +590,7 @@ async function exchange(ctx: AppContext, st: StateRow, code: string, state: stri
     });
   } catch (err) {
     if (err instanceof GoogleApiError && err.reason) {
-      throw consentError(ctx, err.reason, err.message !== err.reason ? err.message : null, st.redirect_uri, calendar);
+      throw consentError(ctx, err.reason, err.message !== err.reason ? err.message : null, st.redirect_uri, calendar, ext);
     }
     throw err;
   }
@@ -529,10 +642,12 @@ async function exchange(ctx: AppContext, st: StateRow, code: string, state: stri
       throw new HttpError(
         400,
         "oauth_wrong_account",
-        calendar?.addingTo
-          ? `You were adding Google Calendar to ${target.email}, but signed in to Google as ${email}, so nothing changed for ${target.email}: its mail keeps working.${other}`
-          : `You were reconnecting ${target.email}, but signed in to Google as ${email}, so ${target.email} is still not reconnected.${other}`,
-        `${calendar?.addingTo ? `Click Add Calendar for ${target.email}` : `Reconnect ${target.email}`} again and pick ${target.email} in Google's account chooser (choose "Use another account" if it isn't listed). ` +
+        ext
+          ? `You were giving ${ext.displayName} access to ${target.email}, but signed in to Google as ${email}, so ${ext.displayName} got nothing: it works only with ${target.email}.${other}`
+          : calendar?.addingTo
+            ? `You were adding Google Calendar to ${target.email}, but signed in to Google as ${email}, so nothing changed for ${target.email}: its mail keeps working.${other}`
+            : `You were reconnecting ${target.email}, but signed in to Google as ${email}, so ${target.email} is still not reconnected.${other}`,
+        `${ext ? `Click Reconnect on ${ext.connectionName ?? ext.displayName}` : calendar?.addingTo ? `Click Add Calendar for ${target.email}` : `Reconnect ${target.email}`} again and pick ${target.email} in Google's account chooser (choose "Use another account" if it isn't listed). ` +
           `If Google skips the chooser, sign out of ${email} at accounts.google.com in this browser first, or use a private window.`,
       );
     }
@@ -584,11 +699,33 @@ async function exchange(ctx: AppContext, st: StateRow, code: string, state: stri
   // Adding Calendar with Calendar unticked: the tokens above are still good (include_granted_scopes keeps
   // Gmail and Pub/Sub), so they are kept, but the step the user took didn't do what they wanted.
   const unticked = calendar?.addingTo && granted.length ? missingScopes(scopes, CALENDAR_SCOPES) : [];
-  if (!unticked.length) rememberCompleted(ctx, state, code, id);
+  // The same for an extension's consent: the account keeps everything it had (include_granted_scopes), and the
+  // extension gets what was ticked; what wasn't is said in plain words.
+  const extMissing = ext && granted.length ? missingScopes(scopes, ext.scopes) : [];
+  if (!unticked.length && !extMissing.length) rememberCompleted(ctx, state, code, id);
   const account = await afterConnect(ctx, id, email);
+  if (ext) {
+    try {
+      ext.onDone?.(id, scopes);
+    } catch (err) {
+      ctx.log.child("google").warn("Updating the extension's connection after its consent failed", { connection: ext.connectionId, error: errorMessage(err) });
+    }
+    ctx.audit.record({
+      ...ADMIN_ACTOR,
+      action: "connection.google_consent",
+      accountId: id,
+      target: ext.connectionId,
+      outcome: extMissing.length ? "error" : "ok",
+      detail: { email, scopes: [...ext.scopes], missing: extMissing },
+    });
+  }
   if (unticked.length) {
     ctx.log.child("google").info("Google Calendar not granted", { email, missing: unticked });
     throw calendarNotGranted(email, unticked);
+  }
+  if (ext && extMissing.length) {
+    ctx.log.child("google").info("Extension access not fully granted", { email, connection: ext.connectionId, missing: extMissing });
+    throw extensionNotGranted(ext, extMissing);
   }
   return account;
 }
@@ -624,7 +761,8 @@ export async function completeConnectFromUrl(ctx: AppContext, raw: string): Prom
     const state = q.get("state");
     const pending = state && ctx.db.run("DELETE FROM oauth_states WHERE state = ? AND connection_id IS NULL", state).changes ? state : null;
     const calendar = pending ? takeCalendarAttempt(ctx, pending) : null;
-    const err = consentError(ctx, error, q.get("error_description"), undefined, calendar);
+    const ext = pending ? takeExtensionAttempt(ctx, pending) : null;
+    const err = consentError(ctx, error, q.get("error_description"), undefined, calendar, ext);
     if (pending) rememberFailed(ctx, pending, err);
     throw err;
   }
