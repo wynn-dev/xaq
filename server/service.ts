@@ -7,9 +7,10 @@ import { CLI_NAME, NPM_PACKAGE as PACKAGE } from "../shared/types.ts";
 import { readSetupToken } from "./auth/setup-token.ts";
 import { assertOurs } from "./listen/fsutil.ts";
 import { envVar, LEGACY_PRODUCT } from "./brand.ts";
-import { type Config, type ConfigInput, dataFiles, hasForeignFiles } from "./config.ts";
+import { type Config, type ConfigInput, dataFiles, DEFAULT_PORT, hasForeignFiles } from "./config.ts";
 import { Crypto } from "./crypto.ts";
 import { assertMasterKeyUsable, cliCommand, type InstanceInfo, runningInstance, serviceInstallCommand } from "./instance.ts";
+import { chooseServiceNode, codeFloorText, defaultNodeSearch, installedCodeExtensions, type NodeSearchDeps, nodeVersionOf, serviceNodeProblem, unitNodePath } from "./service-node.ts";
 import { consoleUrls, loopbackUrl } from "./urls.ts";
 
 /** Installs xaq as a background service: systemd on Linux, launchd on macOS. */
@@ -46,6 +47,12 @@ export const SERVICE_ENV_KEYS = ["XAQ_MASTER_KEY", "TRUST_PROXY", "TRUST_PROXY_H
 const LEGACY_ENV_KEYS: Partial<Record<(typeof SERVICE_ENV_KEYS)[number], string>> = { XAQ_MASTER_KEY: "AGENTINBOX_MASTER_KEY", XAQ_LOG_LEVEL: "AGENTINBOX_LOG_LEVEL" };
 
 type ServiceConfig = Pick<Config, "dataDir" | "port" | "host" | "dbPath" | "masterKeyPath">;
+
+/** `service install` options: `node` is --node. */
+export interface InstallOptions {
+  launchdPollMs?: number;
+  node?: string;
+}
 
 export const serviceEnvPath = (dataDir: string) => join(dataDir, "service.env");
 
@@ -347,6 +354,8 @@ export interface ServiceOps {
   portInUse(host: string, port: number): Promise<boolean>;
   uid: number;
   user: string;
+  /** Where to look for a Node for the service (service-node.ts); tests point it at fake installs. */
+  nodeSearch?: Partial<NodeSearchDeps>;
 }
 
 export const systemOps = (): ServiceOps => {
@@ -674,7 +683,7 @@ export function installedDaemonDataDir(ops: Pick<ServiceOps, "platform" | "unitD
   return text === null ? null : unitDataDir(text);
 }
 
-export async function installService(config: ServiceConfig, ops: ServiceOps = systemOps(), opts: { launchdPollMs?: number } = {}): Promise<void> {
+export async function installService(config: ServiceConfig, ops: ServiceOps = systemOps(), opts: InstallOptions = {}): Promise<void> {
   assertSupported(ops);
   if (ops.platform === "linux" && /\s/.test(config.dataDir)) {
     throw new Error(`The data directory "${config.dataDir}" contains whitespace, which systemd can't load settings from. Choose another one with --data.`);
@@ -689,6 +698,17 @@ export async function installService(config: ServiceConfig, ops: ServiceOps = sy
   // A service from before the rename is replaced: stopped (and waited for) before the new one starts,
   // so the two never run at once, and put back exactly as it was if the new one fails.
   const legacy = legacyDaemonUnit(ops);
+  // The Node it will run: checked before anything is touched (a too-old one would install "fine" and then fail every code-extension call).
+  const codeExtensions = installedCodeExtensions(config.dbPath);
+  const node = chooseServiceNode(
+    {
+      previous: [previousUnit && unitNodePath(previousUnit), legacy && unitNodePath(legacy.text)],
+      flag: opts.node,
+      codeExtensions,
+      rerun: serviceInstallCommand(config),
+    },
+    { ...defaultNodeSearch(), ...ops.nodeSearch },
+  );
   const legacyState = legacy ? unitState(ops, LEGACY_DAEMON_UNIT) : null;
   await assertNothingElseRunning(config, ops, previousUnit !== null || legacy !== null, [DAEMON_UNIT, ...(legacy ? [LEGACY_DAEMON_UNIT] : [])]);
   const before = ops.instance(config.dataDir);
@@ -698,7 +718,7 @@ export async function installService(config: ServiceConfig, ops: ServiceOps = sy
   const previousEnv = readText(serviceEnvPath(config.dataDir));
   const app = join(config.dataDir, "app");
   const entry = installedEntry(app);
-  const spec: ServiceSpec = { execPath: process.execPath, entry, dataDir: config.dataDir, port: config.port, host: config.host, extraEnv, system: ops.root };
+  const spec: ServiceSpec = { execPath: node.path, entry, dataDir: config.dataDir, port: config.port, host: config.host, extraEnv, system: ops.root };
   let swap: ReturnType<typeof swapIn> | null = null;
 
   try {
@@ -774,8 +794,9 @@ export async function installService(config: ServiceConfig, ops: ServiceOps = sy
   console.log(`\n  Installed ${SERVICE_NAME} as a ${ops.platform === "linux" ? "systemd" : "launchd"} service (${unitLabel(ops, DAEMON_UNIT)}).`);
   if (legacy) console.log(`  It replaces the ${LEGACY_PRODUCT} service (${unitLabel(ops, LEGACY_DAEMON_UNIT)}), which was removed. Your data stays in ${config.dataDir}.`);
   console.log(
-    `  It runs the Node.js at ${process.execPath} (v${process.versions.node}). If you remove or replace that Node, run \`${serviceInstallCommand(config)}\` again.`,
+    `  It runs Node.js ${node.version} at ${node.path}: ${node.why}. If you remove or replace that Node, run \`${serviceInstallCommand(config)}\` again.`,
   );
+  if (!node.codeReady) console.log(`  Code extensions need a newer Node.js (${codeFloorText()}): to install one later, run this again with such a Node (or --node).`);
   if (kept.length) console.log(`  Kept ${kept.join(", ")} from the previous install.`);
   printLinks(config);
 }
@@ -860,6 +881,27 @@ export function serviceStatus(ops: ServiceOps = systemOps()): void {
   } catch {
     process.exitCode = 1;
   }
+  const problem = serviceNodeCheck(readText(unitPath(ops, id)) ?? "", ops.nodeSearch?.versionOf);
+  if (problem) {
+    console.log(`\n  Problem: ${problem}`);
+    process.exitCode = 1;
+  }
+}
+
+/**
+ * `service status`'s check of the Node the installed unit or plist runs: null when it is fine, else what's wrong
+ * and the fix. Below the code-extension floor counts only while code extensions are installed in the service's data directory.
+ */
+export function serviceNodeCheck(unitText: string, versionOf: (path: string) => string | null = nodeVersionOf): string | null {
+  const path = unitNodePath(unitText);
+  if (!path) return null;
+  const dataDir = unitDataDir(unitText);
+  const codeExtensions = dataDir ? installedCodeExtensions(dataFiles(dataDir).db) : [];
+  const port = Number(unitEnv(unitText, "PORT"));
+  const rerun = dataDir
+    ? serviceInstallCommand({ dataDir, host: unitEnv(unitText, "HOST") || "0.0.0.0", port: Number.isInteger(port) && port > 0 ? port : DEFAULT_PORT })
+    : cliCommand("service install");
+  return serviceNodeProblem(path, versionOf(path), codeExtensions, rerun);
 }
 /** A real HealthResponse (not the "starting" placeholder or something else on the port). */
 export function isHealthResponse(body: unknown): boolean {

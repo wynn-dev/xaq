@@ -121,12 +121,14 @@ const service = program
 
 withServerOptions(
   service.command("install").description("install and start the service; re-run it to change the port or update (replaces an agentinbox service, keeping its data)"),
-).action(async (o: ServerFlags) => {
-  const { loadConfig } = await import("./config.ts");
-  const { installService, serviceInstallInput, systemOps } = await import("./service.ts");
-  // Replacing a service from before the rename keeps its data directory, port and host unless told otherwise.
-  await installService(loadConfig(serviceInstallInput(configInput(o), systemOps()), version));
-});
+)
+  .option("--node <path>", "the Node.js binary the service runs (default: this one if new enough, else the previous service's, else the newest found)")
+  .action(async (o: ServerFlags & { node?: string }) => {
+    const { loadConfig } = await import("./config.ts");
+    const { installService, serviceInstallInput, systemOps } = await import("./service.ts");
+    // Replacing a service from before the rename keeps its data directory, port and host unless told otherwise.
+    await installService(loadConfig(serviceInstallInput(configInput(o), systemOps()), version), undefined, { node: o.node });
+  });
 
 service
   .command("uninstall")
@@ -141,7 +143,7 @@ service
 
 service
   .command("status")
-  .description("show service status")
+  .description("show service status, and check the Node.js it runs (code extensions need a recent one)")
   .action(async () => {
     const { serviceStatus } = await import("./service.ts");
     serviceStatus();
