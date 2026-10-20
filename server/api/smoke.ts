@@ -141,6 +141,17 @@ export function smokeApi(ctx: AppContext) {
       agentId,
     );
 
+  /**
+   * Existing agents a smoke run created: their id is the target of a `smoke.agent_create` audit row (POST
+   * /api/smoke/agents) and the name still matches. An owner's own agent that happens to be named xaq-smoke-… isn't one.
+   */
+  const smokeAgents = () => {
+    const created = new Set(
+      ctx.db.all<{ id: string }>("SELECT DISTINCT target AS id FROM audit_log WHERE action = 'smoke.agent_create' AND target IS NOT NULL").map((r) => r.id),
+    );
+    return ctx.policy.listAgents().filter((a) => created.has(a.id) && SMOKE_NAME_RE.test(a.name));
+  };
+
   app.post("/smoke/leftovers", async (c) => {
     const body = await readBody(c, LeftoversInput);
     if (!ctx.accounts.get(body.accountId)) throw notFound("Account");
@@ -153,9 +164,8 @@ export function smokeApi(ctx: AppContext) {
       agent: !!body.agentId && !!ctx.policy.getAgent(body.agentId),
       agentSettings: !!body.agentId && !!ctx.db.get("SELECT 1 AS x FROM settings WHERE key = ?", `broker.search:${body.agentId}`),
       drafts,
-      otherSmokeAgents: ctx.policy
-        .listAgents()
-        .filter((a) => a.id !== body.agentId && SMOKE_NAME_RE.test(a.name))
+      otherSmokeAgents: smokeAgents()
+        .filter((a) => a.id !== body.agentId)
         .map((a) => ({ id: a.id, name: a.name })),
     };
     return c.json(out);
@@ -166,7 +176,8 @@ export function smokeApi(ctx: AppContext) {
   app.post("/smoke/sweep", async (c) => {
     await readBody(c, z.object({}).strict());
     const deletedAgents: SmokeSweep["deletedAgents"] = [];
-    for (const a of ctx.policy.listAgents().filter((x) => SMOKE_NAME_RE.test(x.name))) {
+    // Only agents a smoke run created (the audit log says so), never one that merely has a lookalike name.
+    for (const a of smokeAgents()) {
       ctx.policy.deleteAgent(a.id);
       deletedAgents.push({ id: a.id, name: a.name });
     }

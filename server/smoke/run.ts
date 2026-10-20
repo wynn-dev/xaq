@@ -20,7 +20,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, 
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { Account, AgentWithKey, ConnectionView, McpCallApprovalView } from "../../shared/types.ts";
-import { isSmokeDir, SMOKE_NAME_RE, type SmokeDraftView, type SmokeLeftovers, type SmokeSweep, smokeName, smokeSubjectPrefix } from "../../shared/smoke.ts";
+import { SMOKE_NAME_RE, SMOKE_TEMP_RE, type SmokeDraftView, type SmokeLeftovers, type SmokeSweep, smokeName, smokeSubjectPrefix } from "../../shared/smoke.ts";
 import type { AdminChannel } from "../connections-cli/admin.ts";
 import { NPX } from "../listen/version.ts";
 import { MAX_ATTACHMENT_BYTES } from "../mail/agent.ts";
@@ -531,7 +531,7 @@ export class SmokeRun {
       try {
         const mine = privateSmokeDir(this.deps.tmpRoot);
         for (const name of readdirSync(mine)) {
-          if (!isSmokeDir(name)) continue;
+          if (!SMOKE_TEMP_RE.test(name)) continue;
           rmSync(join(mine, name), { recursive: true, force: true });
           removed++;
         }

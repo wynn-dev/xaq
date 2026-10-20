@@ -77,5 +77,15 @@ export interface SmokeSweep {
   drafts: { draftId: string; account: string; agent: string }[];
 }
 
-/** An attachmentDirs entry a smoke run added: its last segment starts with xaq-smoke-. */
-export const isSmokeDir = (dir: string): boolean => /(^|[\\/])xaq-smoke-[^\\/]*[\\/]?$/.test(dir);
+/** A run's temp dir name: mkdtemp of `xaq-smoke-<UTC timestamp>-` (six random characters). */
+export const SMOKE_TEMP_RE = /^xaq-smoke-\d{8}T\d{6}Z-[A-Za-z0-9]{6}$/;
+
+/**
+ * An attachmentDirs entry a smoke run added: exactly `…/xaq-smoke/xaq-smoke-<ts>-XXXXXX`, a run's temp dir inside
+ * the private smoke directory (server/smoke/run.ts privateSmokeDir). An owner's own `~/Documents/xaq-smoke-notes`
+ * never matches.
+ */
+export function isSmokeDir(dir: string): boolean {
+  const parts = dir.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts.length >= 3 && parts.at(-2) === "xaq-smoke" && SMOKE_TEMP_RE.test(parts.at(-1)!);
+}

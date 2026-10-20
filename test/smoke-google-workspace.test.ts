@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Account, AgentWithKey, ConnectAccountResponse, ConnectionView } from "../shared/types.ts";
+import { isSmokeDir } from "../shared/smoke.ts";
 import { type AdminChannel, openAdminChannel } from "../server/connections-cli/admin.ts";
 import { DRIVE_READONLY_SCOPE, GMAIL_SCOPE } from "../server/google/scopes.ts";
 import { GOOGLE_WORKSPACE_EXTENSION } from "../server/google/workspace-binding.ts";
@@ -286,6 +287,35 @@ describe.runIf(HAS_AGENTS)("xaq smoke google-workspace", () => {
     // Reported, never deleted, and never touched.
     expect(w.s.fake.drafts(EMAIL).map((d) => d.id)).toEqual([oldDraft.draftId]);
     expect(w.ws.isTrashed(folder.id)).toBe(false);
+  });
+
+  it("the sweep deletes only agents a smoke run created (the audit log), never an owner's agent with a lookalike name", async () => {
+    const w = await world();
+    // The owner's own agent, made in the console, that happens to be named like a run.
+    const lookalike = await w.s.createAgent("xaq-smoke-20240101T000000Z", [
+      { accountId: w.account.id, capabilities: ["read"], labelScope: null, sendMode: "draft_only", allowTo: [], replyOnly: false, maxSendsPerHour: null, maxSendsPerDay: null },
+    ]);
+    const report = await w.run().run();
+    expect(report.steps.find((s) => s.step === "sweep earlier runs' leftovers")!.detail).toMatch(/^0 agent\(s\) deleted,/);
+    expect((await w.s.admin.get<{ id: string }[]>("/api/agents")).map((a) => a.id)).toEqual([lookalike.agent.id]);
+    // Not a smoke run's agent, so not this run's leftover either.
+    expect(report.leftBehind).toEqual([]);
+    expect(report.ok).toBe(true);
+  });
+
+  it("the sweep removes only a run's own temp dir from attachmentDirs, never an owner's dir named xaq-smoke-…", async () => {
+    const w = await world();
+    const docs = join(w.tmpRoot, "Documents");
+    const notes = join(docs, "xaq-smoke-notes");
+    const lookalike = join(docs, "xaq-smoke-20250101T000000Z-abc123"); // the right name, but not in the private dir
+    const runDir = join(w.tmpRoot, "xaq-smoke", "xaq-smoke-20250101T000000Z-def456");
+    for (const d of [notes, lookalike, runDir]) mkdirSync(d, { recursive: true });
+    await w.admin.request("PATCH", "/api/settings", { attachmentDirs: [notes, lookalike, runDir] });
+    const report = await w.run().run();
+    expect(report.steps.find((s) => s.step === "sweep earlier runs' leftovers")!.detail).toContain("1 attachmentDirs entry removed");
+    expect((await w.admin.request<{ attachmentDirs: string[] }>("GET", "/api/settings")).attachmentDirs).toEqual([notes, lookalike]);
+    expect(existsSync(notes) && existsSync(lookalike)).toBe(true);
+    expect(report.ok).toBe(true);
   });
 
   it("the leftover check finds creates the run never recorded: a Drive file with its name, a draft from the audit log", async () => {
@@ -575,6 +605,17 @@ describe("the smoke command's setup", () => {
     expect(parseAttachmentList({ ...t(""), structured: { attachments: [{ attachmentId: "Z", filename: "z.pdf", mimeType: "application/pdf", size: 9 }] } })).toEqual([
       { filename: "z.pdf", mimeType: "application/pdf", size: 9, id: "Z" },
     ]);
+  });
+
+  it("a run's temp dir is recognised only by its exact shape inside the private smoke directory", () => {
+    expect(isSmokeDir("/home/w/.cache/xaq-smoke/xaq-smoke-20261019T203000Z-a1B2c3")).toBe(true);
+    expect(isSmokeDir("/home/w/.cache/xaq-smoke/xaq-smoke-20261019T203000Z-a1B2c3/")).toBe(true);
+    expect(isSmokeDir("/home/w/Documents/xaq-smoke-notes")).toBe(false);
+    expect(isSmokeDir("/home/w/Documents/xaq-smoke-20261019T203000Z-a1B2c3")).toBe(false);
+    expect(isSmokeDir("/home/w/.cache/xaq-smoke/xaq-smoke-notes")).toBe(false);
+    expect(isSmokeDir("/home/w/.cache/xaq-smoke/xaq-smoke-20261019T203000Z-a1B2c3/inner")).toBe(false);
+    expect(isSmokeDir("/home/w/.cache/xaq-smoke")).toBe(false);
+    expect(isSmokeDir("/tmp/xaq-smoke-abc123")).toBe(false);
   });
 
   it("extracts only what get_attachment shows inline (A2's kinds and caps); anything it would save is skipped", () => {

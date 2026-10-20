@@ -195,8 +195,11 @@ xaq smoke google-workspace --scratch [--account <email>] [--connection <slug>] [
 What it does, in order (tool names as the extension lists them; agents see `<slug>__<name>`):
 
 0. **Earlier runs.** First the daemon sweeps what earlier runs left:
-   - their `xaq-smoke-*` agents are deleted;
-   - their temp dirs are taken out of `attachmentDirs`, and their leftover dirs in the private smoke directory are
+   - their agents are deleted: only agents `POST /api/smoke/agents` created, according to the audit log. An owner's
+     own agent named like a run is never touched;
+   - their temp dirs are taken out of `attachmentDirs`, only entries shaped exactly like
+     `…/xaq-smoke/xaq-smoke-<ts>-XXXXXX` (an owner's `~/Documents/xaq-smoke-notes` stays). Their leftover dirs in
+     the private smoke directory are
      removed.
 
    Their drafts that still exist (found in the audit log), and `xaq-smoke-*` folders in Drive that aren't in the
@@ -269,7 +272,7 @@ looks for:
 - the agent or its settings still stored;
 - `attachmentDirs` not as before;
 - the temp dir still on disk;
-- any other `xaq-smoke-*` agent, also when this run's agent was never created.
+- any other agent a smoke run created, also when this run's agent was never created.
 
 `--json` prints the same as JSON on stdout (the progress goes to stderr). The exit code is 0 only when every step
 passed and nothing was left behind. It is 130 after Ctrl-C, 1 otherwise. A step skipped because the account has no
@@ -292,8 +295,8 @@ account itself.
 | `POST /api/smoke/agents` `{name, accountId, connectionId}` | The temporary agent (`name` must be `xaq-smoke-<UTC timestamp>`) → `AgentWithKey` |
 | `POST /api/smoke/drafts/inspect` `{agentId, accountId, draftId, ledger}` | The draft's subject, recipients and attachments (names, types, sizes) |
 | `POST /api/smoke/drafts/delete` `{agentId, accountId, draftId, ledger}` | Deletes it (Gmail `drafts.delete`) |
-| `POST /api/smoke/leftovers` `{agentId \| null, accountId, draftIds}` | Whether the agent or its settings still exist, which drafts still exist (the given ones plus those the agent made, from the audit log), and any other `xaq-smoke-*` agents |
-| `POST /api/smoke/sweep` `{}` | Earlier runs: deletes their `xaq-smoke-*` agents, removes `xaq-smoke-*` dirs from `attachmentDirs`, and lists their drafts that still exist → `{deletedAgents, removedDirs, drafts}` |
+| `POST /api/smoke/leftovers` `{agentId \| null, accountId, draftIds}` | Whether the agent or its settings still exist, which drafts still exist (the given ones plus those the agent made, from the audit log), and any other agents a smoke run created |
+| `POST /api/smoke/sweep` `{}` | Earlier runs: deletes the agents smoke runs created (audit log), removes run temp dirs (`…/xaq-smoke/xaq-smoke-<ts>-XXXXXX`) from `attachmentDirs`, and lists their drafts that still exist → `{deletedAgents, removedDirs, drafts}` |
 
 ## Commands and configuration
 
