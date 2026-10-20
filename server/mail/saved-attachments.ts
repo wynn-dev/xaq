@@ -7,8 +7,11 @@
 // - The name is cleaned like an outgoing attachment's (sanitizeFilename: no path, no control/invisible characters),
 //   and may not start with a dot. Files are created exclusively (O_EXCL, never through a symlink, mode 0600); a
 //   different file already there keeps its name and the new one becomes "name (2).ext". The same bytes reuse it.
-// - Every file xaq saves is recorded in a manifest, `<dir>/.xaq-attachments` (relative path, size, inode, time), and
-//   ONLY recorded files are ever deleted, and only while they're still the file xaq wrote (same inode and size).
+// - Every file xaq saves is recorded in a manifest, `<dir>/.xaq-attachments` (relative path, size, inode, mtime in
+//   nanoseconds, SHA-256, time saved), and ONLY recorded files are ever deleted, and only while they're still the
+//   file xaq wrote: same inode, size and mtime, and (checked again right before deleting) the same SHA-256. Inode and
+//   size alone aren't enough: ext4 and others hand a freed inode to the next new file, so a file deleted and
+//   rewritten by hand with the same size can come back with the same inode.
 //   Whatever else is in the folder (a user's own `<id-like>/file`, a file replaced by hand) is never touched.
 // - At most MAX_SAVED_BYTES per file, and ATTACHMENT_QUOTA_BYTES for all recorded files together: over it, the oldest
 //   recorded files are deleted first; if that isn't enough the save is refused.
@@ -68,7 +71,10 @@ export function ensureSaveDir(dir: string): void {
 
 interface Entry {
   size: number;
-  ino: number;
+  /** Inode and mtime (ns) as decimal strings: both can exceed 2^53. */
+  ino: string;
+  mtimeNs: string;
+  sha256: string;
   savedAt: number;
 }
 interface Manifest {
@@ -99,7 +105,9 @@ function readManifest(root: string): Manifest {
   try {
     const parsed = JSON.parse(raw) as Partial<Manifest>;
     for (const [rel, e] of Object.entries(parsed.files ?? {}).slice(0, MAX_ENTRIES)) {
-      if (validRel(rel) && e && Number.isFinite(e.size) && Number.isFinite(e.ino) && Number.isFinite(e.savedAt)) m.files[rel] = { size: e.size, ino: e.ino, savedAt: e.savedAt };
+      if (!validRel(rel) || !e || !Number.isFinite(e.size) || !Number.isFinite(e.savedAt)) continue;
+      if (!/^\d{1,40}$/.test(String(e.ino)) || !/^\d{1,40}$/.test(String(e.mtimeNs)) || !/^[0-9a-f]{64}$/.test(String(e.sha256))) continue;
+      m.files[rel] = { size: e.size, ino: String(e.ino), mtimeNs: String(e.mtimeNs), sha256: String(e.sha256), savedAt: e.savedAt };
     }
     for (const d of Array.isArray(parsed.dirs) ? parsed.dirs.slice(0, MAX_ENTRIES) : []) if (typeof d === "string" && MESSAGE_ID.test(d)) m.dirs.push(d);
   } catch {
@@ -115,11 +123,21 @@ function writeManifest(root: string, m: Manifest): void {
   renameSync(tmp, join(root, SAVE_DIR_MARKER));
 }
 
-/** Whether `rel` is still the file xaq wrote: a regular file with the recorded inode and size. */
+/** Whether `rel` still looks like the file xaq wrote: a regular file with the recorded inode, size and mtime. */
 function stillOurs(root: string, rel: string, e: Entry): boolean {
   try {
-    const st = lstatSync(join(root, ...rel.split("/")));
-    return st.isFile() && st.ino === e.ino && st.size === e.size;
+    const st = lstatSync(join(root, ...rel.split("/")), { bigint: true });
+    return st.isFile() && String(st.ino) === e.ino && Number(st.size) === e.size && String(st.mtimeNs) === e.mtimeNs;
+  } catch {
+    return false;
+  }
+}
+
+/** stillOurs, plus the content hash: checked right before anything is deleted. */
+function provablyOurs(root: string, rel: string, e: Entry): boolean {
+  if (!stillOurs(root, rel, e)) return false;
+  try {
+    return sha256(readFileSync(join(root, ...rel.split("/")))) === e.sha256 && stillOurs(root, rel, e);
   } catch {
     return false;
   }
@@ -129,7 +147,7 @@ function stillOurs(root: string, rel: string, e: Entry): boolean {
 function forget(ctx: AppContext, root: string, m: Manifest, rel: string): number {
   const e = m.files[rel]!;
   delete m.files[rel];
-  if (!stillOurs(root, rel, e)) return 0;
+  if (!provablyOurs(root, rel, e)) return 0;
   try {
     unlinkSync(join(root, ...rel.split("/")));
   } catch (err) {
@@ -212,9 +230,9 @@ export async function saveAttachment(
       }
       try {
         await fh.writeFile(data);
-        const st = await fh.stat();
+        const st = await fh.stat({ bigint: true });
         const m = readManifest(root);
-        m.files[`${messageId}/${candidate}`] = { size: st.size, ino: st.ino, savedAt: Date.now() };
+        m.files[`${messageId}/${candidate}`] = { size: Number(st.size), ino: String(st.ino), mtimeNs: String(st.mtimeNs), sha256: digest, savedAt: Date.now() };
         writeManifest(root, m);
       } finally {
         await fh.close();

@@ -218,6 +218,22 @@ describe("saved attachments", () => {
     expect(existsSync(a)).toBe(true);
   });
 
+  it("never deletes a file rewritten in place or recreated with a reused inode (same size)", async () => {
+    const ctx = setup();
+    const inPlace = await saveAttachment(ctx, "r1", "a.bin", "application/octet-stream", Buffer.alloc(64, 1));
+    const recreated = await saveAttachment(ctx, "r2", "b.bin", "application/octet-stream", Buffer.alloc(64, 1));
+    const ino = statSync(inPlace).ino;
+    // Same inode, same size, often the same coarse mtime: only the content hash tells it apart.
+    writeFileSync(inPlace, Buffer.alloc(64, 2));
+    expect(statSync(inPlace).ino).toBe(ino);
+    // Deleted and written again: ext4 and others commonly hand the freed inode straight back.
+    rmSync(recreated);
+    writeFileSync(recreated, Buffer.alloc(64, 3));
+    expect(pruneSavedAttachments(ctx, Date.now() + 30 * 86_400_000)).toBe(0);
+    expect(readFileSync(inPlace)[0]).toBe(2);
+    expect(readFileSync(recreated)[0]).toBe(3);
+  });
+
   it("get_attachment still answers with the file's metadata when it can't be saved", async () => {
     const ctx = setup();
     const link = join(tmp(), "link");

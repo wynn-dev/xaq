@@ -4,7 +4,7 @@
 // requests in flight merged.
 
 import { createSocket } from "node:dgram";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -102,7 +102,8 @@ describe("no network from the child", () => {
 
 describe("no Unix sockets through the stdio handles", () => {
   it.runIf(process.platform !== "win32")("connect/bind/listen on process.std*._handle, its prototype and new handles of its class all throw", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "xaq-sock-"));
+    // Unix socket paths are limited to ~104 bytes: a long TMPDIR would make listen() fail, so prefer /tmp.
+    const dir = mkdtempSync(join(existsSync("/tmp") ? "/tmp" : tmpdir(), "xaq-sock-"));
     const path = join(dir, "s.sock");
     let hits = 0;
     const server = createServer((s) => {

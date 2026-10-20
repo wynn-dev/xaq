@@ -542,7 +542,8 @@ control characters, no leading dot). The folder is **Settings → Attachment fol
 path), by default `attachments/` in the data directory. It must be a real directory owned by xaq's user and not
 writable by every user, or nothing is saved. A folder xaq creates (or finds empty) is made private (0700); files are
 0600, created without following symlinks, and a different file already under a name is never overwritten (the new one
-becomes `name (2).ext`). Every file xaq saves is recorded in `<folder>/.xaq-attachments` (path, size, inode, time),
+becomes `name (2).ext`). Every file xaq saves is recorded in `<folder>/.xaq-attachments` (path, size, inode, mtime,
+SHA-256, time),
 and **only recorded files that are still exactly what xaq wrote are ever deleted**: anything else in the folder, such as
 your own files in folders that look like message ids, or a saved file you replaced, is never touched. Recorded files
 are deleted **7 days** after they were last saved. At most 50 MB per file, and **1 GB for all recorded files
