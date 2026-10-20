@@ -1,19 +1,20 @@
 // Google Drive v3 REST, read-only and minimal: file metadata, downloads and exports, for attaching Drive files to
-// mail (server/mail/drive-files.ts). Built on GoogleRuntime.request like gmail.ts and calendar.ts (token refresh,
-// 401 retry, backoff, AccountNeedsReauthError); base URL ctx.config.google.apisBase (default https://www.googleapis.com)
-// + "/drive/v3".
+// mail (server/mail/drive-files.ts). Built on GoogleRuntime.request like gmail.ts and calendar.ts (401 retry, backoff,
+// AccountNeedsReauthError), but with a token limited to drive.readonly (server/google/scoped.ts googleAccessToken)
+// rather than the account's full one: a Drive request can't use Gmail. Base URL ctx.config.google.apisBase (default
+// https://www.googleapis.com) + "/drive/v3".
 // https://developers.google.com/workspace/drive/api/reference/rest/v3/files
 
 import type { AppContext } from "../context.ts";
 import { googleRuntime } from "./runtime.ts";
+import { accountHasScopes, googleAccessToken } from "./scoped.ts";
 import { DRIVE_READONLY_SCOPE } from "./scopes.ts";
 
-/** Full Drive access also covers reading. */
-const DRIVE_FULL_SCOPE = "https://www.googleapis.com/auth/drive";
+/** The scopes a Drive attachment's token carries: read-only Drive, nothing else. */
+export const DRIVE_ATTACH_SCOPES = [DRIVE_READONLY_SCOPE] as const;
 
-/** Whether these granted scopes let xaq read the user's Drive files. */
-export const canReadDrive = (granted: readonly string[] | null | undefined): boolean =>
-  !!granted && (granted.includes(DRIVE_READONLY_SCOPE) || granted.includes(DRIVE_FULL_SCOPE));
+/** Whether the account has granted xaq the Drive read access attachments need (as last recorded). */
+export const canReadDrive = (ctx: Pick<AppContext, "db">, accountId: string): boolean => accountHasScopes(ctx, accountId, DRIVE_ATTACH_SCOPES);
 
 /** The files.get fields xaq uses. */
 export interface DriveFile {
@@ -46,10 +47,13 @@ export function createDriveClient(ctx: AppContext, accountId: string): DriveClie
   const rt = googleRuntime(ctx);
   const base = ctx.config.google.apisBase ?? "https://www.googleapis.com";
   const path = (fileId: string, suffix = "") => `/drive/v3/files/${encodeURIComponent(fileId)}${suffix}`;
+  // Throws ScopesNotGrantedError, AccountNeedsReauthError or DownscopeError (server/mail/drive-files.ts driveError words them).
+  const token = async (force: boolean) => (await googleAccessToken(ctx, accountId, DRIVE_ATTACH_SCOPES, { force })).accessToken;
   return {
-    getFile: (fileId) => rt.request<DriveFile>(accountId, base, path(fileId), { query: { fields: FIELDS, supportsAllDrives: true } }),
+    getFile: (fileId) => rt.request<DriveFile>(accountId, base, path(fileId), { query: { fields: FIELDS, supportsAllDrives: true }, token }),
     download: (fileId, maxBytes) =>
       rt.request<Buffer>(accountId, base, path(fileId), {
+        token,
         query: { alt: "media", supportsAllDrives: true },
         binary: true,
         maxResponseBytes: maxBytes,
@@ -57,6 +61,7 @@ export function createDriveClient(ctx: AppContext, accountId: string): DriveClie
       }),
     exportFile: (fileId, mimeType, maxBytes) =>
       rt.request<Buffer>(accountId, base, path(fileId, "/export"), {
+        token,
         query: { mimeType },
         binary: true,
         maxResponseBytes: maxBytes,

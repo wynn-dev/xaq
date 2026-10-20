@@ -213,8 +213,8 @@ export interface FakeDriveFileInput {
  */
 export interface FakeDrive {
   addFile(email: string, file: FakeDriveFileInput): string;
-  /** How many bytes each alt=media / export response sent (to check nothing large was fetched). */
-  served: { id: string; kind: "media" | "export"; bytes: number }[];
+  /** Each alt=media / export response: how many bytes it sent (to check nothing large was fetched) and the token's scopes. */
+  served: { id: string; kind: "media" | "export"; bytes: number; scopes: string[] }[];
 }
 
 /** An email Google Calendar would have sent for a write (sendUpdates). */
@@ -2089,6 +2089,9 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     res.end();
   };
 
+  /** The scopes of the request's bearer token (driveFile has checked it). */
+  const bearerScopes = (req: IncomingMessage) => [...(accessTokens.get((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""))?.scopes ?? [])];
+
   on("GET", /^\/drive\/v3\/files\/([^/]+)$/, (req, url, _b, m, res) => {
     const f = driveFile(req, m[1]!);
     if (url.searchParams.get("alt") === "media") {
@@ -2096,7 +2099,7 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
         throw apiError(403, "Only files with binary content can be downloaded. Use Export with Docs Editors files.", "fileNotDownloadable");
       }
       const data = f.content ?? Buffer.alloc(0);
-      driveApi.served.push({ id: f.id, kind: "media", bytes: data.length });
+      driveApi.served.push({ id: f.id, kind: "media", bytes: data.length, scopes: bearerScopes(req) });
       sendBytes(res, f.mimeType, data);
       return;
     }
@@ -2112,7 +2115,7 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     if (!formats.includes(mime)) throw apiError(400, "The requested conversion is not supported.", "badRequest");
     const data = f.exports?.[mime] ?? Buffer.from(mime === "application/pdf" ? `%PDF-1.7\n% ${f.name} exported\n%%EOF\n` : `${f.name} exported as ${mime}\n`);
     if (data.length > 10 * 1024 * 1024) throw apiError(403, "This file is too large to be exported.", "exportSizeLimitExceeded");
-    driveApi.served.push({ id: f.id, kind: "export", bytes: data.length });
+    driveApi.served.push({ id: f.id, kind: "export", bytes: data.length, scopes: bearerScopes(req) });
     sendBytes(res, mime, data);
   });
 
