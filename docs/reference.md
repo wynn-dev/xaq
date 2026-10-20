@@ -497,34 +497,46 @@ non-text files.
 files that couldn't be read ("Couldn't read this PDF: reading it took too long. Saved at: …") are saved on the xaq
 server as `<folder>/<message id>/<file name>`, the name cleaned like an outgoing attachment's (no path, no hidden or
 control characters, no leading dot). The folder is **Settings → Attachment folder** (`attachmentSaveDir`, an absolute
-path), by default `attachments/` in the data directory. A folder xaq creates (or finds empty) is made private (0700)
-and marked with a `.xaq-attachments` file; files are 0600, created without following symlinks, and a different file
-already under a name is never overwritten (the new one becomes `name (2).ext`). Saved files are deleted **7 days**
-after they were last saved, and only from a folder xaq created: a folder that already held other files is used as it
-is and never cleaned up. At most 50 MB per file, and **1 GB for all saved files together**: when a new file would
-go over, the oldest saved files are deleted first (only in a folder xaq created); in a folder it didn't create, or if
-that isn't enough, the file isn't saved and the answer says so, still with the file's name, type, size and id. The path is on the machine xaq runs on, so it's useful to agents
-running there.
+path), by default `attachments/` in the data directory. It must be a real directory owned by xaq's user and not
+writable by every user, or nothing is saved. A folder xaq creates (or finds empty) is made private (0700); files are
+0600, created without following symlinks, and a different file already under a name is never overwritten (the new one
+becomes `name (2).ext`). Every file xaq saves is recorded in `<folder>/.xaq-attachments` (path, size, inode, time),
+and **only recorded files that are still exactly what xaq wrote are ever deleted**: anything else in the folder, such as
+your own files in folders that look like message ids, or a saved file you replaced, is never touched. Recorded files
+are deleted **7 days** after they were last saved. At most 50 MB per file, and **1 GB for all recorded files
+together**: when a new file would go over, the oldest recorded files are deleted first; if that isn't enough, the file
+isn't saved and the answer says so, still with the file's name, type, size and id. The path is on the machine xaq runs
+on, so it's useful to agents running there.
 
 **Parsing runs out of process.** Every attachment is written by a third party, so documents are parsed in a
 short-lived child `node` started for each file, never in xaq itself:
 
 - `node --permission --no-experimental-sqlite --disallow-code-generation-from-strings --max-old-space-size=256
-  --import <signal preload> --input-type=module -e <bootstrap>`, with no `--allow-*` flag: the child can't read or
-  write any file (not even its own code: xaq reads `dist/attachment-parser.js` and sends it over stdin), start
-  processes or workers, load addons, open SQLite, evaluate strings as code or signal other processes. Its environment
-  is empty and it runs in `/`. The network is closed by Node itself on Node 25+, and on 22 and 24 by the bootstrap
-  (fetch, sockets, HTTP and DNS replaced before the parser loads).
+  --import <signal preload> --import <parser preload> --input-type=module -e <bootstrap>`, with no `--allow-*` flag:
+  the child can't read or write any file (not even its own code: xaq reads `dist/attachment-parser.js` and sends it
+  over stdin), start processes or workers, load addons, open SQLite, use the inspector or `process.binding`, evaluate
+  strings as code or signal other processes. Its environment is empty and it runs in `/`.
+- The network is denied by default: Node 25+ closes it itself; on every release the parser preload replaces every
+  export of `net`, `tls`, `dns`, `dns/promises`, `dgram`, `http`, `https` and `http2` with throwing stubs, locks the
+  methods that reach the network on the classes live objects still hand out (socket connect, server listen, every
+  UDP socket and DNS resolver method, agent connections), and removes `fetch`, `WebSocket` and `EventSource`.
+  `v8.setFlagsFromString` throws too.
+- Memory: the V8 heap is capped at 256 MB, and since decoded PDF streams and other buffers live outside it, xaq also
+  samples the child's resident memory every 100 ms (`/proc` on Linux, `ps` on macOS) and kills it above **512 MB**.
+  On Linux the child's `oom_score_adj` is 1000 (the kernel picks it, not xaq), and the systemd units xaq installs set
+  `OOMPolicy=continue`.
 - A hard 20-second deadline from the moment the file is queued (then SIGKILL), at most 16 MB of output, at most two
-  children at once and eight waiting; a file that timed out isn't tried again for a while. A crash, a timeout or an
-  out-of-memory child only ends that one read, with the saved path in the answer.
+  children at once and eight waiting; the same file asked for twice at once is read once. A file whose read timed out,
+  crashed or ran out of memory isn't tried again for a while. Any of these only ends that one read, with the saved path
+  in the answer. The child's answer is checked against the expected shape and cleaned again before it's shown.
 - Zip packages (DOCX, XLSX, PPTX) are read from their central directory, at most 2,000 entries, refused whole for an
   entry outside the archive, encryption or ZIP64; each entry is inflated with a hard output cap (32 MB, 64 MB in total)
   and a compression ratio over 200:1 is refused as a zip bomb. XML with a DOCTYPE or entity declaration is refused
   (no XXE, no entity expansion). PDFs: 500 pages and 2,000,000 characters of text; nothing is fetched (fonts, CMaps).
   CSV: 10,000 rows, 200 columns, 2,000 characters per cell.
 - Extracted text gets the same cleaning as mail: control characters, zero-width and other invisible characters
-  removed (the answer says how many).
+  removed (the answer says how many). Every string in `structuredContent` is also delimiter-escaped, so a cell can't
+  close the untrusted wrapper.
 - Libraries, bundled into the child: [`unpdf`](https://github.com/unjs/unpdf) (PDF.js's serverless build, MIT) and
   [`@xmldom/xmldom`](https://github.com/xmldom/xmldom) (MIT); zip and CSV reading are xaq's own code on `node:zlib`.
 

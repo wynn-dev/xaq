@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { hasForeignFiles } from "../server/config.ts";
 import {
   ATTACHMENT_RETENTION_DAYS,
-  attachmentSaveDir,
   MAX_SAVED_BYTES,
   pruneSavedAttachments,
   SAVE_DIR_MARKER,
