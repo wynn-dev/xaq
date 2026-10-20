@@ -150,7 +150,9 @@ export class AttachmentError extends Error {
       | "drive_not_enabled"
       /** The agent has no grant on a Google Workspace connection for the account. */
       | "drive_not_granted"
-      | "drive_error",
+      | "drive_error"
+      /** The account must be reconnected before its Drive can be read. */
+      | "needs_reauth",
     message: string,
   ) {
     super(message);
