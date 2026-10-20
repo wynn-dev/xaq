@@ -68,7 +68,7 @@ async function refusal(path: string, p: Policy = policy): Promise<InstanceType<t
   } catch (err) {
     if (err instanceof AttachmentError) {
       // Never the contents of anything that was looked at.
-      for (const secret of ["TOP SECRET", "MASTER KEY", "SQLite format", "harmless name"]) expect(err.message).not.toContain(secret);
+      for (const secret of ["TOP SECRET", "MASTER KEY", "SQLite format", "harmless name", "SECRET-XAQ"]) expect(err.message).not.toContain(secret);
       return err;
     }
     throw err;
@@ -121,11 +121,29 @@ describe("path attachments: the boundary", () => {
   it("refuse a symlink that escapes the allowed directory, and follow one that stays inside", async () => {
     symlinkSync(join(outside, "secret.txt"), join(docs, "innocent.pdf"));
     const err = await refusal(join(docs, "innocent.pdf"));
-    expect(err).toMatchObject({ code: "path_not_allowed", message: expect.stringContaining(`resolves to ${join(outside, "secret.txt")}`) });
+    expect(err).toMatchObject({ code: "path_not_allowed", message: `Can't attach ${join(docs, "innocent.pdf")}: it leads through a symlink to something that can't be attached.` });
+    // Where the link leads is never named.
+    expect(err.message).not.toContain(outside);
     symlinkSync(outside, join(docs, "linked-dir"));
-    expect((await refusal(join(docs, "linked-dir", "secret.txt"))).code).toBe("path_not_allowed");
+    expect((await refusal(join(docs, "linked-dir", "secret.txt"))).message).toMatch(/leads through a symlink to something that can't be attached/);
     symlinkSync(join(docs, "sub", "notes.txt"), join(docs, "notes-link.txt"));
     expect(await read(join(docs, "notes-link.txt"))).toMatchObject({ real: join(docs, "sub", "notes.txt"), requested: join(docs, "notes-link.txt"), content: "notes" });
+  });
+
+  it("say nothing about what exists behind a symlink: missing and existing targets get the same answer", async () => {
+    // A dangling link, and a missing file under a linked directory that leads out: the symlink refusal, not "no file".
+    symlinkSync(join(outside, "does-not-exist.txt"), join(docs, "dangling.pdf"));
+    const dangling = await refusal(join(docs, "dangling.pdf"));
+    const behind = await refusal(join(docs, "linked-dir", "does-not-exist.txt"));
+    const existing = await refusal(join(docs, "linked-dir", "secret.txt"));
+    for (const e of [dangling, behind, existing]) {
+      expect(e.code).toBe("path_not_allowed");
+      expect(e.message).toMatch(/: it leads through a symlink to something that can't be attached\.$/);
+      expect(e.message).not.toContain(outside);
+    }
+    // A missing file under a link that stays inside the allowed directory is simply not there.
+    symlinkSync(join(docs, "sub"), join(docs, "sub-link"));
+    expect((await refusal(join(docs, "sub-link", "nope.txt"))).code).toBe("not_found");
   });
 
   it("accept an allowed directory that is itself a symlink", async () => {
@@ -142,9 +160,9 @@ describe("path attachments: the boundary", () => {
     expect((await refusal(join(data, "readme.txt"), wide)).message).toMatch(/xaq's own files/);
     // Through a symlink or a hard link placed in an allowed directory, too.
     symlinkSync(join(data, "master.key"), join(docs, "key-link.txt"));
-    expect((await refusal(join(docs, "key-link.txt"), wide)).message).toMatch(/xaq's own files|named like master\.key/);
+    expect((await refusal(join(docs, "key-link.txt"), wide)).message).toMatch(/leads through a symlink to something that can't be attached/);
     linkSync(join(data, "readme.txt"), join(docs, "hardlink.txt"));
-    expect((await refusal(join(docs, "hardlink.txt"), wide)).message).toMatch(/a link to one of xaq's own files/);
+    expect((await refusal(join(docs, "hardlink.txt"), wide)).message).toMatch(/hard-linked files can't be attached/);
     // ~/.xaq, ~/.agentinbox and the CLI's ~/.config/xaq count as xaq's own wherever the data directory is.
     for (const dir of [join(HOME, ".xaq"), join(HOME, ".agentinbox"), join(HOME, ".config", "xaq", "profiles")]) {
       mkdirSync(dir, { recursive: true });
@@ -153,13 +171,92 @@ describe("path attachments: the boundary", () => {
     }
   });
 
-  it("refuse secret-looking names anywhere: master.key, *.db, .env, id_*, *.pem, *.key", async () => {
-    for (const name of ["master.key", "app.db", "app.db-wal", ".env", ".env.local", "id_ed25519", "id_rsa.pub", "server.pem", "tls.key", "Server.PEM"]) {
+  it("refuse secret-looking names anywhere: master.key, *.db, .env, id_*, *.pem, *.key, .netrc, .npmrc, *.xaq-backup-*", async () => {
+    const names = [
+      "master.key", "app.db", "app.db-wal", ".env", ".env.local", "id_ed25519", "id_rsa.pub", "server.pem", "tls.key", "Server.PEM",
+      ".netrc", ".npmrc", ".pgpass", ".claude.json", ".mcp.json", "config.toml.xaq-backup-2026-10-19T12-00-00-000Z",
+    ];
+    for (const name of names) {
       writeFileSync(join(docs, name), "secret");
       expect(await refusal(join(docs, name))).toMatchObject({ code: "path_not_allowed", message: expect.stringMatching(/can never be attached/) });
     }
     expect(isSecretName("keynote.pdf")).toBe(false);
     expect(isSecretName("db-report.pdf")).toBe(false);
+  });
+
+  it("refuse any hard-linked file, and say why", async () => {
+    writeFileSync(join(docs, "original.txt"), "fine");
+    linkSync(join(docs, "original.txt"), join(docs, "second-name.txt"));
+    for (const name of ["original.txt", "second-name.txt"]) {
+      expect(await refusal(join(docs, name))).toMatchObject({
+        code: "path_not_allowed",
+        message: expect.stringMatching(/hard-linked files can't be attached \(a hard link can make any file look like it's in an allowed directory\); attach a copy\./),
+      });
+    }
+  });
+
+  it("refuse the CLI's profiles at their default location even when XDG_CONFIG_HOME points elsewhere", async () => {
+    const saved = process.env.XDG_CONFIG_HOME;
+    process.env.XDG_CONFIG_HOME = join(root, "elsewhere-config");
+    try {
+      const profiles = join(HOME, ".config", "xaq", "profiles");
+      mkdirSync(profiles, { recursive: true });
+      writeFileSync(join(profiles, "laptop.json"), '{"key":"aib_SECRET-XAQ"}');
+      expect((await refusal(join(profiles, "laptop.json"), { allowedDirs: [HOME], dataDir: data })).message).toMatch(/xaq's own files/);
+      // ...and where XDG_CONFIG_HOME points too.
+      mkdirSync(join(root, "elsewhere-config", "xaq", "profiles"), { recursive: true });
+      writeFileSync(join(root, "elsewhere-config", "xaq", "profiles", "x.json"), "SECRET-XAQ");
+      expect((await refusal(join(root, "elsewhere-config", "xaq", "profiles", "x.json"), { allowedDirs: [root], dataDir: data })).message).toMatch(/xaq's own files/);
+    } finally {
+      if (saved === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = saved;
+    }
+  });
+
+  it("probe like the reviewer's: with HOME allowed, the secrets xaq writes and common credentials are all refused", async () => {
+    const files: Record<string, string> = {
+      "Library/LaunchAgents/sh.xaq.daemon.plist": "<key>XAQ_MASTER_KEY</key><string>SECRET-XAQ</string>",
+      "Library/LaunchAgents/com.other.agent.plist": "SECRET-XAQ",
+      ".config/systemd/user/xaq.service": "Environment=XAQ_MASTER_KEY=SECRET-XAQ",
+      ".config/systemd/user/xaq-listen-default.service": "SECRET-XAQ",
+      ".codex/config.toml": 'http_headers = { Authorization = "Bearer aib_SECRET-XAQ" }',
+      ".codex/config.toml.xaq-backup-2026-10-19T12-00-00-000Z": "aib_SECRET-XAQ",
+      ".codex/auth.json": "SECRET-XAQ",
+      ".cursor/mcp.json": '{"headers":{"Authorization":"Bearer aib_SECRET-XAQ"}}',
+      ".cursor/mcp.json.xaq-backup-2026-10-19T12-00-00-000Z": "SECRET-XAQ",
+      ".claude.json": "SECRET-XAQ",
+      ".claude.json.xaq-backup-2026-10-19T12-00-00-000Z": "SECRET-XAQ",
+      ".claude/.credentials.json": "SECRET-XAQ",
+      ".hermes/config.yaml": "SECRET-XAQ",
+      ".hermes/.env": "SECRET-XAQ",
+      ".ssh/id_ed25519": "SECRET-XAQ",
+      ".ssh/config": "SECRET-XAQ",
+      ".aws/credentials": "SECRET-XAQ",
+      ".config/gh/hosts.yml": "SECRET-XAQ",
+      ".gnupg/private-keys-v1.d/x.key": "SECRET-XAQ",
+      "Library/Keychains/login.keychain-db": "SECRET-XAQ",
+      ".netrc": "SECRET-XAQ",
+      ".npmrc": "//registry.npmjs.org/:_authToken=SECRET-XAQ",
+      ".docker/config.json": "SECRET-XAQ",
+      ".kube/config": "SECRET-XAQ",
+    };
+    for (const [rel, content] of Object.entries(files)) {
+      mkdirSync(join(HOME, rel, ".."), { recursive: true });
+      writeFileSync(join(HOME, rel), content);
+    }
+    const homePolicy: Policy = { allowedDirs: [HOME], dataDir: data };
+    for (const rel of Object.keys(files)) {
+      expect((await refusal(join(HOME, rel), homePolicy)).code, rel).toBe("path_not_allowed");
+    }
+    // Reached through a symlink from an ordinary folder: the same refusal, without naming the target.
+    mkdirSync(join(HOME, "Documents"), { recursive: true });
+    symlinkSync(join(HOME, ".codex", "config.toml"), join(HOME, "Documents", "notes.toml"));
+    const viaLink = await refusal(join(HOME, "Documents", "notes.toml"), homePolicy);
+    expect(viaLink.message).toMatch(/leads through a symlink to something that can't be attached/);
+    expect(viaLink.message).not.toContain(".codex");
+    // An ordinary file in the same allowed directory still works.
+    writeFileSync(join(HOME, "Documents", "report.pdf"), "%PDF-1.7");
+    expect((await read(join(HOME, "Documents", "report.pdf"), homePolicy)).content).toBe("%PDF-1.7");
   });
 
   it("refuse directories, FIFOs and devices; a FIFO doesn't hang the open", async () => {
@@ -231,12 +328,51 @@ describe("the attachmentDirs setting", () => {
       expect(() => settings.update({ attachmentDirs: ["relative/dir"] })).toThrow(/isn't an absolute directory path/);
       expect(() => settings.update({ attachmentDirs: [join(root, "nope")] })).toThrow(/doesn't exist/);
       expect(() => settings.update({ attachmentDirs: [join(docs, "report.pdf")] })).toThrow(/isn't a directory/);
-      expect(() => settings.update({ attachmentDirs: [config.dataDir] })).toThrow(/inside xaq's own directory/);
+      expect(() => settings.update({ attachmentDirs: [config.dataDir] })).toThrow(/is, contains or is inside xaq's own directory/);
       // A directory saved earlier that's gone (an unmounted disk) doesn't block other changes.
       const gone = mkdtempSync(join(tmpdir(), "xaq-gone-"));
       settings.update({ attachmentDirs: [docs, gone] });
       rmSync(gone, { recursive: true });
       expect(settings.update({ retentionDays: 7 }).attachmentDirs).toEqual([docs, gone]);
+    } finally {
+      await t.dispose();
+    }
+  });
+
+  it("refuses directories that are or contain $HOME or /, or are, contain or sit inside a secret place", async () => {
+    const t = testContext();
+    try {
+      const { settings } = t.ctx;
+      const narrower = /Pick a narrower folder, for example ~\/Documents\/xaq-outbox\./;
+      const refused = (dir: string, why: RegExp) => {
+        let err: unknown;
+        try {
+          settings.update({ attachmentDirs: [dir] });
+        } catch (e) {
+          err = e;
+        }
+        expect(err, dir).toBeDefined();
+        const text = `${(err as Error).message} ${(err as { hint?: string }).hint ?? ""}`;
+        expect(text, dir).toMatch(why);
+        expect(text, dir).toMatch(narrower);
+      };
+      refused("/", /too broad: it is the root directory/);
+      refused(HOME, /too broad: it is or contains your home directory/);
+      refused(join(HOME, ".."), /too broad: it is or contains your home directory/);
+      for (const rel of [".ssh", ".codex", ".cursor", ".config/gh", "Library/LaunchAgents", ".config/systemd/user", ".hermes"]) {
+        mkdirSync(join(HOME, rel), { recursive: true });
+        refused(join(HOME, rel), /is, contains or is inside .* where credentials, service definitions or agent keys are kept/);
+      }
+      // Inside one, too.
+      mkdirSync(join(HOME, ".ssh", "keys"), { recursive: true });
+      refused(join(HOME, ".ssh", "keys"), /is, contains or is inside/);
+      // xaq's own directories, at the default XDG location as well.
+      mkdirSync(join(HOME, ".config", "xaq", "profiles"), { recursive: true });
+      refused(join(HOME, ".config", "xaq", "profiles"), /xaq's own directory/);
+      refused(join(HOME, ".config", "xaq"), /xaq's own directory/);
+      // A narrower folder is fine.
+      mkdirSync(join(HOME, "Documents", "xaq-outbox"), { recursive: true });
+      expect(settings.update({ attachmentDirs: [join(HOME, "Documents", "xaq-outbox")] }).attachmentDirs).toEqual([join(HOME, "Documents", "xaq-outbox")]);
     } finally {
       await t.dispose();
     }

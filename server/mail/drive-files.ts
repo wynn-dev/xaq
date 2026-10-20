@@ -36,10 +36,10 @@ export type DrivePlan =
 export function planDriveFile(label: string, file: DriveFile, exportAs: DriveExportFormat | undefined): DrivePlan {
   const name = file.name || file.id;
   if (file.trashed) throw new AttachmentError("not_found", `${label}: the Drive file ${name} is in the trash.`);
-  if (exportAs !== undefined && !(exportAs in FORMATS)) {
+  if (exportAs !== undefined && !Object.hasOwn(FORMATS, exportAs)) {
     throw new AttachmentError("invalid_attachment", `${label}: export_as must be one of ${Object.keys(FORMATS).join(", ")}.`);
   }
-  const native = EXPORTS[file.mimeType];
+  const native = Object.hasOwn(EXPORTS, file.mimeType) ? EXPORTS[file.mimeType] : undefined;
   if (native) {
     const format = exportAs ?? "pdf";
     if (!native.formats.includes(format)) {

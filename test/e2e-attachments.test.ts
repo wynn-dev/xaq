@@ -14,6 +14,10 @@ import { HAS_AGENTS } from "./e2e/features.ts";
 import { gmailHeader, grant, mailbox, type Stack, startStack } from "./e2e/harness.ts";
 import type { Agent } from "./e2e/mcp.ts";
 
+// Path attachments check against the home directory's secret places (~/.xaq, ~/.ssh, …): give them a temporary one.
+process.env.HOME = mkdtempSync(join(tmpdir(), "xaq-e2e-home-"));
+for (const v of ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME"]) delete process.env[v];
+
 let s: Stack;
 let email: string;
 let account: Account;

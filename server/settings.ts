@@ -1,11 +1,12 @@
 import { realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import type { GoogleAppType, GoogleClientCheck as ClientCheck, IngestMode, PubsubState, Settings } from "../shared/types.ts";
 import type { Bus } from "./bus.ts";
 import type { Config } from "./config.ts";
 import { type Db, json } from "./db/index.ts";
 import { badRequest, HttpError } from "./util/errors.ts";
-import { ownDirs, within } from "./util/own-dirs.ts";
+import { ownDirs, protectedPaths, within } from "./util/own-dirs.ts";
 
 /**
  * Internal key/value state kept in the `settings` table next to the user-facing Settings.
@@ -223,7 +224,13 @@ function attachmentDirs(value: unknown): string[] {
   return out;
 }
 
-/** A directory being added to attachmentDirs: it exists, is a directory, and isn't inside xaq's own directories. */
+const NARROWER = "Pick a narrower folder, for example ~/Documents/xaq-outbox.";
+
+/**
+ * A directory being added to attachmentDirs: it exists and is a directory; it isn't, and doesn't contain, your home
+ * directory or /; and it isn't, doesn't contain and isn't inside xaq's own directories or a place xaq writes secrets
+ * into or that holds credentials (server/util/own-dirs.ts). Checked as given and as its real path.
+ */
 function checkNewAttachmentDir(dir: string, dataDir: string): void {
   let real: string;
   try {
@@ -233,8 +240,24 @@ function checkNewAttachmentDir(dir: string, dataDir: string): void {
     if (err instanceof HttpError) throw err;
     throw badRequest(`${dir} doesn't exist (or xaq can't open it)`, "Create it first, as the user xaq runs as.");
   }
-  const own = ownDirs(dataDir).find((d) => within(d, dir) || within(d, real));
-  if (own) throw badRequest(`${dir} is inside xaq's own directory ${own}`, "Its files (keys, database, agent keys) can never be attached; pick a directory of your own.");
+  const forms = [...new Set([resolve(dir), real])];
+  const formsOf = (p: string) => {
+    try {
+      return [resolve(p), realpathSync(p)];
+    } catch {
+      return [resolve(p)];
+    }
+  };
+  const contains = (target: string) => formsOf(target).some((t) => forms.some((f) => within(f, t)));
+  const inside = (target: string) => formsOf(target).some((t) => forms.some((f) => within(t, f)));
+  if (forms.includes("/") || contains(homedir())) {
+    throw badRequest(`${dir} is too broad: it ${forms.includes("/") ? "is the root directory" : "is or contains your home directory"}, with xaq's keys and other credentials in it`, NARROWER);
+  }
+  const own = ownDirs(dataDir).find((d) => contains(d) || inside(d));
+  if (own) throw badRequest(`${dir} is, contains or is inside xaq's own directory ${own}, which holds its keys, database and agent keys`, NARROWER);
+  const p = protectedPaths(dataDir);
+  const secret = p.dirs.find((d) => contains(d) || inside(d)) ?? p.files.find((f) => contains(f));
+  if (secret) throw badRequest(`${dir} is, contains or is inside ${secret}, where credentials, service definitions or agent keys are kept`, NARROWER);
 }
 
 function stripUndefined<T extends object>(o: T): Partial<T> {

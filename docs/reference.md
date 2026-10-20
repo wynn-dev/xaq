@@ -476,16 +476,27 @@ files.
 - Off until the owner lists directories under **Settings → Attachments from files**, or with
   `npx xaq-cli settings attachment-dirs add <dir>` (`list`, `remove`) on xaq's machine. Only the admin can change the
   list (it's the `attachmentDirs` setting of `PATCH /api/settings`); no agent tool can. A directory must exist when it's
-  added and can't be inside xaq's own directories.
+  added. It can't be or contain your home directory or `/`. It also can't be, contain or sit inside any of the
+  refused places below. Pick a narrow folder such as `~/Documents/xaq-outbox`.
 - The path must be absolute and inside an allowed directory, both as given and after resolving symlinks and `..`
   (a symlink is followed only when it stays inside).
-- xaq's own directories are refused even inside an allowed one: the data directory (and `~/.xaq`, `~/.agentinbox`) and
-  the CLI's config, state and data directories. So are files named `master.key`, `*.db` (and SQLite's `-wal`, `-shm`,
-  `-journal`), `.env` (`.env.*`), `id_*`, `*.pem` and `*.key`, anywhere, and hard links to xaq's own files.
-- Regular files only: no directories, FIFOs or devices. The file is opened without following a final symlink and
-  without blocking; the open file must be the very file that was checked (same device and inode), and on Linux its
-  actual path (`/proc/self/fd`) must still pass every check, so swapping it between the check and the open fails.
-- Errors name paths and sizes, never contents.
+- These are refused even inside an allowed directory:
+  - xaq's own directories: the data directory (and `~/.xaq`, `~/.agentinbox`), and the CLI's config, state and data
+    directories, both where `XDG_*` points and at their default locations, so a daemon started by launchd or
+    systemd covers the profiles too;
+  - service files: all of `~/Library/LaunchAgents`, and the systemd unit directories;
+  - the agent tools' directories and the MCP configs `setup-mcp` writes with agent keys: `~/.codex`, `~/.cursor`,
+    `~/.claude` and `~/.claude.json`, and the Hermes home. Their `*.xaq-backup-*` copies are refused too;
+  - credential stores: `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.gnupg`, `~/Library/Keychains`, `~/.kube`, `~/.docker`,
+    `~/.netrc`, `~/.npmrc`;
+  - files named `master.key`, `*.db` (and SQLite's `-wal`, `-shm`, `-journal`), `.env` (`.env.*`), `id_*`, `*.pem`,
+    `*.key`, `.netrc`, `.npmrc`, `.pgpass`, `.claude.json`, `.mcp.json` or `*.xaq-backup-*`, anywhere.
+- Regular files only: no directories, FIFOs or devices, and no hard-linked files (a hard link can make any file look
+  like it's in an allowed directory). The file is opened without following a final symlink and without blocking. The
+  open file must be the very file that was checked (same device and inode). On Linux its actual path
+  (`/proc/self/fd`) must also still pass every check, so swapping the file between the check and the open fails.
+- Errors name the path the agent gave and sizes, never contents. They never say where a symlink leads: anything
+  refused through a symlink, including a missing target, gets the same answer.
 
 The grant applies unchanged: a draft needs `draft`, a send needs `send` and goes through its send mode, recipient
 allowlist, reply-only rule and caps. An approval card lists each file's name, type, size and source (the path that was
