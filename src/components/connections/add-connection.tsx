@@ -1,5 +1,16 @@
 import type { ExtensionRegistryEntryView, ExtensionView } from "@shared/extensions";
-import type { AccessLevel, Agent, ConnectionGrant, ConnectionProbe, ConnectionView, PresetView, SetupStepView, StartConnectInput, StartConnectResult } from "@shared/types";
+import type {
+  AccessLevel,
+  Agent,
+  ConnectionGrant,
+  ConnectionProbe,
+  ConnectionView,
+  GoogleApiCheckView,
+  PresetView,
+  SetupStepView,
+  StartConnectInput,
+  StartConnectResult,
+} from "@shared/types";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeftIcon, ArrowRightIcon, DownloadIcon, GlobeIcon, NetworkIcon, PlugIcon, SearchIcon, ShieldCheckIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -23,6 +34,7 @@ import { connectConnection } from "./connection-auth";
 import { startConnect } from "./connection-row";
 import {
   ACCESS_LEVELS,
+  apiCheckSummary,
   type ConnectionDraft,
   connectInput,
   createInput,
@@ -465,6 +477,7 @@ function SetupPage({
               onChange={(v) => s.input && set({ inputs: { ...draft.inputs, [s.input.key]: v } })}
             >
               {inStep && s.id === "server" ? probeForm : null}
+              {s.check === "google_apis" && draft.preset ? <GoogleApiCheck presetId={draft.preset.id} account={(draft.inputs.google_account ?? "").trim()} /> : null}
             </SetupStepItem>
           ))}
         </ol>
@@ -649,6 +662,52 @@ function ProbeForm({
   );
 }
 
+const API_BADGE: Record<GoogleApiCheckView["state"], { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
+  enabled: { label: "on", variant: "secondary" },
+  disabled: { label: "off", variant: "destructive" },
+  unchecked: { label: "not checked yet", variant: "outline" },
+  error: { label: "couldn't check", variant: "outline" },
+};
+
+/** A Google extension's "Check again": asks Google, as the picked account, whether each API is on in the project. */
+function GoogleApiCheck({ presetId, account }: { presetId: string; account: string }) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<unknown>();
+  const [checks, setChecks] = useState<GoogleApiCheckView[] | null>(null);
+  const check = async () => {
+    setPending(true);
+    setError(undefined);
+    try {
+      setChecks(await api<GoogleApiCheckView[]>(`/api/connections/presets/${enc(presetId)}/google-apis`, { body: { account } }));
+    } catch (err) {
+      setError(err);
+    } finally {
+      setPending(false);
+    }
+  };
+  const summary = checks ? apiCheckSummary(checks) : null;
+  return (
+    <div className="space-y-2">
+      <Button size="sm" variant="outline" disabled={!account || pending} onClick={() => void check()} title={account ? undefined : "Pick the Google account first"}>
+        {pending ? <Spinner /> : <SearchIcon />} Check again
+      </Button>
+      {error !== undefined && <ErrorAlert error={error} />}
+      {checks && (
+        <ul className="space-y-1">
+          {checks.map((c) => (
+            <li key={c.service} className="flex items-center gap-2">
+              <Badge variant={API_BADGE[c.state].variant}>{API_BADGE[c.state].label}</Badge>
+              <span>{c.label}</span>
+              {c.state === "disabled" && <ExternalLink href={c.enableUrl}>Turn it on</ExternalLink>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {summary && <p className={summary.tone === "bad" ? "text-destructive" : "text-muted-foreground"}>{summary.text}</p>}
+    </div>
+  );
+}
+
 /** Renders `code` spans; the rest stays plain text. */
 function StepBody({ text }: { text: string }) {
   return text.split(/(`[^`]+`)/).map((part, i) =>
@@ -692,6 +751,15 @@ function SetupStepItem({
             <StepBody text={step.body} />
           </p>
         )}
+        {step.apis?.length ? (
+          <ul className="space-y-1">
+            {step.apis.map((a) => (
+              <li key={a.service}>
+                <ExternalLink href={a.url}>Enable the {a.label}</ExternalLink>
+              </li>
+            ))}
+          </ul>
+        ) : null}
         {children}
         {step.link && <ExternalLink href={step.link.url}>{step.link.label}</ExternalLink>}
         {step.copy && (
@@ -703,7 +771,27 @@ function SetupStepItem({
         {step.input && (
           <Field>
             <FieldLabel htmlFor={id}>{step.input.label}</FieldLabel>
-            {step.input.secret ? (
+            {step.input.choices ? (
+              step.input.choices.length ? (
+                <select
+                  id={id}
+                  className="h-9 w-full rounded-md border bg-transparent px-3 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  value={value}
+                  onChange={(e) => onChange(e.target.value)}
+                  aria-invalid={!!problem}
+                >
+                  <option value="">Pick one…</option>
+                  {step.input.choices.map((c) => (
+                    <option key={c.value} value={c.value} disabled={c.disabled}>
+                      {c.label}
+                      {c.note ? ` (${c.note})` : ""}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <FieldDescription>None yet: add one with the link below.</FieldDescription>
+              )
+            ) : step.input.secret ? (
               <PasswordInput id={id} autoComplete="off" placeholder={step.input.placeholder} value={value} onChange={(e) => onChange(e.target.value)} aria-invalid={!!problem} />
             ) : (
               <Input id={id} autoComplete="off" placeholder={step.input.placeholder} value={value} onChange={(e) => onChange(e.target.value)} aria-invalid={!!problem} />

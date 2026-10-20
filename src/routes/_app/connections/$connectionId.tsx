@@ -3,7 +3,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { ArrowLeftIcon, NetworkIcon, PauseIcon, PencilIcon, RefreshCwIcon, Trash2Icon, UnplugIcon } from "lucide-react";
 import { useState } from "react";
 import { PageHeader, QueryError, TimeAgo, ToneBadge } from "@/components/common";
-import { connectionStatusView, grantedScopesView, hostPort } from "@/components/connections/connection-flow";
+import { connectionStatusView, googleAccessView, grantedScopesView, hostPort } from "@/components/connections/connection-flow";
 import { useConnectionActions, useReconnect } from "@/components/connections/connection-row";
 import { RenameSlugDialog } from "@/components/connections/rename-dialog";
 import { Badge } from "@/components/ui/badge";
@@ -45,6 +45,7 @@ function ConnectionPage() {
   const c = conn.data;
   const view = connectionStatusView(c, now);
   const scopes = grantedScopesView(c);
+  const google = googleAccessView(c);
 
   return (
     <>
@@ -122,6 +123,23 @@ function ConnectionPage() {
             )}
           </div>
           {scopes.note && <p className="text-muted-foreground">{scopes.note}</p>}
+        </div>
+      )}
+      {google && (
+        <div className="space-y-1 text-sm">
+          <p>
+            <span className="text-muted-foreground">Works as the Google account </span>
+            {google.account}
+            <span className="text-muted-foreground">, with tokens limited to the access above: never its mail.</span>
+          </p>
+          {google.note && <p className="text-muted-foreground">{google.note}</p>}
+          <p className="text-muted-foreground">
+            Removing this connection keeps that access on the account. To take it back, use your{" "}
+            <a className="underline underline-offset-4" href="https://myaccount.google.com/permissions" target="_blank" rel="noreferrer noopener">
+              Google account permissions
+            </a>{" "}
+            (that removes all of xaq's access, mail included: reconnect the account afterwards).
+          </p>
         </div>
       )}
     </>

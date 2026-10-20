@@ -366,6 +366,7 @@ describe("migration 8 on a fresh database", () => {
       "created_at",
       "updated_at",
       "all_agents", // migration 10
+      "google_account_id", // migration 12
     ]);
     expect(cols("connection_credentials")).toEqual([
       "connection_id",

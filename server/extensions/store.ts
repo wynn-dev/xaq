@@ -126,11 +126,15 @@ export interface ManifestFacts {
   remoteUrl: string | null;
 }
 
-/** The manifest, checked by validateManifest (server/extensions/manifest.ts: schema 1, unknown keys rejected). */
-export function checkManifest(raw: unknown): ManifestFacts {
+/**
+ * The manifest, checked by validateManifest (server/extensions/manifest.ts: schema 1, unknown keys rejected).
+ * `official`: from the official registry; a third-party manifest with a google auth is refused (the store checks the
+ * shape first, with official: true, and again once it knows where the extension comes from).
+ */
+export function checkManifest(raw: unknown, opts: { official: boolean }): ManifestFacts {
   let m: Manifest;
   try {
-    m = validateManifest(raw);
+    m = validateManifest(raw, { official: opts.official });
   } catch (err) {
     if (err instanceof ManifestError) throw new ExtensionError("invalid", err.message);
     throw err;
@@ -145,7 +149,8 @@ export function checkManifest(raw: unknown): ManifestFacts {
   };
 }
 
-export const manifestFacts = (ext: Pick<InstalledExtension, "manifest">): ManifestFacts => checkManifest(ext.manifest);
+/** Facts for display (lists, warnings): the shape only. Whether an install may use a google auth is checked at install. */
+export const manifestFacts = (ext: Pick<InstalledExtension, "manifest">): ManifestFacts => checkManifest(ext.manifest, { official: true });
 
 /**
  * The warning a third-party extension gets before install (docs/EXTENSIONS.md): its source, kind, declared network
@@ -494,6 +499,9 @@ export class SqliteExtensionStore implements ExtensionStore {
       const staged = await this.stageSource(source, current);
       if (!staged.candidate.official) {
         try {
+          // Only official extensions may use a connected Google account (code.auth "google"): refused before anything
+          // is shown or installed.
+          checkManifest(staged.candidate.manifest, { official: false });
           await this.refuseOfficialName(staged.candidate.name);
         } catch (err) {
           this.discard(staged.work);
@@ -585,7 +593,8 @@ export class SqliteExtensionStore implements ExtensionStore {
       } catch {
         throw new ExtensionError("invalid", `${MANIFEST_FILE} isn't valid JSON.`);
       }
-      const facts = checkManifest(raw);
+      // The shape (every auth type); a third-party candidate's google auth is refused in stage(), once its origin is known.
+      const facts = checkManifest(raw, { official: true });
       const integrity = await this.wrap(async () => computeIntegrity(dir));
       if (official && source !== facts.name) throw new ExtensionError("invalid", `The registry's ${source} has a manifest named "${facts.name}".`);
       const candidate: InstalledExtension = {

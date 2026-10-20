@@ -1,6 +1,6 @@
 import pc from "picocolors";
 import { renameWarning, slugProblem } from "../../shared/connection-rename.ts";
-import type { SetupStepView, StartConnectInput } from "../../shared/types.ts";
+import type { GoogleApiCheckView, SetupStepView, StartConnectInput } from "../../shared/types.ts";
 import { safeText } from "../listen/ui.ts";
 import { OFFICIAL_NAMES } from "../extensions/registry.ts";
 import { NPX } from "../listen/version.ts";
@@ -28,6 +28,8 @@ export interface AddFlags {
   url?: string;
   /** The connection's name (unique per owner); without it the server picks one (host or preset name, " (2)" when taken). */
   name?: string;
+  /** A Google extension: the connected Google account (email) it works as. */
+  account?: string;
 }
 
 export interface ManageDeps {
@@ -46,6 +48,7 @@ const isUrl = (s: string) => /^https?:\/\//i.test(s.trim());
 export function renderStep(step: SetupStepView, n: number): string[] {
   const out = [pc.bold(`${n}. ${safeText(step.title, 120)}`)];
   for (const para of step.body.split(/\n{2,}/)) out.push(`   ${para.replace(/\s*\n\s*/g, " ").replace(/`([^`]+)`/g, (_m, c: string) => pc.cyan(c))}`);
+  for (const a of step.apis ?? []) out.push(`   ${safeText(a.label, 80)}: ${pc.cyan(a.url)}`);
   if (step.link) out.push(`   ${step.link.label}: ${pc.cyan(step.link.url)}`);
   if (step.copy) out.push(`   ${step.copy.label}: ${pc.cyan(step.copy.value)}`);
   return out;
@@ -240,7 +243,69 @@ async function createThen(base: Pending, flags: AddFlags, deps: ManageDeps, afte
   return isWorking(conn) ? 0 : 1;
 }
 
+/** A Google extension (google-workspace): core's Google steps lead its setup (server/extensions/google-setup.ts). */
+export const isGoogleExtension = (preset: PresetView) => preset.setupSteps.some((s) => s.id === "google-account" && s.input?.key === "google_account");
+
+const API_STATE: Record<GoogleApiCheckView["state"], string> = { enabled: "on", disabled: "off", unchecked: "not checked yet", error: "couldn't check" };
+
+/**
+ * `connections add google-workspace`: the account (from xaq's connected ones), the API links, the gcloud command and
+ * a check of each API, then the connection and Google's consent for exactly the extension's access.
+ */
+async function addGooglePreset(preset: PresetView, flags: AddFlags, deps: ManageDeps, taken: Set<string>): Promise<number> {
+  const { api, prompter: p } = deps;
+  p.print(pc.bold(`Connect ${safeText(preset.displayName, 60)}`));
+  preset.setupSteps.forEach((step, i) => {
+    for (const l of renderStep(step, i + 1)) p.print(l);
+  });
+  const step = preset.setupSteps.find((s) => s.id === "google-account")!;
+  const choices = step.input?.choices ?? [];
+  const usable = choices.filter((c) => !c.disabled);
+  if (!usable.length) {
+    throw new Error(
+      choices.length
+        ? "Every Google account connected to xaq needs reconnecting first (Accounts in the console)."
+        : `No Google account is connected to xaq yet. Connect one in the console (Accounts → Connect account), then run this again.`,
+    );
+  }
+  let account: string;
+  if (flags.account) {
+    const hit = choices.find((c) => c.value.toLowerCase() === flags.account!.trim().toLowerCase());
+    if (!hit) throw new Error(`--account ${flags.account}: that Google account isn't connected to xaq. Connected: ${choices.map((c) => c.value).join(", ")}.`);
+    if (hit.disabled) throw new Error(`${hit.value} ${hit.note ?? "can't be used now"}.`);
+    account = hit.value;
+  } else if (usable.length === 1) {
+    account = usable[0]!.value;
+    p.print(`Google account: ${pc.cyan(account)}${usable[0]!.note ? pc.dim(` (${usable[0]!.note})`) : ""}`);
+  } else {
+    account = await p.choose(
+      "Which Google account should it work as?",
+      usable.map((c) => ({ value: c.value, label: c.note ? `${c.value} (${c.note})` : c.value })),
+      usable[0]!.value,
+    );
+  }
+  // The APIs, checked as that account (a downscoped token: never one that can read its mail).
+  for (;;) {
+    const checks = await api.googleApis(preset.id, account);
+    for (const c of checks) {
+      const mark = c.state === "enabled" ? pc.green("✔") : c.state === "disabled" ? pc.red("✘") : pc.yellow("○");
+      p.print(`  ${mark} ${safeText(c.label, 80)}: ${API_STATE[c.state]}${c.message ? pc.dim(` (${safeText(c.message, 200)})`) : ""}`);
+      if (c.state === "disabled") p.print(`    Turn it on: ${pc.cyan(c.enableUrl)}`);
+    }
+    if (!checks.some((c) => c.state === "disabled")) break;
+    if (!p.interactive || p.assumeYes) {
+      p.print(pc.yellow("Some APIs are off: turn them on (links above), or the extension's tools that use them won't work."));
+      break;
+    }
+    if (!(await p.confirm("Check again once you've turned them on? (no: continue anyway)", true))) break;
+  }
+  const slug = await askSlug(p, flags.slug, preset.slug, taken);
+  p.print(pc.dim("Next, Google asks to allow only the extension's access: tick every box (and, for your own unverified app, Advanced → Go to <your app>)."));
+  return createThen({ slug, ...(flags.name ? { name: flags.name } : {}), preset: preset.id }, flags, deps, (c) => connectNow(c, { inputs: { google_account: account } }, deps, flags));
+}
+
 async function addPreset(preset: PresetView, flags: AddFlags, deps: ManageDeps, taken: Set<string>): Promise<number> {
+  if (isGoogleExtension(preset)) return addGooglePreset(preset, flags, deps, taken);
   const p = deps.prompter;
   p.print(pc.bold(`Connect ${safeText(preset.displayName, 60)}`));
   preset.setupSteps.forEach((step, i) => {

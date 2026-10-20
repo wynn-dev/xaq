@@ -1,6 +1,7 @@
 // Google Drive v3 REST, read-only and minimal: file metadata, downloads and exports, for attaching Drive files to
 // mail (server/mail/drive-files.ts). Built on GoogleRuntime.request like gmail.ts and calendar.ts (token refresh,
-// 401 retry, backoff, AccountNeedsReauthError); base URL ctx.config.google.driveBase + "/drive/v3".
+// 401 retry, backoff, AccountNeedsReauthError); base URL ctx.config.google.apisBase (default https://www.googleapis.com)
+// + "/drive/v3".
 // https://developers.google.com/workspace/drive/api/reference/rest/v3/files
 
 import type { AppContext } from "../context.ts";
@@ -43,7 +44,7 @@ const downloadTimeout = (maxBytes: number) => Math.min(600_000, 30_000 + Math.ce
 
 export function createDriveClient(ctx: AppContext, accountId: string): DriveClient {
   const rt = googleRuntime(ctx);
-  const base = ctx.config.google.driveBase;
+  const base = ctx.config.google.apisBase ?? "https://www.googleapis.com";
   const path = (fileId: string, suffix = "") => `/drive/v3/files/${encodeURIComponent(fileId)}${suffix}`;
   return {
     getFile: (fileId) => rt.request<DriveFile>(accountId, base, path(fileId), { query: { fields: FIELDS, supportsAllDrives: true } }),

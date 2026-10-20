@@ -4,7 +4,7 @@ import { registerInlineScript } from "../csp.ts";
 import { HttpError } from "../util/errors.ts";
 import { asHttpError } from "../google/http.ts";
 import { hasSession } from "../auth/index.ts";
-import { AlreadyConnectedError } from "../google/oauth.ts";
+import { AlreadyConnectedError, extensionConsentConnection } from "../google/oauth.ts";
 import { router } from "./util.ts";
 
 const escapeHtml = (s: string) =>
@@ -154,6 +154,37 @@ export function oauthRoutes(ctx: AppContext) {
     const url = new URL(c.req.url);
     // The console that opened the popup lives at publicUrl (in dev, Vite serves it from another port).
     const targetOrigin = ctx.config.dev ? "*" : new URL(ctx.settings.publicUrl()).origin;
+    // A code extension's Google consent (docs/EXTENSIONS.md "Google accounts for code extensions"): the page reports to
+    // the console's connection sign-in (agentinbox:connection-oauth with the connection), so a cancel or nothing ticked
+    // ends its wait at once, and a partial grant counts as connected (the connection says what's missing).
+    const extConnection = extensionConsentConnection(ctx, url.searchParams.get("state") ?? "");
+    const extName = extConnection ? (ctx.db.get<{ name: string }>("SELECT name FROM connections WHERE id = ?", extConnection)?.name ?? null) : null;
+    if (extConnection) {
+      const connection = { id: extConnection, name: extName };
+      try {
+        const account = await ctx.google.completeConnectFromUrl(`?${url.searchParams.toString()}`);
+        return c.html(callbackPage({ ok: true, connection, title: `${extName ?? "The connection"} can use ${account.email}`, message: "Access allowed. You can close this tab.", targetOrigin }));
+      } catch (err) {
+        const e = asHttpError(err);
+        const known = e instanceof HttpError;
+        if (known && e.code === "oauth_extension_not_granted" && /got only part/.test(e.message)) {
+          return c.html(callbackPage({ ok: true, connection, title: "Partly allowed", message: `${e.message} ${e.hint ?? ""}`.trim(), targetOrigin }));
+        }
+        ctx.log.child("oauth").warn("OAuth callback failed", { error: e instanceof Error ? e.message : String(e) });
+        return c.html(
+          callbackPage({
+            ok: false,
+            connection,
+            title: known && e.code === "oauth_access_denied" ? "Access not allowed" : "Couldn't allow access",
+            message: known ? e.message : "Something went wrong while finishing the sign-in.",
+            hint: known ? e.hint : "Check the xaq server log, then try again from the console.",
+            code: known ? e.code : "internal",
+            targetOrigin,
+          }),
+          known && e.status < 500 ? 400 : 500,
+        );
+      }
+    }
     try {
       const account = await ctx.google.completeConnectFromUrl(`?${url.searchParams.toString()}`);
       return c.html(

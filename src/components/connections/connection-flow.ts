@@ -9,6 +9,7 @@ import type {
   ConnectionProbe,
   ConnectionView,
   CreateConnectionInput,
+  GoogleApiCheckView,
   PresetView,
   SetupStepView,
   StartConnectInput,
@@ -127,6 +128,33 @@ export function grantedScopesView(c: Pick<ConnectionView, "grantedScopes" | "bro
     scopes,
     note: `Broad access: this sign-in granted ${broad.join(", ")} on ${c.name}. If agents don't need that, reconnect and pick a lower level.`,
   };
+}
+
+// ───────────── Google extensions (google-workspace) ─────────────
+
+/**
+ * A Google extension's connection in plain words: the account it works as, and what it can't do because Google
+ * wasn't asked or a box was unticked. null for any other connection.
+ */
+export function googleAccessView(c: Pick<ConnectionView, "google" | "name">): { account: string; note: string | null } | null {
+  const g = c.google;
+  if (!g) return null;
+  if (!g.email) return { account: "No Google account picked", note: `Reconnect ${c.name} to pick one.` };
+  if (!g.granted.length) return { account: g.email, note: `${c.name} has no access to ${g.email} yet. Reconnect and allow it on Google's screen.` };
+  if (!g.missing.length) return { account: g.email, note: null };
+  const without = g.missing.map((m) => m.without ?? `no ${m.grants}`).join("; ");
+  return { account: g.email, note: `Not granted on Google's screen: ${g.missing.map((m) => m.grants).join("; ")}. So ${without}. Reconnect and tick every box to fix it.` };
+}
+
+/** "Check again" in one line: which APIs are still off, or that all are on (or what xaq couldn't tell yet). */
+export function apiCheckSummary(checks: readonly GoogleApiCheckView[]): { tone: Tone; text: string } {
+  const off = checks.filter((c) => c.state === "disabled");
+  if (off.length) return { tone: "bad", text: `Still off: ${off.map((c) => c.label).join(", ")}. Turn ${off.length === 1 ? "it" : "them"} on, wait a minute, then check again.` };
+  const errors = checks.filter((c) => c.state === "error");
+  if (errors.length) return { tone: "warn", text: `Couldn't check ${errors.map((c) => c.label).join(", ")}: ${errors[0]!.message ?? "Google didn't answer"}` };
+  const unchecked = checks.filter((c) => c.state === "unchecked");
+  if (unchecked.length) return { tone: "idle", text: unchecked[0]!.message ?? "xaq can check these once you've allowed access." };
+  return { tone: "good", text: "Every API is on." };
 }
 
 // ───────────── Agent access (adapter over per-connection grants) ─────────────
@@ -305,7 +333,11 @@ export function inputProblems(steps: readonly SetupStepView[], values: Record<st
   for (const s of steps) {
     if (!s.input) continue;
     const v = (values[s.input.key] ?? "").trim();
-    if (!v) out[s.input.key] = `Paste the ${s.input.label.toLowerCase()}.`;
+    if (s.input.choices) {
+      // A choice (a Google extension's account): one of the offered values that can be picked.
+      if (!v) out[s.input.key] = s.input.choices.length ? `Pick the ${s.input.label.toLowerCase()}.` : `Add a ${s.input.label.toLowerCase()} to xaq first.`;
+      else if (!s.input.choices.some((c) => c.value === v && !c.disabled)) out[s.input.key] = `Pick one of the offered ${s.input.label.toLowerCase()}s.`;
+    } else if (!v) out[s.input.key] = `Paste the ${s.input.label.toLowerCase()}.`;
     else if (s.input.pattern) {
       let re: RegExp | null = null;
       try {

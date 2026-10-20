@@ -78,6 +78,15 @@
  * events; invitees may only change their own response (403 forbiddenForNonOrganizer); insert with an id that exists → 409,
  * with an id that isn't base32hex (a-v0-9, 5–1024 chars) → 400. Unexpanded listings include cancelled occurrences of live series.
  *
+ * Google Workspace files (code extensions' Google access; config.google.apisBase points here), on the Drive store
+ * (`g.drive.addFile`): GET /drive/v3/about, /drive/v3/files, /v1/documents/:id, /v4/spreadsheets/:id,
+ * /v1/presentations/:id. Each checks the token, then the API (disableApi("drive" | "docs" | "sheets" | "slides") → 403
+ * SERVICE_DISABLED), then its scopes.
+ *   tokenScopes(accessToken)                           the scopes an issued token carries (bookkeeping for downscoping)
+ *   refreshes                                          every refresh grant: the `scope` asked for and what was issued
+ * The refresh grant honours `scope` like RFC 6749 §6: a subset of the refresh token's scopes gets a token limited to
+ * it; a scope the user didn't grant → 400 invalid_scope.
+ *
  * Gmail search (`q`) supports label:, in:, is:, from:, to:, cc:, subject:, has:attachment, newer_than:, older_than:,
  * after:, before:, rfc822msgid:, quoted phrases, free text, -negation, OR, AND, (…) and {…}.
  * messages.send / drafts.create parse the raw RFC 5322 (headers, encoded-words, multipart, base64/QP, attachments)
@@ -146,7 +155,17 @@ export interface FakeGoogle {
   expireAccessTokens(email: string): void;
   expireHistory(email: string): void;
   orgPolicyBlocksIam(on: boolean): void;
-  disableApi(api: "gmail" | "pubsub" | "calendar" | "drive", on: boolean): void;
+  disableApi(api: FakeApi, on: boolean): void;
+  /** The scopes an access token was issued with (null: not one of ours). */
+  tokenScopes(accessToken: string): { email: string; scopes: string[] } | null;
+  /** Every access token issued so far, with its user and scopes. */
+  issued(): { accessToken: string; email: string; scopes: string[] }[];
+  /** Every refresh-grant request: the user, the `scope` it asked for (null: none) and what the issued token got (null: refused). */
+  refreshes: { email: string; requested: string[] | null; issued: string[] | null }[];
+  /** Answer refreshes with the whole grant whatever `scope` asks (a server that doesn't downscope). Default false. */
+  ignoreRefreshScope: boolean;
+  /** A downscoped refresh's answer (and token) also carries openid, userinfo.email and email. Default false. */
+  refreshAddsIdentity: boolean;
   failNext(rule: FailRule): void;
   sent(email: string): GmailMessage[];
   drafts(email: string): { id: string; message: GmailMessage }[];
@@ -531,7 +550,12 @@ const SERVICES = {
   pubsub: { name: "Cloud Pub/Sub API", host: "pubsub.googleapis.com" },
   calendar: { name: "Google Calendar API", host: "calendar-json.googleapis.com" },
   drive: { name: "Google Drive API", host: "drive.googleapis.com" },
+  docs: { name: "Google Docs API", host: "docs.googleapis.com" },
+  sheets: { name: "Google Sheets API", host: "sheets.googleapis.com" },
+  slides: { name: "Google Slides API", host: "slides.googleapis.com" },
 } as const;
+
+export type FakeApi = keyof typeof SERVICES;
 
 const serviceDisabled = (service: keyof typeof SERVICES) => {
   const { name, host } = SERVICES[service];
@@ -547,7 +571,11 @@ const serviceDisabled = (service: keyof typeof SERVICES) => {
           reason: "SERVICE_DISABLED",
           domain: "googleapis.com",
           // Newer error bodies carry the enable link (activationUrl is optional in Google's ErrorInfo).
-          metadata: { service: host, consumer: "projects/123456789", ...(service === "calendar" || service === "drive" ? { activationUrl, serviceTitle: name } : {}) },
+          metadata: {
+            service: host,
+            consumer: "projects/123456789",
+            ...(service === "calendar" || service === "drive" || service === "docs" ? { activationUrl, serviceTitle: name } : {}),
+          },
         },
       ],
     },
@@ -1024,11 +1052,26 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
       if (rt && rt.gen !== grantOf(rt.email).gen && grantOf(rt.email).rapt) {
         throw new HttpFail(400, { error: "invalid_grant", error_description: "reauth related error (invalid_rapt)", error_subtype: "invalid_rapt" });
       }
-      if (!valid(rt) || rt.expiresAt <= Date.now()) throw oauthFail(400, "invalid_grant", "Token has been expired or revoked.");
+      const requested = p.has("scope") ? (p.get("scope") ?? "").split(/\s+/).filter(Boolean) : null;
+      if (!valid(rt) || rt.expiresAt <= Date.now()) {
+        if (rt) fake.refreshes.push({ email: rt.email, requested, issued: null });
+        throw oauthFail(400, "invalid_grant", "Token has been expired or revoked.");
+      }
+      // RFC 6749 §6 (and Google): `scope` on a refresh asks for a token limited to those scopes, which must all have
+      // been granted to this refresh token; without it, the token gets everything originally granted.
+      if (requested && (!requested.length || requested.some((s) => !rt.scopes.includes(s)))) {
+        fake.refreshes.push({ email: rt.email, requested, issued: null });
+        throw oauthFail(400, "invalid_scope", "Some requested scopes were not granted by the user.");
+      }
+      // ignoreRefreshScope: a server that ignores `scope` and answers with the whole grant (what xaq must refuse).
+      // refreshAddsIdentity: a downscoped answer that also names the identity scopes (Google may add them).
+      const base = fake.ignoreRefreshScope ? rt.scopes : (requested ?? rt.scopes);
+      const scopes = fake.refreshAddsIdentity && requested ? [...new Set([...base, "openid", "https://www.googleapis.com/auth/userinfo.email", "email"])] : base;
+      fake.refreshes.push({ email: rt.email, requested, issued: [...scopes] });
       return {
-        access_token: issueAccess(rt.email, rt.scopes),
+        access_token: issueAccess(rt.email, scopes),
         expires_in: fake.accessTokenTtl,
-        scope: rt.scopes.join(" "),
+        scope: scopes.join(" "),
         token_type: "Bearer",
         ...(Number.isFinite(rt.expiresAt) ? { refresh_token_expires_in: Math.floor((rt.expiresAt - Date.now()) / 1000) } : {}),
       };
@@ -2086,6 +2129,53 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     },
   };
 
+  // ───── Google Workspace files: Docs, Sheets, Slides, Drive about/list (code extensions' Google access) ─────
+  // Same store as Drive above. Each route checks the token like Google: valid, the API on in the project (403
+  // SERVICE_DISABLED), then one of the API's scopes (403 ACCESS_TOKEN_SCOPE_INSUFFICIENT). A token minted for Gmail
+  // only never passes here, and one minted for these scopes never passes the Gmail routes.
+
+  const W = "https://www.googleapis.com/auth/";
+  function workspaceBearer(req: IncomingMessage, api: FakeApi, scopes: string[]): Token {
+    const t = accessTokens.get((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
+    if (!valid(t) || t.expiresAt < Date.now()) throw apiError(401, "Request had invalid authentication credentials. Expected OAuth 2 access token.", "authError");
+    if (disabled.has(api)) throw serviceDisabled(api);
+    if (!scopes.some((s) => t.scopes.includes(`${W}${s}`))) {
+      throw apiError(403, "Request had insufficient authentication scopes.", "insufficientPermissions", {
+        details: [{ "@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT", domain: "googleapis.com" }],
+      });
+    }
+    return t;
+  }
+  const filesOf = (email: string) => driveFiles.get(email.toLowerCase()) ?? new Map<string, FakeDriveFileInput & { id: string }>();
+  const fileOr404 = (email: string, id: string, mime: string) => {
+    const f = filesOf(email).get(id);
+    if (!f || f.mimeType !== mime || f.trashed) throw apiError(404, `Requested entity was not found.`, "notFound");
+    return f;
+  };
+  on("GET", /^\/drive\/v3\/about$/, (req) => {
+    const t = workspaceBearer(req, "drive", ["drive", "drive.readonly", "drive.file", "drive.metadata.readonly"]);
+    return { kind: "drive#about", user: { emailAddress: t.email } };
+  });
+  on("GET", /^\/drive\/v3\/files$/, (req) => {
+    const t = workspaceBearer(req, "drive", ["drive", "drive.readonly", "drive.metadata.readonly"]);
+    return { kind: "drive#fileList", files: [...filesOf(t.email).values()].map((f) => ({ id: f.id, name: f.name, mimeType: f.mimeType })) };
+  });
+  on("GET", /^\/v1\/documents\/([^/]+)$/, (req, _url, _b, m) => {
+    const t = workspaceBearer(req, "docs", ["documents", "documents.readonly", "drive", "drive.readonly", "drive.file"]);
+    const f = fileOr404(t.email, decodeURIComponent(m[1]!), "application/vnd.google-apps.document");
+    return { documentId: f.id, title: f.name };
+  });
+  on("GET", /^\/v4\/spreadsheets\/([^/]+)$/, (req, _url, _b, m) => {
+    const t = workspaceBearer(req, "sheets", ["spreadsheets", "spreadsheets.readonly", "drive", "drive.readonly", "drive.file"]);
+    const f = fileOr404(t.email, decodeURIComponent(m[1]!), "application/vnd.google-apps.spreadsheet");
+    return { spreadsheetId: f.id, properties: { title: f.name } };
+  });
+  on("GET", /^\/v1\/presentations\/([^/]+)$/, (req, _url, _b, m) => {
+    const t = workspaceBearer(req, "slides", ["presentations", "presentations.readonly", "drive", "drive.readonly", "drive.file"]);
+    const f = fileOr404(t.email, decodeURIComponent(m[1]!), "application/vnd.google-apps.presentation");
+    return { presentationId: f.id, title: f.name };
+  });
+
   // ───── Server ─────
 
   const closers = new Set<() => void>();
@@ -2138,7 +2228,7 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
 
   const fake: FakeGoogle = {
     url,
-    google: { oauthBase: url, authBase: url, gmailBase: url, pubsubBase: url, calendarBase: url, driveBase: url },
+    google: { oauthBase: url, authBase: url, gmailBase: url, pubsubBase: url, calendarBase: url, apisBase: url },
     accessTokenTtl: 3600,
     refreshTokenTtl: null,
     registeredRedirectUris: null,
@@ -2258,6 +2348,14 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     },
     iamPolicy: (topic) => (topics.has(topic) ? structuredClone(topics.get(topic)!.policy) : null),
     calendar: calendarApi,
+    refreshes: [],
+    ignoreRefreshScope: false,
+    refreshAddsIdentity: false,
+    tokenScopes(accessToken) {
+      const t = accessTokens.get(accessToken);
+      return t ? { email: t.email, scopes: [...t.scopes] } : null;
+    },
+    issued: () => [...accessTokens].map(([accessToken, t]) => ({ accessToken, email: t.email, scopes: [...t.scopes] })),
     drive: driveApi,
   };
   return fake;
