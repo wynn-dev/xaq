@@ -3,7 +3,7 @@
 
 import type { DriveFile } from "../google/drive.ts";
 import { hasReason } from "../google/http.ts";
-import { GoogleApiError } from "../google/types.ts";
+import { AccountNeedsReauthError, DownscopeError, GoogleApiError, ScopesNotGrantedError } from "../google/types.ts";
 import { AttachmentError, type DriveExportFormat } from "./attachments.ts";
 
 const APPS = "application/vnd.google-apps.";
@@ -69,6 +69,14 @@ export function planDriveFile(label: string, file: DriveFile, exportAs: DriveExp
 
 /** Drive's error for a file id, in words the agent can act on. Anything unrecognised is returned unchanged. */
 export function driveError(err: unknown, label: string, fileId: string, accountEmail: string, file?: DriveFile): unknown {
+  // From the drive.readonly token (server/google/scoped.ts googleAccessToken).
+  if (err instanceof ScopesNotGrantedError) return driveNotEnabled(accountEmail);
+  if (err instanceof AccountNeedsReauthError) {
+    return new AttachmentError("needs_reauth", `The Google account ${accountEmail} needs to be reconnected in the xaq console before its Drive files can be attached.`);
+  }
+  if (err instanceof DownscopeError) {
+    return new AttachmentError("drive_error", `${label}: Google didn't give xaq a Drive-only token for ${accountEmail}, so nothing was downloaded. Try again later.`);
+  }
   if (!(err instanceof GoogleApiError)) return err;
   const name = file?.name ?? fileId;
   const link = file?.webViewLink ? ` Put its link in the body instead: ${file.webViewLink}` : "";

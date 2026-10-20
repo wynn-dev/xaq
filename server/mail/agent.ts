@@ -593,7 +593,7 @@ export class AgentMail {
    */
   private driveFor(a: Access): DriveClient | AttachmentError {
     if (!agentCanReadDrive(this.ctx, this.principal.agentId, a.account.id)) return new AttachmentError("drive_not_granted", driveNotGrantedMessage(a.account.email));
-    if (!canReadDrive(a.account.grantedScopes)) return driveNotEnabled(a.account.email);
+    if (!canReadDrive(this.ctx, a.account.id)) return driveNotEnabled(a.account.email);
     return createDriveClient(this.ctx, a.account.id);
   }
 

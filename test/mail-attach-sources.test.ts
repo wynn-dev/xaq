@@ -7,20 +7,12 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 // Never look at the real ~/.xaq or ~/.config: xaq's own directories are derived from HOME and XDG_*.
 const HOME = mkdtempSync(join(tmpdir(), "xaq-home-"));
 process.env.HOME = HOME;
 for (const v of ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME"]) delete process.env[v];
-
-// Writer C's connection → Google account binding isn't merged yet (server/google/workspace-binding.ts is a stub
-// that binds nothing). Here connections are bound through this map.
-const bindings = vi.hoisted(() => new Map<string, string>());
-vi.mock("../server/google/workspace-binding.ts", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../server/google/workspace-binding.ts")>()),
-  workspaceConnectionAccount: (_db: unknown, connectionId: string) => bindings.get(connectionId) ?? null,
-}));
 
 const { DRIVE_READONLY_SCOPE, GMAIL_SCOPE } = await import("../server/google/scopes.ts");
 const { connectFakeAccount, recordingEvents, startFakeGoogle } = await import("./fake-google.ts");
@@ -52,21 +44,24 @@ const pdf = (size: number, seed = 1) => {
 };
 
 let nextConnection = 1;
-/** A google-workspace connection (or another extension's), bound to `accountId` unless null. */
+/**
+ * A google-workspace connection (or another extension's), bound to `accountId` unless null: what the extension's
+ * Google setup leaves behind (connections.google_account_id, migration 12).
+ */
 function workspaceConnection(accountId: string | null, opts: { preset?: string; status?: string } = {}): string {
   const id = `con_ws${nextConnection++}`;
   const t = new Date().toISOString();
   ctx.db.run(
-    `INSERT INTO connections (id, kind, preset, slug, name, url, auth_type, level_default, status, created_at, updated_at)
-     VALUES (?, 'remote_http', ?, ?, 'Google Workspace', 'https://workspace.example/mcp', 'none', 'read', ?, ?, ?)`,
+    `INSERT INTO connections (id, kind, preset, slug, name, url, auth_type, level_default, status, google_account_id, created_at, updated_at)
+     VALUES (?, 'remote_http', ?, ?, 'Google Workspace', 'https://workspace.example/mcp', 'none', 'read', ?, ?, ?, ?)`,
     id,
     opts.preset ?? "google-workspace",
     `gws-${nextConnection}`,
     opts.status ?? "active",
+    accountId,
     t,
     t,
   );
-  if (accountId) bindings.set(id, accountId);
   return id;
 }
 const grantConnection = (agentId: string, connectionId: string, level = "read") => {
