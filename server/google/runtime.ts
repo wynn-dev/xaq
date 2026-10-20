@@ -49,6 +49,11 @@ export interface RequestOptions {
    * without reading past the limit.
    */
   maxResponseBytes?: number;
+  /**
+   * The bearer token to use instead of the account's full access token, e.g. a downscoped one
+   * (server/google/scoped.ts googleAccessToken). Called with `force` true once after a 401, for a fresh one.
+   */
+  token?: (force: boolean) => Promise<string>;
 }
 
 /**
@@ -82,7 +87,7 @@ export class GoogleRuntime {
     let uncertain: GoogleApiError | null = null;
     for (let attempt = 0; ; attempt++) {
       if (opts.cost) await this.bucket(accountId).take(opts.cost);
-      const token = await this.tokens.accessToken(accountId, { force: forced });
+      const token = opts.token ? await opts.token(forced) : await this.tokens.accessToken(accountId, { force: forced });
       let err: GoogleApiError;
       try {
         const res = await fetch(url, {
@@ -117,7 +122,8 @@ export class GoogleRuntime {
       }
       if (err.status === 401 && !forced) {
         forced = true;
-        this.tokens.invalidate(accountId);
+        // A caller's own token is refreshed by calling it with force; the account's full token is dropped here.
+        if (!opts.token) this.tokens.invalidate(accountId);
         continue;
       }
       const retry = idempotent ? isRetryable(err) : rejectedBeforeProcessing(err);
