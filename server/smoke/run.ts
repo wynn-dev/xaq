@@ -24,6 +24,8 @@ import { isSmokeDir, SMOKE_NAME_RE, type SmokeDraftView, type SmokeLeftovers, ty
 import type { AdminChannel } from "../connections-cli/admin.ts";
 import { NPX } from "../listen/version.ts";
 import { MAX_ATTACHMENT_BYTES } from "../mail/agent.ts";
+import { PARSE_LIMITS } from "../mail/extract/types.ts";
+import { attachmentKind } from "../mcp/attachments.ts";
 import { type AgentMcp, type CallOutcome } from "./agent.ts";
 import { type DriveFacts, GuardError, type Ledger, newLedger, READ_TOOLS, ScratchGuard, WRITE_TARGETS } from "./guards.ts";
 import { solidPng } from "./png.ts";
@@ -45,25 +47,12 @@ export const MAIL_TOOLS = ["search_threads", "get_thread", "get_message", "list_
 export const PUBLIC_IMAGE_URL = "https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png";
 
 /**
- * What get_attachment (writer A2, server/mcp/attachments.ts) shows inline instead of saving to disk: images up to
- * MAX_ATTACHMENT_BYTES, PDF/DOCX/XLSX/PPTX/CSV up to PARSE_LIMITS.inputBytes (25 MB), text and HTML at any size
- * (it reads the first part). Everything else, and anything over those, is saved: the run doesn't ask for it.
+ * What get_attachment (server/mcp/attachments.ts) shows inline instead of saving to disk, from its own rules:
+ * attachmentKind() on the listed type and name, images under MAX_ATTACHMENT_BYTES, PDF/DOCX/XLSX/PPTX/CSV under
+ * PARSE_LIMITS.inputBytes, text and HTML at any size (it reads the first part). Everything else is saved, so the run
+ * never asks for it. The bytes aren't known here: attachmentKind's content sniff (a PDF sent as octet-stream without
+ * an extension) sees an empty buffer and says "other", which skips the file. That errs on the safe side.
  */
-export const INLINE_DOCUMENT_MAX_BYTES = 25 * 1024 * 1024;
-const INLINE_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-const DOCUMENT_TYPES: Record<string, string> = {
-  "application/pdf": "pdf",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
-  "application/vnd.ms-word.document.macroenabled.12": "docx",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
-  "application/vnd.ms-excel.sheet.macroenabled.12": "xlsx",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
-  "application/vnd.ms-powerpoint.presentation.macroenabled.12": "pptx",
-  "text/csv": "csv",
-  "text/tab-separated-values": "csv",
-  "application/csv": "csv",
-};
-const DOCUMENT_EXTS: Record<string, string> = { pdf: "pdf", docx: "docx", docm: "docx", xlsx: "xlsx", xlsm: "xlsx", pptx: "pptx", pptm: "pptx", csv: "csv", tsv: "csv" };
 export const SKIPPED_WOULD_SAVE = "skipped (would be saved to disk)";
 
 export interface ListedAttachment {
@@ -76,17 +65,12 @@ export interface ListedAttachment {
 
 /** The kind get_attachment would show inline, or null when it would save the file to disk (so the run skips it). */
 export function inlineKind(a: Pick<ListedAttachment, "filename" | "mimeType" | "size">): string | null {
-  const m = a.mimeType.toLowerCase().split(";")[0]!.trim();
-  const ext = /\.([a-z0-9]{1,8})$/i.exec(a.filename)?.[1]?.toLowerCase() ?? "";
-  const generic = !m || m === "application/octet-stream" || m === "application/zip" || m === "binary/octet-stream";
+  const kind = attachmentKind(a.mimeType, a.filename, Buffer.alloc(0));
   const known = Number.isFinite(a.size) && a.size >= 0;
-  if (INLINE_IMAGE_TYPES.has(m)) return known && a.size < MAX_ATTACHMENT_BYTES ? "image" : null;
-  const doc = DOCUMENT_TYPES[m] ?? (generic ? DOCUMENT_EXTS[ext] : undefined);
-  if (doc) return known && a.size < INLINE_DOCUMENT_MAX_BYTES ? doc : null;
-  if (m === "text/html" || /^html?$/.test(ext)) return "html";
-  if (m.startsWith("text/") || /^application\/(json|xml|x-yaml|yaml|javascript|x-ndjson|ld\+json)$/.test(m)) return "text";
-  if (generic && /^(txt|md|json|ics|xml|ya?ml|log)$/.test(ext)) return "text";
-  return null;
+  if (kind === "other") return null;
+  if (kind === "text" || kind === "html") return kind;
+  if (kind === "image") return known && a.size < MAX_ATTACHMENT_BYTES ? kind : null;
+  return known && a.size < PARSE_LIMITS.inputBytes ? kind : null;
 }
 
 export interface SmokeFlags {

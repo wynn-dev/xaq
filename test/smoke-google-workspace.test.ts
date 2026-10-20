@@ -1,12 +1,9 @@
 // `xaq smoke google-workspace --scratch` end to end, offline: the real daemon (startStack: real HTTP, the fake
 // Google for Gmail and Drive), the real admin channel (a one-time session in the data dir), /mcp as the temporary
 // agent, and a fake google-workspace extension (test/fake-workspace.ts) as an MCP upstream connection at "ask", bound
-// to the account like the extension's Google setup leaves it (preset google-workspace, connections.google_account_id),
-// so create_draft's { drive_file_id } is the real thing (#86, #90).
-//
-// Until writer A2 (list_attachments, get_attachment's content extraction) lands, one stand-in answers
-// list_attachments the way A2 does (structured attachmentId, filename, mimeType, size), only while the daemon has no
-// such tool. It can also answer get_attachment with A2's "saved to disk" shape, for the guard against that.
+// to the account like the extension's Google setup leaves it (preset google-workspace, connections.google_account_id).
+// Every mail tool is the real one: create_draft's { path } and { drive_file_id } (#86, #90), list_attachments and
+// get_attachment's extraction and saved files (#87). No stand-ins.
 
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -21,6 +18,7 @@ import { installSmokeSignals, safeWriter } from "../server/smoke/cli.ts";
 import { GuardError, newLedger, ScratchGuard, WRITE_TARGETS } from "../server/smoke/guards.ts";
 import { renderReport } from "../server/smoke/report.ts";
 import { chooseTargets, inlineKind, parseAttachmentList, SKIPPED_WOULD_SAVE, SmokeRun, SmokeSetupError } from "../server/smoke/run.ts";
+import { makePdf } from "./attachment-fixtures.ts";
 import { HAS_AGENTS } from "./e2e/features.ts";
 import { type Stack, startStack } from "./e2e/harness.ts";
 import { startFakeMcpUpstream } from "./fake-mcp-upstream.ts";
@@ -38,52 +36,29 @@ afterEach(async () => {
   for (const fn of cleanup.splice(0).reverse()) await fn();
 });
 
-// ───────────── The A2 stand-in (inactive once the daemon has list_attachments) ─────────────
+// ───────────── A recording wrapper (it changes nothing, except a lost create_draft answer on request) ─────────────
 
 interface McpKnobs {
-  /** get_attachment answers these file names with A2's "saved to disk" shape. */
-  savedFor: Set<string>;
-  /** Every get_attachment call the run made (file names). */
+  /** Every get_attachment call the run made (file names, from what list_attachments listed). */
   extracted: string[];
   /** create_draft makes the draft, but its answer is lost (the run never learns the draft id). */
   dropDraftAnswer: boolean;
 }
 
-function shimMcp(mcp: AgentMcp, knobs: McpKnobs): AgentMcp {
-  let natives: Set<string> | null = null;
-  const listed = async () => (natives ??= new Set(await mcp.listTools()));
+function recordingMcp(mcp: AgentMcp, knobs: McpKnobs): AgentMcp {
   const names = new Map<string, string>();
   return {
-    async listTools() {
-      const all = [...(await listed())];
-      return all.includes("list_attachments") ? all : [...all, "list_attachments"];
-    },
+    listTools: () => mcp.listTools(),
     async call(name, args) {
-      const have = await listed();
-      if (name === "list_attachments" && !have.has("list_attachments")) {
-        const m = await mcp.call("get_message", args);
-        const head = m.text.split("<email_content ")[0] ?? "";
-        const items = parseAttachmentList({ ...m, text: /^Attachments: .*$/m.exec(head)?.[0] ?? "", structured: null });
-        for (const a of items) names.set(a.id, a.filename);
-        const attachments = items.map((a) => ({ messageId: args.message_id, attachmentId: a.id, filename: a.filename, mimeType: a.mimeType, size: a.size }));
-        const text = `${attachments.length} attachments`;
-        return { isError: false, text, structured: { attachments }, content: [{ type: "text", text }] };
-      }
       if (name === "create_draft" && knobs.dropDraftAnswer) {
         await mcp.call(name, args);
         const text = "The connection dropped before the answer arrived.";
         return { isError: true, text, structured: null, content: [{ type: "text", text }] };
       }
-      if (name === "get_attachment") {
-        const filename = names.get(String(args.attachment_id)) ?? "?";
-        knobs.extracted.push(filename);
-        if (knobs.savedFor.has(filename)) {
-          const savedPath = `/home/wynn/.xaq/attachments/${filename}`;
-          const text = `Attachment ${filename}\nCouldn't read this PDF.\nSaved at: ${savedPath}`;
-          return { isError: false, text, structured: { attachment: { filename, savedPath } }, content: [{ type: "text", text }] };
-        }
-      }
-      return mcp.call(name, args);
+      if (name === "get_attachment") knobs.extracted.push(names.get(String(args.attachment_id)) ?? "?");
+      const out = await mcp.call(name, args);
+      if (name === "list_attachments") for (const a of parseAttachmentList(out)) names.set(a.id, a.filename);
+      return out;
     },
     close: () => mcp.close(),
   };
@@ -128,7 +103,7 @@ async function world(opts: { attachments?: { filename: string; mimeType: string;
     subject: "Lease papers",
     text: "EMAIL-BODY-SECRET: the papers are attached.",
     attachments: opts.attachments ?? [
-      { filename: "lease.pdf", mimeType: "application/pdf", content: Buffer.from("%PDF-1.4 ATTACHMENT-SECRET-PDF") },
+      { filename: "lease.pdf", mimeType: "application/pdf", content: makePdf(["ATTACHMENT-SECRET-PDF: the lease"]) },
       { filename: "notes.txt", mimeType: "text/plain", content: "ATTACHMENT-SECRET-TEXT" },
     ],
   });
@@ -156,13 +131,13 @@ async function world(opts: { attachments?: { filename: string; mimeType: string;
   const controller = new AbortController();
   const tmpRoot = mkdtempSync(join(tmpdir(), "xaq-smoke-test-"));
   cleanup.push(() => rmSync(tmpRoot, { recursive: true, force: true }));
-  const knobs: McpKnobs = { savedFor: new Set(), extracted: [], dropDraftAnswer: false };
+  const knobs: McpKnobs = { extracted: [], dropDraftAnswer: false };
   const run = (flags: Record<string, unknown> = {}) =>
     new SmokeRun(
       { scratch: true, yes: true, connection: "workspace", ...flags },
       {
         admin,
-        connectMcp: async (key) => shimMcp(await connectAgentMcp(admin.baseUrl, key), knobs),
+        connectMcp: async (key) => recordingMcp(await connectAgentMcp(admin.baseUrl, key), knobs),
         print: (l = "") => out.push(l),
         confirm: async () => true,
         signal: controller.signal,
@@ -264,15 +239,19 @@ describe.runIf(HAS_AGENTS)("xaq smoke google-workspace", () => {
     expect(report.ok).toBe(true);
   });
 
-  it("a get_attachment answer that saved the file anyway fails the step and lists the saved copy", async () => {
-    const w = await world();
-    w.knobs.savedFor.add("lease.pdf");
+  it("a get_attachment answer that saved the file anyway (a PDF it couldn't read) fails the step and lists the saved copy", async () => {
+    // Listed as a small PDF, so the run asks for it; the real get_attachment can't parse it and saves it instead.
+    const w = await world({ attachments: [{ filename: "broken.pdf", mimeType: "application/pdf", content: Buffer.from("%PDF-1.4 ATTACHMENT-SECRET not really a pdf") }] });
     const report = await w.run().run();
-    const step = report.steps.find((s) => s.step === 'extract "lease.pdf"')!;
+    const step = report.steps.find((s) => s.step === 'extract "broken.pdf"')!;
     expect(step.status).toBe("FAIL");
     expect(step.detail).toContain("saved");
-    expect(report.leftBehind).toEqual(['A copy of the email attachment "lease.pdf" was saved at /home/wynn/.xaq/attachments/lease.pdf: delete it.']);
+    expect(report.leftBehind).toHaveLength(1);
+    const saved = /^A copy of the email attachment "broken\.pdf" was saved at (.+): delete it\.$/.exec(report.leftBehind[0]!)?.[1];
+    expect(saved).toBeDefined();
+    expect(existsSync(saved!)).toBe(true);
     expect(report.ok).toBe(false);
+    for (const secret of SECRETS) expect([...w.out, JSON.stringify(report)].join("\n")).not.toContain(secret);
   });
 
   it("sweeps earlier runs first: their agents deleted, their temp dirs out of attachmentDirs, their drafts and folders listed", async () => {
