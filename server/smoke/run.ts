@@ -88,13 +88,31 @@ interface SettingsView {
 }
 
 /**
- * The Google account a google-workspace connection is bound to (writer C), when the daemon says. Read defensively:
- * the field isn't final yet.
+ * A google-workspace connection's Google binding (writer C's ConnectionView `google`): the account it's signed in as
+ * and the scopes it lacks. Typed here until this branch is rebased onto C.
  */
+interface GoogleBinding {
+  email: string | null;
+  accountId?: string | null;
+  scopes?: string[];
+  granted?: string[];
+  missing?: string[];
+}
+
+const googleOf = (c: ConnectionView): GoogleBinding | null => (c as ConnectionView & { google?: GoogleBinding | null }).google ?? null;
+
+/** The Google account the connection is signed in as (`google.email`), or null. */
 export function boundAccountEmail(c: ConnectionView): string | null {
-  const v = c as unknown as { googleAccount?: { email?: unknown } | null; accountEmail?: unknown; account?: { email?: unknown } | null };
-  const email = v.googleAccount?.email ?? v.accountEmail ?? v.account?.email;
-  return typeof email === "string" && email.includes("@") ? email : null;
+  const email = googleOf(c)?.email;
+  return typeof email === "string" && email ? email : null;
+}
+
+/** Scopes the extension needs that the connection's sign-in lacks: `google.missing`, else from grantedScopes. */
+function missingScopes(c: ConnectionView): string[] {
+  const g = googleOf(c);
+  if (Array.isArray(g?.missing)) return g.missing;
+  if (c.preset === WORKSPACE_PRESET && c.grantedScopes) return WORKSPACE_SCOPES.filter((s) => !c.grantedScopes!.includes(s));
+  return [];
 }
 
 /** Picks the account and the connection (flags, else the only one) and checks both are usable. */
@@ -121,11 +139,9 @@ export function chooseTargets(
   }
   const fix = `${base}/connections/${connection.id}`;
   if (connection.status !== "active") throw new SmokeSetupError(`${connection.name} is ${connection.status.replace("_", " ")}${connection.statusReason ? ` (${connection.statusReason})` : ""}. Fix it in the console: ${fix}`);
-  if (connection.preset === WORKSPACE_PRESET && connection.grantedScopes) {
-    const missing = WORKSPACE_SCOPES.filter((s) => !connection!.grantedScopes!.includes(s));
-    if (missing.length) {
-      throw new SmokeSetupError(`${connection.name} is missing Google permissions: ${missing.map((s) => s.split("/").pop()).join(", ")}. Reconnect it and approve all of them: ${fix}`);
-    }
+  const missing = missingScopes(connection);
+  if (missing.length) {
+    throw new SmokeSetupError(`${connection.name} is missing Google permissions: ${missing.map((s) => s.split("/").pop()).join(", ")}. Reconnect it and approve all of them: ${fix}`);
   }
   const bound = boundAccountEmail(connection);
   const want = flags.account ?? bound;

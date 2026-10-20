@@ -433,14 +433,22 @@ describe("the smoke command's setup", () => {
     expect(() => chooseTargets({}, [acc(EMAIL)], [conn({ grantedScopes: ["https://www.googleapis.com/auth/documents"] })], "https://x.test")).toThrow(
       /missing Google permissions: spreadsheets, presentations, drive.file, drive.readonly.*connections\/con_1/,
     );
+    // C's view: google.missing says it directly.
+    const lacking = conn({ google: { email: EMAIL, accountId: "acc_1", scopes: [], granted: [], missing: ["https://www.googleapis.com/auth/presentations"] } } as unknown as Partial<ConnectionView>);
+    expect(() => chooseTargets({}, [acc(EMAIL)], [lacking], "https://x.test")).toThrow(/missing Google permissions: presentations\. .*connections\/con_1/);
+    const complete = conn({ google: { email: EMAIL, accountId: "acc_1", scopes: [], granted: [], missing: [] } } as unknown as Partial<ConnectionView>);
+    expect(chooseTargets({}, [acc(EMAIL)], [complete], "https://x.test").connection.id).toBe("con_1");
     expect(() => chooseTargets({}, [acc(EMAIL, "needs_reauth")], [conn({})], "https://x.test")).toThrow(/needs reauth.*\/accounts/);
     expect(() => chooseTargets({ connection: "nope" }, [acc(EMAIL)], [conn({})], "https://x.test")).toThrow(/No connection "nope"/);
   });
 
   it("uses the Google account the connection is signed in as, and refuses a mismatch", () => {
-    const bound = conn({ googleAccount: { email: "b@x.test" } } as unknown as Partial<ConnectionView>);
+    const bound = conn({ google: { email: "b@x.test", accountId: "acc_b", scopes: [], granted: [], missing: [] } } as unknown as Partial<ConnectionView>);
     expect(chooseTargets({}, [acc(EMAIL), acc("b@x.test")], [bound], "https://x.test").account.email).toBe("b@x.test");
     expect(() => chooseTargets({ account: EMAIL }, [acc(EMAIL), acc("b@x.test")], [bound], "https://x.test")).toThrow(/signed in as b@x.test/);
+    // Not bound yet (google.email null): the usual default applies.
+    const unbound = conn({ google: { email: null, missing: [] } } as unknown as Partial<ConnectionView>);
+    expect(chooseTargets({}, [acc(EMAIL)], [unbound], "https://x.test").account.email).toBe(EMAIL);
   });
 
   it("reads list_attachments' structured list or its text lines", () => {
