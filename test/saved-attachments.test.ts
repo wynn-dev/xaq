@@ -39,6 +39,14 @@ const tmp = () => {
 
 const old = () => (Date.now() - (ATTACHMENT_RETENTION_DAYS + 1) * 86_400_000) / 1000;
 
+/** Marks a recorded file as saved before the retention (the manifest's savedAt, not the file's mtime, counts). */
+function age(root: string, rel: string) {
+  const path = join(root, SAVE_DIR_MARKER);
+  const m = JSON.parse(readFileSync(path, "utf8")) as { files: Record<string, { savedAt: number }> };
+  m.files[rel]!.savedAt = Date.now() - (ATTACHMENT_RETENTION_DAYS + 1) * 86_400_000;
+  writeFileSync(path, JSON.stringify(m));
+}
+
 describe("saved attachments", () => {
   it("saves to attachments/ in the data dir, 0700/0600, as <message id>/<cleaned name>", async () => {
     const ctx = setup();
@@ -92,33 +100,55 @@ describe("saved attachments", () => {
     await expect(saveAttachment(ctx, "m5", "big.bin", "application/octet-stream", Buffer.alloc(MAX_SAVED_BYTES + 1))).rejects.toThrow(/limit for saved files/);
   });
 
-  it("deletes files past the retention, then empty folders, only in a folder xaq created", async () => {
+  it("deletes recorded files past the retention, then the empty folders it created, and nothing else", async () => {
     const ctx = setup();
+    const root = join(ctx.config.dataDir, "attachments");
     const a = await saveAttachment(ctx, "m6", "old.txt", "text/plain", Buffer.from("o"));
     const b = await saveAttachment(ctx, "m7", "new.txt", "text/plain", Buffer.from("n"));
-    utimesSync(a, old(), old());
+    age(root, "m6/old.txt");
+    // A user's own files, even in id-like folders and old: never recorded, never deleted.
+    mkdirSync(join(root, "deadbeef"));
+    writeFileSync(join(root, "deadbeef", "notes.txt"), "mine");
+    writeFileSync(join(root, "m7", "mine.txt"), "mine");
+    utimesSync(join(root, "deadbeef", "notes.txt"), old(), old());
     expect(pruneSavedAttachments(ctx)).toBe(1);
     expect(existsSync(a)).toBe(false);
-    expect(existsSync(join(ctx.config.dataDir, "attachments", "m6"))).toBe(false);
+    expect(existsSync(join(root, "m6"))).toBe(false);
     expect(existsSync(b)).toBe(true);
-    // Something that isn't a message folder is left alone.
-    const other = join(ctx.config.dataDir, "attachments", "not a message dir");
-    mkdirSync(other);
-    writeFileSync(join(other, "f"), "x");
-    utimesSync(join(other, "f"), old(), old());
-    pruneSavedAttachments(ctx);
-    expect(existsSync(join(other, "f"))).toBe(true);
+    expect(pruneSavedAttachments(ctx, Date.now() + (ATTACHMENT_RETENTION_DAYS + 1) * 86_400_000)).toBe(1);
+    expect(existsSync(b)).toBe(false);
+    expect(readFileSync(join(root, "deadbeef", "notes.txt"), "utf8")).toBe("mine");
+    expect(readFileSync(join(root, "m7", "mine.txt"), "utf8")).toBe("mine");
   });
 
-  it("uses a configured folder; an existing folder with other files is used but never tightened or pruned", async () => {
+  it("an adopted empty folder: later user files in id-like folders are never deleted, by retention or the quota", async () => {
     const ctx = setup();
-    const mine = join(tmp(), "new-folder");
-    ctx.settings.update({ attachmentSaveDir: mine });
-    expect(attachmentSaveDir(ctx)).toBe(mine);
-    const p = await saveAttachment(ctx, "m8", "a.txt", "text/plain", Buffer.from("a"));
-    expect(p).toBe(join(mine, "m8", "a.txt"));
-    expect(existsSync(join(mine, SAVE_DIR_MARKER))).toBe(true);
+    const folder = join(tmp(), "adopted");
+    mkdirSync(folder, { mode: 0o755 });
+    ctx.settings.update({ attachmentSaveDir: folder });
+    const quotaBytes = 1000;
+    const ours = await saveAttachment(ctx, "a1", "ours.bin", "application/octet-stream", Buffer.alloc(300), { quotaBytes });
+    expect(statSync(folder).mode & 0o777).toBe(0o700);
+    // The user later puts their own files there (one replacing ours by hand).
+    mkdirSync(join(folder, "1234abcd"));
+    writeFileSync(join(folder, "1234abcd", "tax.pdf"), Buffer.alloc(900));
+    const replaced = await saveAttachment(ctx, "a2", "r.bin", "application/octet-stream", Buffer.alloc(100), { quotaBytes });
+    rmSync(replaced);
+    writeFileSync(replaced, Buffer.alloc(100, 1));
+    age(folder, "a1/ours.bin");
+    // Quota: only recorded files count (300), so 600 more fits; then 800 needs ours deleted, never theirs.
+    await saveAttachment(ctx, "a3", "x.bin", "application/octet-stream", Buffer.alloc(600), { quotaBytes });
+    await expect(saveAttachment(ctx, "a4", "y.bin", "application/octet-stream", Buffer.alloc(800), { quotaBytes })).resolves.toMatch(/y\.bin$/);
+    expect(existsSync(ours)).toBe(false);
+    expect(existsSync(join(folder, "1234abcd", "tax.pdf"))).toBe(true);
+    expect(existsSync(replaced)).toBe(true);
+    expect(pruneSavedAttachments(ctx, Date.now() + 30 * 86_400_000)).toBe(1);
+    expect(existsSync(join(folder, "1234abcd", "tax.pdf"))).toBe(true);
+    expect(existsSync(replaced)).toBe(true);
+  });
 
+  it("uses a folder that already holds other files without tightening it, and deletes only what it saved there", async () => {
+    const ctx = setup();
     const foreign = tmp();
     writeFileSync(join(foreign, "someone-elses.txt"), "x");
     chmodSync(foreign, 0o755);
@@ -126,10 +156,23 @@ describe("saved attachments", () => {
     const q = await saveAttachment(ctx, "m9", "b.txt", "text/plain", Buffer.from("b"));
     expect(q).toBe(join(foreign, "m9", "b.txt"));
     expect(statSync(foreign).mode & 0o777).toBe(0o755);
-    expect(existsSync(join(foreign, SAVE_DIR_MARKER))).toBe(false);
-    utimesSync(q, old(), old());
-    expect(pruneSavedAttachments(ctx)).toBe(0);
-    expect(existsSync(q)).toBe(true);
+    expect(pruneSavedAttachments(ctx, Date.now() + 30 * 86_400_000)).toBe(1);
+    expect(existsSync(q)).toBe(false);
+    expect(existsSync(join(foreign, "someone-elses.txt"))).toBe(true);
+  });
+
+  it("refuses a world-writable folder, and one owned by another user", async () => {
+    const ctx = setup();
+    const open = tmp();
+    chmodSync(open, 0o777);
+    ctx.settings.update({ attachmentSaveDir: open });
+    await expect(saveAttachment(ctx, "w1", "a.txt", "text/plain", Buffer.from("a"))).rejects.toThrow(/writable by every user/);
+    expect(existsSync(join(open, "w1"))).toBe(false);
+    // /: owned by root (tests never run as root).
+    if (process.getuid?.() !== 0) {
+      ctx.settings.update({ attachmentSaveDir: "/" });
+      await expect(saveAttachment(ctx, "w2", "a.txt", "text/plain", Buffer.from("a"))).rejects.toThrow(/belongs to another user/);
+    }
   });
 
   it("refuses a symlinked save folder", async () => {
@@ -141,42 +184,39 @@ describe("saved attachments", () => {
     await expect(saveAttachment(ctx, "m10", "a.txt", "text/plain", Buffer.from("a"))).rejects.toThrow(/symlinks are refused/);
   });
 
-  it("keeps the folder within its total quota by deleting the oldest saved files first", async () => {
+  it("keeps the recorded files within the total quota by deleting the oldest first", async () => {
     const ctx = setup();
+    const root = join(ctx.config.dataDir, "attachments");
     const quotaBytes = 1000;
     const kb = (c: string) => Buffer.alloc(400, c);
     const a = await saveAttachment(ctx, "q1", "a.bin", "application/octet-stream", kb("a"), { quotaBytes });
     const b = await saveAttachment(ctx, "q2", "b.bin", "application/octet-stream", kb("b"), { quotaBytes });
-    utimesSync(a, old(), old());
+    age(root, "q1/a.bin");
     // The same bytes again need no room: nothing is deleted.
     expect(await saveAttachment(ctx, "q2", "b.bin", "application/octet-stream", kb("b"), { quotaBytes })).toBe(b);
     expect(existsSync(a)).toBe(true);
     // 800 + 400 > 1000: the oldest (a) goes, and its empty message folder with it.
     const c = await saveAttachment(ctx, "q3", "c.bin", "application/octet-stream", kb("c"), { quotaBytes });
     expect(existsSync(a)).toBe(false);
-    expect(existsSync(join(ctx.config.dataDir, "attachments", "q1"))).toBe(false);
+    expect(existsSync(join(root, "q1"))).toBe(false);
     expect(existsSync(b)).toBe(true);
     expect(existsSync(c)).toBe(true);
-    // Other entries in the folder are never deleted or counted.
-    expect(existsSync(join(ctx.config.dataDir, "attachments", SAVE_DIR_MARKER))).toBe(true);
     // A file larger than the whole quota is refused, and nothing is deleted for it.
     await expect(saveAttachment(ctx, "q4", "huge.bin", "application/octet-stream", Buffer.alloc(1001), { quotaBytes })).rejects.toThrow(/larger than the 1000 B quota/);
     expect(existsSync(b) && existsSync(c)).toBe(true);
   });
 
-  it("refuses to save over the quota in a folder xaq didn't create, deleting nothing", async () => {
+  it("deletes only files it saved and that are unchanged to make room", async () => {
     const ctx = setup();
-    const foreign = tmp();
-    writeFileSync(join(foreign, "someone-elses.txt"), "x");
-    ctx.settings.update({ attachmentSaveDir: foreign });
     const quotaBytes = 1000;
     const a = await saveAttachment(ctx, "f1", "a.bin", "application/octet-stream", Buffer.alloc(600), { quotaBytes });
-    utimesSync(a, old(), old());
-    await expect(saveAttachment(ctx, "f2", "b.bin", "application/octet-stream", Buffer.alloc(600), { quotaBytes })).rejects.toThrow(
-      /over its 1000 B quota, and xaq doesn't delete files from a folder it didn't create/,
-    );
+    // Ours, but replaced by hand: no longer ours to delete, and no longer counted. A user file never counts.
+    rmSync(a);
+    writeFileSync(a, Buffer.alloc(600, 2));
+    const b = await saveAttachment(ctx, "f2", "b.bin", "application/octet-stream", Buffer.alloc(900), { quotaBytes });
+    await expect(saveAttachment(ctx, "f3", "c.bin", "application/octet-stream", Buffer.alloc(200), { quotaBytes })).resolves.toMatch(/c\.bin$/);
+    expect(existsSync(b)).toBe(false);
     expect(existsSync(a)).toBe(true);
-    expect(existsSync(join(foreign, "f2"))).toBe(false);
   });
 
   it("get_attachment still answers with the file's metadata when it can't be saved", async () => {
