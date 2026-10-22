@@ -11,7 +11,7 @@ const CDATA = 4;
 
 export function parseXml(source: string): Element {
   if (/<!DOCTYPE|<!ENTITY/i.test(source)) {
-    throw new UnsafeDocumentError("The document declares XML entities (a DOCTYPE), which Office files never do; it wasn't read.");
+    throw new UnsafeDocumentError("hostile", "The document declares XML entities (a DOCTYPE), which Office files never do; it wasn't read.");
   }
   let failed: string | null = null;
   const doc = new DOMParser({
@@ -20,7 +20,7 @@ export function parseXml(source: string): Element {
     },
   }).parseFromString(source, "text/xml");
   const root = doc.documentElement;
-  if (failed || !root) throw new UnsafeDocumentError("The document has malformed XML.");
+  if (failed || !root) throw new UnsafeDocumentError("corrupt", "The document has malformed XML.");
   return root;
 }
 

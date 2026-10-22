@@ -41,7 +41,7 @@ function cleanParts(r: Extracted, clean: (s: string) => string): Extracted {
 }
 
 export async function run(input: Buffer, task: ParseTask): Promise<ParseReply> {
-  if (input.length > PARSE_LIMITS.inputBytes) return { ok: false, error: "The file is too large to read." };
+  if (input.length > PARSE_LIMITS.inputBytes) return { ok: false, code: "too_complex", error: "The file is too large to read." };
   try {
     let result: Extracted;
     switch (task.format) {
@@ -61,10 +61,11 @@ export async function run(input: Buffer, task: ParseTask): Promise<ParseReply> {
         result = extractCsv(input);
         break;
       default:
-        return { ok: false, error: "Unknown format." };
+        return { ok: false, code: "parser_error", error: "Unknown format." };
     }
     return { ok: true, result: cleanAll(result) };
   } catch (err) {
-    return { ok: false, error: err instanceof UnsafeDocumentError ? err.message : "The file couldn't be parsed." };
+    if (err instanceof UnsafeDocumentError) return { ok: false, code: err.code, error: err.message };
+    return { ok: false, code: "parser_error", error: "The file couldn't be parsed." };
   }
 }

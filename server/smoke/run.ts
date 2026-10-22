@@ -4,8 +4,9 @@
 // - First, earlier runs' leftovers are swept: their agents deleted, their temp dirs taken out of attachmentDirs, and
 //   their drafts and Drive folders reported for the owner to check.
 // - Reads anywhere: a few existing Drive files (newest Doc, Sheet, Slides) and ONE email with attachments. Only
-//   names, the subject, kinds and sizes are printed, never content. Only attachments get_attachment shows inline are
-//   extracted: anything it would save to disk is skipped, and a saved copy fails the step and is listed.
+//   names, the subject, kinds and sizes are printed, never content. Only attachments get_attachment can show inline
+//   are extracted, with format "inline" (which never saves): a password-protected or encrypted file passes as
+//   "couldn't read (<reason>)", any other parse failure fails, and a saved copy anyway fails the step and is listed.
 // - Every write goes into ONE new Drive folder named after the run (xaq-smoke-<UTC timestamp>), through
 //   ScratchGuard (guards.ts): the target must be that folder or a file this run created whose drive_get parents
 //   include it. The only mail is ONE draft to the account's own address, deleted again; nothing is ever sent.
@@ -24,6 +25,7 @@ import { SMOKE_NAME_RE, SMOKE_TEMP_RE, type SmokeDraftView, type SmokeLeftovers,
 import type { AdminChannel } from "../connections-cli/admin.ts";
 import { NPX } from "../listen/version.ts";
 import { MAX_ATTACHMENT_BYTES } from "../mail/agent.ts";
+import { cleanLine } from "../mail/content.ts";
 import { PARSE_LIMITS } from "../mail/extract/types.ts";
 import { attachmentKind } from "../mcp/attachments.ts";
 import { type AgentMcp, type CallOutcome } from "./agent.ts";
@@ -47,13 +49,14 @@ export const MAIL_TOOLS = ["search_threads", "get_thread", "get_message", "list_
 export const PUBLIC_IMAGE_URL = "https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png";
 
 /**
- * What get_attachment (server/mcp/attachments.ts) shows inline instead of saving to disk, from its own rules:
- * attachmentKind() on the listed type and name, images under MAX_ATTACHMENT_BYTES, PDF/DOCX/XLSX/PPTX/CSV under
- * PARSE_LIMITS.inputBytes, text and HTML at any size (it reads the first part). Everything else is saved, so the run
- * never asks for it. The bytes aren't known here: attachmentKind's content sniff (a PDF sent as octet-stream without
- * an extension) sees an empty buffer and says "other", which skips the file. That errs on the safe side.
+ * What get_attachment (server/mcp/attachments.ts) can show inline, from its own rules: attachmentKind() on the listed
+ * type and name, images under MAX_ATTACHMENT_BYTES, PDF/DOCX/XLSX/PPTX/CSV under PARSE_LIMITS.inputBytes, text and
+ * HTML at any size (it reads the first part). The run asks with format "inline", which never saves; for anything
+ * else that would only download the owner's file to answer "not shown", so the run doesn't ask. The bytes aren't
+ * known here: attachmentKind's content sniff (a PDF sent as octet-stream without an extension) sees an empty buffer
+ * and says "other", which skips the file.
  */
-export const SKIPPED_WOULD_SAVE = "skipped (would be saved to disk)";
+export const SKIPPED_NOT_INLINE = "skipped (can't be shown inline)";
 
 export interface ListedAttachment {
   id: string;
@@ -193,7 +196,7 @@ export function planLines(marker: string, account: string, connection: Connectio
     "Reads (existing files and mail, read only; prints names, the subject, kinds and sizes, never content):",
     "  - Drive: search the newest Doc, Sheet and Slides file, list the top of My Drive, get, read and export each",
     "  - Gmail: ONE email with attachments: list its attachments and extract each one get_attachment shows",
-    "    inline (anything it would save to disk is skipped)",
+    "    inline, asking it never to save a copy (anything it can't show inline is skipped)",
     `Writes (only inside a new Drive folder "${marker}" at the top of My Drive; every write is checked first):`,
     "  - Docs: create a doc from markdown, append, find and replace (count checked), comment, read back",
     "  - Sheets: create a sheet, write a range, append rows, read back",
@@ -266,6 +269,25 @@ export function describeExtraction(out: CallOutcome): string {
   const text = blocks.filter((b) => b.type === "text").map((b) => b.text ?? "");
   const body = text.join("\n").split("\n").slice(1).join("\n");
   return `text, ${body.length} chars`;
+}
+
+/**
+ * Parse failures that are the file's own doing: the smoke passes them as "couldn't read (…)". Every other one (corrupt,
+ * a parser that's missing, crashed, timed out, busy, …) may be xaq's fault, and this run is what would notice.
+ */
+export const FILE_OWN_PARSE_FAILURES: ReadonlySet<string> = new Set(["password", "encrypted"]);
+
+/**
+ * A format "inline" answer that didn't show the file (structuredContent.attachment.notShown): its code, the parser's
+ * failure code when it couldn't read it, and the reason without a closing period. The reason is xaq's own words (the
+ * parser's fixed messages), never the file's content, unless the parser child is subverted (it's cleaned anyway).
+ */
+export function notShownOf(out: CallOutcome): { code: string; parseFailure: string | null; reason: string } | null {
+  const a = out.structured?.attachment as { notShown?: unknown; parseFailure?: unknown; reason?: unknown } | undefined;
+  if (!a || typeof a.notShown !== "string" || !a.notShown) return null;
+  const reason = typeof a.reason === "string" ? cleanLine(a.reason, 200).replace(/\.$/, "") : "";
+  const parseFailure = typeof a.parseFailure === "string" && a.parseFailure ? cleanLine(a.parseFailure, 40) : null;
+  return { code: cleanLine(a.notShown, 40), parseFailure, reason: reason || "no reason given" };
 }
 
 /** A get_attachment answer that saved the file to disk (A2: structuredContent.attachment.savedPath). */
@@ -642,18 +664,26 @@ export class SmokeRun {
     });
     for (const a of attachments.slice(0, 10)) {
       await this.step("get_attachment", `extract "${a.filename}"`, async () => {
-        // Only what get_attachment shows inline: anything it would save to disk (a copy of the owner's file on
-        // this machine, under a quota that may delete older saved files) is never asked for.
+        // format "inline" never saves (a copy of the owner's file on this machine, under a quota that may delete
+        // older saved files). What it can't show isn't even downloaded: inlineKind skips it from the listing.
         const kind = inlineKind(a);
-        if (!kind) return SKIPPED_WOULD_SAVE;
+        if (!kind) return SKIPPED_NOT_INLINE;
         const m = message as { id: string; subject: string } | null;
-        const out = await this.rawCall("get_attachment", { account, message_id: m!.id, attachment_id: a.id });
+        const out = await this.rawCall("get_attachment", { account, message_id: m!.id, attachment_id: a.id, format: "inline" });
         const saved = savedPathOf(out);
         if (saved) {
           this.leftBehind.push(`A copy of the email attachment "${a.filename}" was saved at ${saved}: delete it.`);
           throw new Error(`get_attachment saved "${a.filename}" to disk (${saved}) instead of showing it`);
         }
         if (out.isError) throw new Error(out.text);
+        const not = notShownOf(out);
+        if (not?.code === "unreadable") {
+          // A password-protected or encrypted file: xaq answered correctly and saved nothing. Anything else (a corrupt
+          // file, or the parser missing, crashing, timing out) fails: this run is the only check that would see it.
+          if (not.parseFailure && FILE_OWN_PARSE_FAILURES.has(not.parseFailure)) return `${kind}: couldn't read (${not.reason})`;
+          throw new Error(`get_attachment couldn't read "${a.filename}" (${not.parseFailure ?? "no failure code"}: ${not.reason})`);
+        }
+        if (not) return `${kind}: not shown inline (${not.reason})`;
         return `${kind}: ${describeExtraction(out)}`;
       });
     }

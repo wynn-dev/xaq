@@ -42,7 +42,7 @@ export function extractXlsx(input: Buffer): Extracted {
   const pkg = new ZipPackage(input);
   const part = mainPart(pkg, "xl/workbook.xml");
   const wbXml = pkg.text(part);
-  if (wbXml === null) throw new UnsafeDocumentError("The file isn't an Excel workbook (no xl/workbook.xml).");
+  if (wbXml === null) throw new UnsafeDocumentError("corrupt", "The file isn't an Excel workbook (no xl/workbook.xml).");
   const wb = parseXml(wbXml);
   const rels = relationships(pkg.text(relsPath(part)));
   const relOf = (suffix: string) => {

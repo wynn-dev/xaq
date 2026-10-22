@@ -32,8 +32,8 @@ export async function extractPdf(input: Uint8Array): Promise<Extracted> {
     doc = await task.promise;
   } catch (err) {
     const name = (err as { name?: string }).name;
-    if (name === "PasswordException") throw new UnsafeDocumentError("The PDF is password-protected.");
-    throw new UnsafeDocumentError("The file isn't a readable PDF.");
+    if (name === "PasswordException") throw new UnsafeDocumentError("password", "The PDF is password-protected.");
+    throw new UnsafeDocumentError("corrupt", "The file isn't a readable PDF.");
   }
   const totalPages = doc.numPages;
   const pages: { n: number; text: string }[] = [];

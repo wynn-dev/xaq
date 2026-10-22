@@ -9,8 +9,11 @@ const zip = (files: Record<string, string | Uint8Array>, level: 0 | 6 = 6) =>
   Buffer.from(zipSync(Object.fromEntries(Object.entries(files).map(([k, v]) => [k, typeof v === "string" ? strToU8(v) : v])) as Zippable, { level }));
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-/** A PDF with one page per entry; each "\n" starts a new text line. Helvetica, no compression. */
-export function makePdf(pages: string[]): Buffer {
+/**
+ * A PDF with one page per entry; each "\n" starts a new text line. Helvetica, no compression. `encrypted`: a standard
+ * security handler (RC4, revision 2) whose user password isn't empty, so a reader needs a password to open it.
+ */
+export function makePdf(pages: string[], opts: { encrypted?: boolean } = {}): Buffer {
   const objs: string[] = [];
   const add = (s: string) => objs.push(s);
   add(""); // 1: catalog
@@ -27,6 +30,9 @@ export function makePdf(pages: string[]): Buffer {
   }
   objs[0] = "<< /Type /Catalog /Pages 2 0 R >>";
   objs[1] = `<< /Type /Pages /Kids [${kids.map((k) => `${k} 0 R`).join(" ")}] /Count ${kids.length} >>`;
+  // /O and /U are arbitrary: no password, empty or not, produces this /U, so the file can't be opened.
+  const encrypt = opts.encrypted ? add(`<< /Filter /Standard /V 1 /R 2 /Length 40 /P -44 /O <${"ab".repeat(32)}> /U <${"cd".repeat(32)}> >>`) : null;
+  const encryptRef = encrypt ? ` /Encrypt ${encrypt} 0 R /ID [<${"01".repeat(16)}> <${"01".repeat(16)}>]` : "";
   let out = "%PDF-1.4\n";
   const offsets: number[] = [];
   objs.forEach((o, i) => {
@@ -35,7 +41,7 @@ export function makePdf(pages: string[]): Buffer {
   });
   const xref = Buffer.byteLength(out, "latin1");
   out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, "0")} 00000 n \n`).join("")}`;
-  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  out += `trailer\n<< /Size ${objs.length + 1} /Root 1 0 R${encryptRef} >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(out, "latin1");
 }
 

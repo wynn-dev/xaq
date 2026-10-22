@@ -31,7 +31,7 @@ export function extractPptx(input: Buffer): Extracted {
   const pkg = new ZipPackage(input);
   const part = mainPart(pkg, "ppt/presentation.xml");
   const presXml = pkg.text(part);
-  if (presXml === null) throw new UnsafeDocumentError("The file isn't a PowerPoint presentation (no ppt/presentation.xml).");
+  if (presXml === null) throw new UnsafeDocumentError("corrupt", "The file isn't a PowerPoint presentation (no ppt/presentation.xml).");
   const rels = relationships(pkg.text(relsPath(part)));
   const pres = parseXml(presXml);
   const ids = [...descendants(firstChild(pres, "sldIdLst") ?? pres, "sldId")];

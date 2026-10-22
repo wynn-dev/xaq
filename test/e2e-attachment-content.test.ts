@@ -1,12 +1,13 @@
 // E2E: get_attachment returns readable content and list_attachments lists files, over MCP against the fake Google.
 // Each format (PDF, DOCX, XLSX, CSV, PPTX, image, binary), paging, saved files (path, permissions, no overwrite,
 // retention), and hostile files: a zip bomb, an XXE attempt, a parser that hangs and one that crashes. The daemon
-// keeps answering, and every fallback names the saved file.
+// keeps answering, and every fallback names the saved file. format "inline" answers without ever saving.
 
-import { existsSync, lstatSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Account } from "../shared/types.ts";
+import { MAX_ATTACHMENT_BYTES } from "../server/mail/agent.ts";
 import { AttachmentParser, setAttachmentParser } from "../server/mail/extract/sandbox.ts";
 import { ATTACHMENT_RETENTION_DAYS, pruneSavedAttachments, SAVE_DIR_MARKER } from "../server/mail/saved-attachments.ts";
 import { createLogger } from "../server/util/log.ts";
@@ -181,6 +182,72 @@ describe.runIf(HAS_AGENTS)("attachment content over MCP", () => {
     expect(savedPath((await mcp.ok("get_attachment", { message_id: msg.id, attachment_id: binId, format: "file" })))).toBe(path);
     const b64 = await mcp.call("get_attachment", { message_id: msg.id, attachment_id: binId, format: "base64" });
     expect((b64.raw.content as { type: string; resource?: { blob: string } }[]).find((c) => c.type === "resource")!.resource!.blob).toBe(BINARY.toString("base64"));
+  });
+
+  it('format "inline": an encrypted or corrupt PDF, an oversized image and a binary give metadata and a reason, and nothing is saved', async () => {
+    const dir = join(s.ctx.config.dataDir, "attachments");
+    // Something saved already, so the folder and its manifest (the quota's record) exist to compare.
+    const before = deliverFiles("Before", [{ filename: "kept.bin", mimeType: "application/octet-stream", content: BINARY }]);
+    expect(savedPath(await mcp.ok("get_attachment", { message_id: before.id, attachment_id: (await idsOf(before.id))[0] }))).not.toBeNull();
+    const snapshot = () => ({ files: readdirSync(dir, { recursive: true }).map(String).sort(), manifest: readFileSync(join(dir, SAVE_DIR_MARKER), "utf8") });
+    const was = snapshot();
+
+    const bigPng = Buffer.concat([PNG_1X1, Buffer.alloc(MAX_ATTACHMENT_BYTES)]);
+    const msg = deliverFiles("Unreadable", [
+      { filename: "locked.pdf", mimeType: "application/pdf", content: makePdf(["ATTACHMENT-SECRET"], { encrypted: true }) },
+      { filename: "broken.pdf", mimeType: "application/pdf", content: Buffer.from("%PDF-1.4 not really a pdf") },
+      { filename: "huge.png", mimeType: "image/png", content: bigPng },
+      { filename: "blob.bin", mimeType: "application/octet-stream", content: BINARY },
+    ]);
+    const [lockedId, brokenId, pngId, binId] = await idsOf(msg.id);
+    const inline = (id: string) => mcp.call("get_attachment", { message_id: msg.id, attachment_id: id, format: "inline" });
+
+    const locked = await inline(lockedId!);
+    expect(locked.isError).toBe(false);
+    expect(locked.text).toMatch(/^Attachment locked\.pdf \(application\/pdf, .+\) from message \S+, attachment_id \S+\nCouldn't read this PDF: The PDF is password-protected\.\nNothing was saved \(format "inline"\); format "file" saves it to disk\.$/);
+    expect(locked.text).not.toContain("ATTACHMENT-SECRET");
+    expect(locked.raw.structuredContent).toEqual({
+      attachment: { filename: "locked.pdf", mimeType: "application/pdf", size: expect.any(Number), messageId: msg.id, attachmentId: lockedId, savedPath: null, notShown: "unreadable", reason: "The PDF is password-protected.", parseFailure: "password" },
+    });
+
+    const broken = await inline(brokenId!);
+    expect(broken.text).toContain("Couldn't read this PDF: The file isn't a readable PDF.");
+    expect(broken.raw.structuredContent).toMatchObject({ attachment: { filename: "broken.pdf", savedPath: null, notShown: "unreadable", reason: "The file isn't a readable PDF.", parseFailure: "corrupt" } });
+
+    const png = await inline(pngId!);
+    expect(png.text).toContain("The image is over 5.0 MB, so it isn't shown inline.");
+    expect((png.raw.content as { type: string }[]).map((c) => c.type)).toEqual(["text"]);
+    expect(png.raw.structuredContent).toMatchObject({ attachment: { filename: "huge.png", size: bigPng.length, savedPath: null, notShown: "too_large", reason: "over 5.0 MB, too large to show inline" } });
+
+    const bin = await inline(binId!);
+    expect(bin.text).toContain("This kind of file can't be shown inline.");
+    expect(bin.raw.structuredContent).toMatchObject({ attachment: { filename: "blob.bin", savedPath: null, notShown: "unsupported", reason: "this kind of file can't be shown inline" } });
+
+    for (const r of [locked, broken, png, bin]) expect(savedPath(r.text)).toBeNull();
+    // Nothing on disk: no folder for the message, no new file, the manifest (and so the quota) as it was.
+    expect(existsSync(join(dir, msg.id))).toBe(false);
+    expect(snapshot()).toEqual(was);
+
+    // auto, the default, is unchanged: the same corrupt PDF is saved (its parseFailure said there too).
+    const auto = await mcp.call("get_attachment", { message_id: msg.id, attachment_id: brokenId });
+    expect(savedPath(auto.text)).toBe(join(dir, msg.id, "broken.pdf"));
+    expect(auto.raw.structuredContent).toMatchObject({ attachment: { savedPath: join(dir, msg.id, "broken.pdf"), parseFailure: "corrupt" } });
+  });
+
+  it('format "inline" shows what it can, as auto does: a PDF as text, an image as an image', async () => {
+    const msg = deliverFiles("Readable", [
+      { filename: "memo.pdf", mimeType: "application/pdf", content: makePdf(["Quarterly memo: all good"]) },
+      { filename: "pixel.png", mimeType: "image/png", content: PNG_1X1 },
+    ]);
+    const [pdfId, pngId] = await idsOf(msg.id);
+    const pdf = await mcp.call("get_attachment", { message_id: msg.id, attachment_id: pdfId, format: "inline" });
+    expect(pdf.isError).toBe(false);
+    expect(pdf.text).toContain("--- Page 1 of 1 ---\nQuarterly memo: all good");
+    expect(pdf.text).toContain("[The whole PDF (1 page).]");
+    expect(pdf.raw.structuredContent).toBeUndefined();
+    const img = await mcp.call("get_attachment", { message_id: msg.id, attachment_id: pngId, format: "inline" });
+    expect((img.raw.content as { type: string; data?: string }[]).find((c) => c.type === "image")).toMatchObject({ data: PNG_1X1.toString("base64") });
+    expect(existsSync(join(s.ctx.config.dataDir, "attachments", msg.id))).toBe(false);
   });
 
   it("never overwrites a different file and deletes saved files after the retention", async () => {

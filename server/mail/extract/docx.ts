@@ -37,7 +37,7 @@ export function extractDocx(input: Buffer): Extracted {
   const pkg = new ZipPackage(input);
   const part = mainPart(pkg, "word/document.xml");
   const xml = pkg.text(part);
-  if (xml === null) throw new UnsafeDocumentError("The file isn't a Word document (no word/document.xml).");
+  if (xml === null) throw new UnsafeDocumentError("corrupt", "The file isn't a Word document (no word/document.xml).");
   const rels = relationships(pkg.text(relsPath(part)));
   const byType = (suffix: string) => {
     for (const r of rels.values()) if (r.type.endsWith(suffix) && !r.external) return resolvePart(part, r.target);

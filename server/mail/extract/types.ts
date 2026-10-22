@@ -54,8 +54,24 @@ export type Extracted = (
   | { format: "pptx"; totalSlides: number; slides: { n: number; text: string; notes: string }[] }
 ) & { notes: string[]; hiddenChars?: number };
 
-/** The child's single line of stdout. */
-export type ParseReply = { ok: true; result: Extracted } | { ok: false; error: string };
+/**
+ * Why the child couldn't read a file, as a code next to the plain words:
+ * - password: a password-protected PDF; encrypted: an encrypted Office package. The file's own doing.
+ * - corrupt: not the format it claims, or damaged. unsupported: a variant not read here (ZIP64, multi-part, …).
+ * - too_complex: over a cap (entries, decompressed size, output). hostile: a zip bomb, XXE, a path outside the archive.
+ * - parser_error: anything else the parser threw (a bug, or a parser library that broke).
+ */
+export const DOCUMENT_FAILURES = ["password", "encrypted", "corrupt", "unsupported", "too_complex", "hostile", "parser_error"] as const;
+export type DocumentFailure = (typeof DOCUMENT_FAILURES)[number];
 
-/** A file the parser refuses to read (zip bomb, XXE, entry outside the archive, …): said in plain words. */
-export class UnsafeDocumentError extends Error {}
+/** The child's single line of stdout. */
+export type ParseReply = { ok: true; result: Extracted } | { ok: false; code: DocumentFailure; error: string };
+
+/** A file the parser refuses to read (zip bomb, XXE, entry outside the archive, …): said in plain words, with a code. */
+export class UnsafeDocumentError extends Error {
+  readonly code: Exclude<DocumentFailure, "parser_error">;
+  constructor(code: Exclude<DocumentFailure, "parser_error">, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
