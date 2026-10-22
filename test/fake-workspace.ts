@@ -56,6 +56,11 @@ export interface FakeWorkspace {
   hooks: { onCreate: ((f: FakeFile) => void) | null };
   /** In the trash, itself or through a parent. */
   isTrashed(id: string): boolean;
+  /**
+   * Real Drive trashes a folder's children asynchronously: for a while after the folder is trashed, drive_get still
+   * says trashed: false for a file inside it. When set, drive_get reports only a file's own flag.
+   */
+  lazyTrashCascade: boolean;
   /** A doc exported as PDF (the A1 shim uses it for drive_file_id). */
   exportPdf(id: string): { filename: string; bytes: Buffer };
   /** Adds a file directly (a test's "earlier run" folder, a create whose answer got lost). */
@@ -166,6 +171,7 @@ export function fakeWorkspace(): FakeWorkspace {
     writes,
     calls,
     wrongDocId: null,
+    lazyTrashCascade: false,
     hooks,
     fault: (t, fn) => faults.set(t, fn),
     isTrashed,
@@ -193,7 +199,7 @@ export function fakeWorkspace(): FakeWorkspace {
     }),
     tool("drive_get", READ, obj({ fileId: str }, ["fileId"]), (a) => {
       const f = get(a.fileId);
-      return ok(`${f.name} [${f.kind}] id ${f.id}`, { ...summary(f), parents: f.parents, trashed: isTrashed(f.id) });
+      return ok(`${f.name} [${f.kind}] id ${f.id}`, { ...summary(f), parents: f.parents, trashed: ws.lazyTrashCascade ? f.trashed : isTrashed(f.id) });
     }),
     tool("drive_export", READ, obj({ fileId: str, format: str, offset: num, maxChars: num, includeBase64: bool }, ["fileId", "format"]), (a) => {
       const f = get(a.fileId);
