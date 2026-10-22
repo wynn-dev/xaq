@@ -45,10 +45,32 @@ export const CHILD_PRELOAD =
  * - 2026-07-29, july-2026-security-releases (22.23.2, 24.18.1, 26.5.1): CVE-2026-58043 (High: path matching
  *   over-grants fs access at prefix boundaries), CVE-2026-56847 (trace events), CVE-2026-58039 (process reports).
  * Lines not listed (23, 25: end of life) are refused; lines after 26 are allowed.
- * TODO: re-check this floor after Node's October 21, 2026 security release (pre-announced in
- * october-2026-security-releases) and raise it if that release fixes permission-model issues.
+ *
+ * Not raised for 2026-10-21, october-2026-security-releases (22.23.4, 24.22.1, 26.12.1; checked 2026-10-22): its
+ * permission-model fixes are rated low, CVE-2026-106073 (bypass with `fs.realpathSync`, all lines) and
+ * CVE-2026-106071 (fs over-grant via wildcard radix lookup, 26.x only). Raising the floor would stop working
+ * code extensions on 24.19 with no grace period, so that release is RECOMMENDED_NODE instead.
  */
 export const CODE_EXTENSION_NODE_FLOOR: Record<number, string> = { 22: "22.23.2", 24: "24.18.1", 26: "26.5.1" };
+
+/**
+ * The release of each line xaq recommends: Node's 2026-10-21 security release
+ * (https://nodejs.org/en/blog/vulnerability/october-2026-security-releases, checked 2026-10-22). Besides the two
+ * low-rated permission-model fixes above (a sandbox bypass for code extensions), it fixes high-severity issues in
+ * Node itself, on every line: CVE-2026-111497 (Brotli decoder out-of-bounds write, remote code execution),
+ * CVE-2026-106069 and CVE-2026-105483 (TLS certificate hostname bypasses; the latter 24.x and 26.x), and
+ * CVE-2026-105482 (`dns.resolve` truncates names at a NUL). Below it (at or above the floor) xaq still runs, and
+ * says so: `service status` warns, the daemon logs it at start, and `service install` prefers a Node that meets it.
+ */
+export const RECOMMENDED_NODE: Record<number, string> = { 22: "22.23.4", 24: "24.22.1", 26: "26.12.1" };
+
+/** True when `version` is below RECOMMENDED_NODE: an older release of a listed line, or an end-of-life line before the newest listed. */
+export function belowRecommendedNode(version: string = process.versions.node): boolean {
+  const major = parts(version)[0]!;
+  const rec = RECOMMENDED_NODE[major];
+  if (rec) return !atLeast(version, rec);
+  return major < Math.max(...Object.keys(RECOMMENDED_NODE).map(Number));
+}
 
 const parts = (v: string) => v.replace(/^v/, "").split(".").map((n) => Number.parseInt(n, 10) || 0);
 const atLeast = (v: string, floor: string) => {

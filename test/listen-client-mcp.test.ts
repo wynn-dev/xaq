@@ -1,9 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { helperNode, helperNodeChoice, serviceNode, trustedNodeFile } from "../server/listen/mcpheader.ts";
+import { helperNode, helperNodeChoice, serviceNode, trustedNodeFile, userPrivateGroup } from "../server/listen/mcpheader.ts";
 import { codexBlock, removeTomlServer, setupMcp, upsertYamlServer } from "../server/listen/mcpsetup.ts";
 import { saveProfile } from "../server/listen/profile.ts";
 import { FAKE_KEY, isolateXdg } from "./listen-client-fake.ts";
@@ -216,9 +216,9 @@ describe("trustedNodeFile", () => {
     symlinkSync(node, join(dir, "link"));
     expect(trustedNodeFile(node)).toBe(true);
     expect(trustedNodeFile(join(dir, "link"))).toBe(true);
-    expect(trustedNodeFile(node, 12345)).toBe(false); // someone else's file
+    expect(trustedNodeFile(node, { uid: 12345 })).toBe(false); // someone else's file
     chmodSync(node, 0o775);
-    expect(trustedNodeFile(join(dir, "link"))).toBe(false); // group-writable target
+    expect(trustedNodeFile(join(dir, "link"), { privateGid: null })).toBe(false); // group-writable target
     expect(trustedNodeFile(join(dir, "missing"))).toBe(false);
     chmodSync(node, 0o755);
     // A parent directory others can write to (and that isn't sticky): of the real file, or of the link.
@@ -239,5 +239,62 @@ describe("trustedNodeFile", () => {
     chmodSync(looseLinks, 0o777);
     expect(trustedNodeFile(join(looseLinks, "node"))).toBe(false); // via the link's own parent
     chmodSync(looseLinks, 0o755);
+  });
+
+  /** An fnm tree as umask 002 leaves it: directories 775, the binary 755. */
+  const umask002Tree = () => {
+    const root = mkdtempSync(join(tmpdir(), "aib-umask-"));
+    const bin = join(root, "fnm/node-versions/v24.19.0/installation/bin");
+    mkdirSync(bin, { recursive: true });
+    for (let d = bin; d !== root; d = dirname(d)) chmodSync(d, 0o775);
+    chmodSync(root, 0o775);
+    const node = join(bin, "node");
+    writeFileSync(node, "");
+    chmodSync(node, 0o755);
+    return { root, bin, node, gid: statSync(root).gid };
+  };
+
+  it("trusts directories writable by the user's private group (umask 002), never world-writable ones", () => {
+    const t = umask002Tree();
+    expect(trustedNodeFile(t.node, { privateGid: null })).toBe(false);
+    expect(trustedNodeFile(t.node, { privateGid: t.gid })).toBe(true);
+    expect(trustedNodeFile(t.node, { privateGid: t.gid + 1 })).toBe(false); // another group can write
+    chmodSync(t.node, 0o775);
+    expect(trustedNodeFile(t.node, { privateGid: t.gid })).toBe(true); // the binary too
+    chmodSync(t.bin, 0o777);
+    expect(trustedNodeFile(t.node, { privateGid: t.gid })).toBe(false);
+    expect(trustedNodeFile(t.node, { privateGid: t.gid, groupWritable: true })).toBe(false);
+    chmodSync(t.bin, 0o775);
+    chmodSync(t.node, 0o777);
+    expect(trustedNodeFile(t.node, { privateGid: t.gid, groupWritable: true })).toBe(false);
+    chmodSync(t.node, 0o755);
+    // The previous service's Node: any group-writable directory, still not world-writable.
+    expect(trustedNodeFile(t.node, { privateGid: null, groupWritable: true })).toBe(true);
+  });
+
+  // The real check, as `service install` runs it (no injected group): on a machine with a user-private group.
+  it.skipIf(userPrivateGroup() === null || userPrivateGroup() !== process.getgid?.())("trusts the user's own umask-002 fnm tree with the real group lookup", () => {
+    const t = umask002Tree();
+    expect(t.gid).toBe(userPrivateGroup());
+    expect(trustedNodeFile(t.node)).toBe(true);
+    chmodSync(t.bin, 0o777);
+    expect(trustedNodeFile(t.node)).toBe(false);
+  });
+
+  it("knows a user-private group only from /etc/passwd and /etc/group on Linux", () => {
+    const passwd = "root:x:0:0::/root:/bin/sh\nada:x:1000:1000::/home/ada:/bin/sh\nbob:x:1001:1001::/home/bob:/bin/sh\n";
+    const group = "root:x:0:\nada:x:1000:\nbob:x:1001:\nusers:x:100:ada,bob\n";
+    const upg = (o: { passwd?: string; group?: string; uid?: number; platform?: NodeJS.Platform } = {}) =>
+      userPrivateGroup({ platform: "linux", uid: 1000, passwd, group, ...o });
+    expect(upg()).toBe(1000);
+    expect(upg({ group: group.replace("ada:x:1000:", "ada:x:1000:ada") })).toBe(1000); // the user itself listed
+    expect(upg({ group: group.replace("ada:x:1000:", "ada:x:1000:bob") })).toBeNull(); // another member
+    expect(upg({ passwd: `${passwd}carol:x:1002:1000::/home/carol:/bin/sh\n` })).toBeNull(); // someone else's primary group
+    expect(upg({ passwd: passwd.replace("ada:x:1000:1000", "ada:x:1000:100") })).toBeNull(); // the shared `users`
+    expect(upg({ group: "root:x:0:\n" })).toBeNull(); // not in /etc/group (LDAP)
+    expect(upg({ uid: 4242 })).toBeNull(); // not in /etc/passwd
+    expect(upg({ group: `${group}+:::\n` })).toBeNull(); // NIS compat entries
+    expect(upg({ uid: 0 })).toBeNull();
+    expect(upg({ platform: "darwin" })).toBeNull();
   });
 });

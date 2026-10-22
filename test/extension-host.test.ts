@@ -14,6 +14,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { IntegrationEvent } from "../server/broker/types.ts";
 import {
+  belowRecommendedNode,
   CHILD_PRELOAD,
   CODE_EXTENSION_NODE_FLOOR,
   childArgs,
@@ -26,6 +27,7 @@ import {
   extensionStateDir,
   type InstalledExtension,
   NODE_HAS_ALLOW_NET,
+  RECOMMENDED_NODE,
   removeConnectionState,
 } from "../server/extensions/host/index.ts";
 
@@ -142,6 +144,14 @@ describe("Node floor", () => {
     expect(codeExtensionNodeProblem("26.3.1")).toMatch(/≥ 26\.5\.1/);
     expect(codeExtensionNodeProblem("23.11.0")).toMatch(/22\.23\.2, 24\.18\.1, 26\.5\.1 or newer on those lines/);
     expect(codeExtensionNodeProblem("25.8.2")).not.toBeNull();
+  });
+
+  it("recommends Node's October 2026 security release without raising the floor", () => {
+    expect(RECOMMENDED_NODE).toEqual({ 22: "22.23.4", 24: "24.22.1", 26: "26.12.1" });
+    for (const v of ["22.23.4", "22.24.0", "24.22.1", "24.23.0", "26.12.1", "27.0.0", "v24.22.1"]) expect(belowRecommendedNode(v), v).toBe(false);
+    for (const v of ["22.23.3", "24.19.0", "24.22.0", "26.12.0", "23.11.0", "25.8.2", "22.13.0"]) expect(belowRecommendedNode(v), v).toBe(true);
+    // 24.19 (the owner's WHOOP Node) stays above the floor.
+    expect(codeExtensionNodeProblem("24.19.0")).toBeNull();
   });
 
   it("an old Node never spawns: the connection says why", async () => {

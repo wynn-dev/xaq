@@ -3,8 +3,8 @@ import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { CODE_EXTENSION_NODE_FLOOR, codeExtensionNodeProblem } from "./extensions/host/spawn.ts";
-import { trustedNodeFile } from "./listen/mcpheader.ts";
+import { belowRecommendedNode, CODE_EXTENSION_NODE_FLOOR, codeExtensionNodeProblem, RECOMMENDED_NODE } from "./extensions/host/spawn.ts";
+import { nodeProbeEnv, trustedNodeFile } from "./listen/mcpheader.ts";
 import { MIN_NODE, nodeVersionError } from "./node-check.ts";
 
 /**
@@ -15,7 +15,8 @@ import { MIN_NODE, nodeVersionError } from "./node-check.ts";
  * The order: the Node running the installer, if it is new enough; else the Node the existing service uses;
  * else the newest new-enough Node in the usual places (fnm, nvm, Volta, Homebrew, asdf, mise, /usr/bin).
  * "New enough" is the code-extension floor while code extensions are installed in the data directory, else
- * xaq's own minimum (MIN_NODE), still preferring a Node that meets the floor when there is one.
+ * xaq's own minimum (MIN_NODE), still preferring a Node that meets the floor when there is one. Before both, a
+ * Node with Node's October 2026 security release (RECOMMENDED_NODE) is preferred when there is one.
  */
 
 /** Where a chosen Node came from. */
@@ -29,6 +30,8 @@ export interface ServiceNodePick {
   why: string;
   /** The Node meets the code-extension floor. */
   codeReady: boolean;
+  /** The Node meets RECOMMENDED_NODE. */
+  recommended: boolean;
 }
 
 export interface NodeSearchDeps {
@@ -39,8 +42,11 @@ export interface NodeSearchDeps {
   /** The Node running the installer. */
   installer: { path: string; version: string };
   versionOf(path: string): string | null;
-  /** Whether a found binary may be recorded (see trustedNodeFile). Not asked of the installer's Node or --node. */
-  trusted(path: string): boolean;
+  /**
+   * Whether a found binary may be recorded (see trustedNodeFile). Not asked of the installer's Node or --node.
+   * `previous`: the Node the existing service runs, which may be group-writable (the service already runs it at every start).
+   */
+  trusted(path: string, previous?: boolean): boolean;
 }
 
 export const defaultNodeSearch = (): NodeSearchDeps => ({
@@ -49,13 +55,22 @@ export const defaultNodeSearch = (): NodeSearchDeps => ({
   root: "",
   installer: { path: process.execPath, version: process.versions.node },
   versionOf: nodeVersionOf,
-  trusted: (p) => trustedNodeFile(p),
+  trusted: (p, previous) => trustedNodeFile(p, { groupWritable: previous }),
 });
 
-/** `<node> -p process.versions.node` ("24.19.0"), or null when it doesn't run or says something else. */
+/**
+ * `<node> -p process.versions.node` ("24.19.0"), or null when it doesn't run or says something else. The binary
+ * gets a minimal environment (nodeProbeEnv: no NODE_OPTIONS, no XAQ_MASTER_KEY) and is killed outright on timeout.
+ */
 export function nodeVersionOf(path: string, timeoutMs = 5000): string | null {
   if (!isAbsolute(path) || !existsSync(path)) return null;
-  const r = spawnSync(path, ["-p", "process.versions.node"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: timeoutMs });
+  const r = spawnSync(path, ["-p", "process.versions.node"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: timeoutMs,
+    killSignal: "SIGKILL",
+    env: nodeProbeEnv(),
+  });
   const v = (r.stdout ?? "").trim();
   return r.status === 0 && /^\d+\.\d+\.\d+$/.test(v) ? v : null;
 }
@@ -88,11 +103,34 @@ export function compareVersions(a: string, b: string): number {
 
 export const meetsGeneral = (version: string) => nodeVersionError(version) === null;
 export const meetsCodeFloor = (version: string) => meetsGeneral(version) && codeExtensionNodeProblem(version) === null;
+export const meetsRecommended = (version: string) => meetsCodeFloor(version) && !belowRecommendedNode(version);
 
 /** "22.23.2+, 24.18.1+ or 26.5.1+ (or a newer line)". */
 export function codeFloorText(): string {
   const v = Object.values(CODE_EXTENSION_NODE_FLOOR).map((f) => `${f}+`);
   return `${v.slice(0, -1).join(", ")} or ${v.at(-1)} (or a newer line)`;
+}
+
+/** "22.23.4, 24.22.1 or 26.12.1". */
+export function recommendedNodeText(): string {
+  const v = Object.values(RECOMMENDED_NODE);
+  return `${v.slice(0, -1).join(", ")} or ${v.at(-1)}`;
+}
+
+/**
+ * The warning for a Node that runs xaq but is below RECOMMENDED_NODE, with the fix; null at or above it (or
+ * when xaq can't run on it at all). A warning, not a problem: `service status` exits as before. `rerun`: the
+ * `service install` command to run again after updating Node; omitted for a daemon not run as a service.
+ */
+export function recommendedNodeWarning(version: string, rerun?: string): string | null {
+  if (!meetsGeneral(version) || !belowRecommendedNode(version)) return null;
+  const then = rerun ? `Update Node, then run \`${rerun}\` again` : "Update Node, then restart xaq";
+  return [
+    `Node.js ${version} runs xaq; the October 2026 security release (${recommendedNodeText()}) fixes a sandbox bypass and high-severity issues in Node itself. ${then}. For example:`,
+    "    fnm install 24 && fnm default 24",
+    "    nvm install 24 && nvm alias default 24",
+    "    brew upgrade node@24",
+  ].join("\n  ");
 }
 
 const children = (dir: string): string[] => {
@@ -170,6 +208,15 @@ export class ServiceNodeError extends Error {
   override name = "ServiceNodeError";
 }
 
+const pick = (path: string, version: string, source: NodeSource, why: string): ServiceNodePick => ({
+  path,
+  version,
+  source,
+  why,
+  codeReady: meetsCodeFloor(version),
+  recommended: meetsRecommended(version),
+});
+
 const show = (path: string, version: string | null, note?: string) => `    ${path} → ${version ?? "doesn't run"}${note ? ` (${note})` : ""}`;
 
 /**
@@ -196,7 +243,7 @@ export function chooseServiceNode(
         [`--node ${path} can't run the service (${version ? `it is Node.js ${version}` : "it doesn't run as Node.js"}). ${need} Nothing was changed.`, ...nodeFixLines(input.rerun).slice(0, 4)].join("\n  "),
       );
     }
-    return { path, version: version!, source: "flag", why: "given with --node", codeReady: meetsCodeFloor(version!) };
+    return pick(path, version!, "flag", "given with --node");
   }
 
   const seen: string[] = [];
@@ -220,8 +267,8 @@ export function chooseServiceNode(
       continue;
     }
     if (previous.some((p) => p.path === path) || path === installer?.path) continue;
-    if (!deps.trusted(path)) {
-      seen.push(show(path, null, "the previous service's: writable by others, skipped"));
+    if (!deps.trusted(path, true)) {
+      seen.push(show(path, null, "the previous service's: world-writable or owned by another user, skipped"));
       continue;
     }
     const version = versionOf(path);
@@ -236,7 +283,7 @@ export function chooseServiceNode(
     for (const c of knownNodes(deps)) {
       if (c.path === installer?.path || previous.some((p) => p.path === c.path)) continue;
       if (!deps.trusted(c.path)) {
-        seen.push(show(c.path, null, `${c.where}: writable by others, skipped`));
+        seen.push(show(c.path, null, `${c.where}: group- or world-writable, or owned by another user, skipped`));
         continue;
       }
       const version = versionOf(c.path);
@@ -248,19 +295,23 @@ export function chooseServiceNode(
     return found;
   };
 
-  // With code extensions installed only the floor counts; without, a floor-meeting Node is preferred, then xaq's minimum.
-  const tiers: ((v: string) => boolean)[] = code ? [meetsCodeFloor] : [meetsCodeFloor, meetsGeneral];
+  // A Node with the October 2026 security release first. Then, with code extensions installed, only the floor
+  // counts; without, a floor-meeting Node is preferred, then xaq's minimum.
+  const tiers: ((v: string) => boolean)[] = code ? [meetsRecommended, meetsCodeFloor] : [meetsRecommended, meetsCodeFloor, meetsGeneral];
   for (const ok of tiers) {
-    if (installer?.version && ok(installer.version)) {
-      return { path: installer.path, version: installer.version, source: "installer", why: "the Node running this install", codeReady: meetsCodeFloor(installer.version) };
-    }
+    if (installer?.version && ok(installer.version)) return pick(installer.path, installer.version, "installer", "the Node running this install");
     const prev = previous.find((p) => p.version && ok(p.version));
-    if (prev) return { path: prev.path, version: prev.version!, source: "previous", why: "the Node the previous service used", codeReady: meetsCodeFloor(prev.version!) };
+    if (prev) return pick(prev.path, prev.version!, "previous", "the Node the previous service used");
     const hit = search().find((c) => c.version && ok(c.version));
     if (hit) {
-      const bar = ok === meetsCodeFloor ? "meets the code-extension floor" : `meets xaq's minimum (${MIN_NODE})`;
+      const bar =
+        ok === meetsRecommended
+          ? `has Node's October 2026 security release (${recommendedNodeText()})`
+          : ok === meetsCodeFloor
+            ? "meets the code-extension floor"
+            : `meets xaq's minimum (${MIN_NODE})`;
       const mine = installer ? `the Node running this install is ${installer.version}` : "the Node running this install is a per-shell fnm link";
-      return { path: hit.path, version: hit.version!, source: "found", why: `found at ${hit.path} (${hit.where}), the newest one that ${bar}; ${mine}`, codeReady: meetsCodeFloor(hit.version!) };
+      return pick(hit.path, hit.version!, "found", `found at ${hit.path} (${hit.where}), the newest one that ${bar}; ${mine}`);
     }
   }
 
