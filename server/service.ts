@@ -10,7 +10,17 @@ import { envVar, LEGACY_PRODUCT } from "./brand.ts";
 import { type Config, type ConfigInput, dataFiles, DEFAULT_PORT, hasForeignFiles } from "./config.ts";
 import { Crypto } from "./crypto.ts";
 import { assertMasterKeyUsable, cliCommand, type InstanceInfo, runningInstance, serviceInstallCommand } from "./instance.ts";
-import { chooseServiceNode, codeFloorText, defaultNodeSearch, installedCodeExtensions, type NodeSearchDeps, nodeVersionOf, serviceNodeProblem, unitNodePath } from "./service-node.ts";
+import {
+  chooseServiceNode,
+  codeFloorText,
+  defaultNodeSearch,
+  installedCodeExtensions,
+  type NodeSearchDeps,
+  nodeVersionOf,
+  recommendedNodeWarning,
+  serviceNodeProblem,
+  unitNodePath,
+} from "./service-node.ts";
 import { consoleUrls, loopbackUrl } from "./urls.ts";
 
 /** Installs xaq as a background service: systemd on Linux, launchd on macOS. */
@@ -797,6 +807,7 @@ export async function installService(config: ServiceConfig, ops: ServiceOps = sy
     `  It runs Node.js ${node.version} at ${node.path}: ${node.why}. If you remove or replace that Node, run \`${serviceInstallCommand(config)}\` again.`,
   );
   if (!node.codeReady) console.log(`  Code extensions need a newer Node.js (${codeFloorText()}): to install one later, run this again with such a Node (or --node).`);
+  else if (!node.recommended) console.log(`  Warning: ${recommendedNodeWarning(node.version, serviceInstallCommand(config))}`);
   if (kept.length) console.log(`  Kept ${kept.join(", ")} from the previous install.`);
   printLinks(config);
 }
@@ -881,27 +892,33 @@ export function serviceStatus(ops: ServiceOps = systemOps()): void {
   } catch {
     process.exitCode = 1;
   }
-  const problem = serviceNodeCheck(readText(unitPath(ops, id)) ?? "", ops.nodeSearch?.versionOf);
+  const { problem, warning } = serviceNodeCheck(readText(unitPath(ops, id)) ?? "", ops.nodeSearch?.versionOf);
   if (problem) {
     console.log(`\n  Problem: ${problem}`);
     process.exitCode = 1;
+  } else if (warning) {
+    // Not a problem: the exit code stays as it was.
+    console.log(`\n  Warning: ${warning}`);
   }
 }
 
 /**
- * `service status`'s check of the Node the installed unit or plist runs: null when it is fine, else what's wrong
- * and the fix. Below the code-extension floor counts only while code extensions are installed in the service's data directory.
+ * `service status`'s check of the Node the installed unit or plist runs. `problem`: what's wrong and the fix, or
+ * null when it is fine; below the code-extension floor counts only while code extensions are installed in the
+ * service's data directory. `warning`: when there is no problem but the Node is below RECOMMENDED_NODE.
  */
-export function serviceNodeCheck(unitText: string, versionOf: (path: string) => string | null = nodeVersionOf): string | null {
+export function serviceNodeCheck(unitText: string, versionOf: (path: string) => string | null = nodeVersionOf): { problem: string | null; warning: string | null } {
   const path = unitNodePath(unitText);
-  if (!path) return null;
+  if (!path) return { problem: null, warning: null };
   const dataDir = unitDataDir(unitText);
   const codeExtensions = dataDir ? installedCodeExtensions(dataFiles(dataDir).db) : [];
   const port = Number(unitEnv(unitText, "PORT"));
   const rerun = dataDir
     ? serviceInstallCommand({ dataDir, host: unitEnv(unitText, "HOST") || "0.0.0.0", port: Number.isInteger(port) && port > 0 ? port : DEFAULT_PORT })
     : cliCommand("service install");
-  return serviceNodeProblem(path, versionOf(path), codeExtensions, rerun);
+  const version = versionOf(path);
+  const problem = serviceNodeProblem(path, version, codeExtensions, rerun);
+  return { problem, warning: problem || !version ? null : recommendedNodeWarning(version, rerun) };
 }
 /** A real HealthResponse (not the "starting" placeholder or something else on the port). */
 export function isHealthResponse(body: unknown): boolean {
