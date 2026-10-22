@@ -126,31 +126,46 @@ describe("hostile documents", () => {
     const bomb = makeZipBomb(200);
     expect(bomb.length).toBeLessThan(1024 * 1024);
     const r = await real.parse(bomb, { format: "xlsx" });
-    expect(r).toMatchObject({ ok: false, reason: "unreadable", message: expect.stringMatching(/zip bomb/) });
+    expect(r).toMatchObject({ ok: false, reason: "unreadable", code: "hostile", message: expect.stringMatching(/zip bomb/) });
   });
 
   it("stops a zip bomb whose headers lie about its size at the decompression cap", async () => {
     const r = await real.parse(makeLyingZipBomb(100), { format: "xlsx" });
-    expect(r).toMatchObject({ ok: false, reason: "unreadable", message: expect.stringMatching(/zip bomb/) });
+    expect(r).toMatchObject({ ok: false, reason: "unreadable", code: "hostile", message: expect.stringMatching(/zip bomb/) });
   });
 
   it("refuses XML with a DOCTYPE (XXE) and never resolves the entity", async () => {
     const r = await real.parse(makeXxeDocx(), { format: "docx" });
-    expect(r).toMatchObject({ ok: false, reason: "unreadable", message: expect.stringMatching(/DOCTYPE/) });
+    expect(r).toMatchObject({ ok: false, reason: "unreadable", code: "hostile", message: expect.stringMatching(/DOCTYPE/) });
   });
 
   it("refuses a package with an entry outside the archive", async () => {
     const r = await real.parse(makeTraversalDocx(), { format: "docx" });
-    expect(r).toMatchObject({ ok: false, reason: "unreadable", message: expect.stringMatching(/outside the archive/) });
+    expect(r).toMatchObject({ ok: false, reason: "unreadable", code: "hostile", message: expect.stringMatching(/outside the archive/) });
   });
 
   it("says plainly when a file isn't the format it claims", async () => {
-    expect(await real.parse(Buffer.from("not a pdf"), { format: "pdf" })).toMatchObject({ ok: false, reason: "unreadable", message: expect.stringMatching(/readable PDF/) });
-    expect(await real.parse(Buffer.from("PK nonsense"), { format: "docx" })).toMatchObject({ ok: false, reason: "unreadable" });
+    expect(await real.parse(Buffer.from("not a pdf"), { format: "pdf" })).toMatchObject({ ok: false, reason: "unreadable", code: "corrupt", message: expect.stringMatching(/readable PDF/) });
+    expect(await real.parse(Buffer.from("PK nonsense"), { format: "docx" })).toMatchObject({ ok: false, reason: "unreadable", code: "corrupt" });
   });
 
   it("says a password-protected PDF is password-protected", async () => {
-    expect(await real.parse(makePdf(["locked"], { encrypted: true }), { format: "pdf" })).toEqual({ ok: false, reason: "unreadable", message: "The PDF is password-protected." });
+    expect(await real.parse(makePdf(["locked"], { encrypted: true }), { format: "pdf" })).toEqual({ ok: false, reason: "unreadable", code: "password", message: "The PDF is password-protected." });
+  });
+
+  it("says an encrypted Office package is encrypted", async () => {
+    const docx = Buffer.from(makeDocx());
+    // Sets the "encrypted" flag on every central directory entry.
+    for (let p = docx.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02])); p >= 0; p = docx.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]), p + 4)) docx.writeUInt16LE(docx.readUInt16LE(p + 8) | 1, p + 8);
+    expect(await real.parse(docx, { format: "docx" })).toEqual({ ok: false, reason: "unreadable", code: "encrypted", message: "Encrypted documents can't be read." });
+  });
+
+  it("gives every failure a code: the child's own, parser_error without one, the daemon side's reason", async () => {
+    expect(await hostile('export function run() { return { ok: false, error: "no code" }; }').parse(Buffer.from("x"), { format: "pdf" })).toMatchObject({ ok: false, reason: "unreadable", code: "parser_error" });
+    expect(await hostile('export function run() { return { ok: false, code: "fine", error: "made up" }; }').parse(Buffer.from("x"), { format: "pdf" })).toMatchObject({ ok: false, reason: "crashed", code: "crashed" });
+    expect(await hostile('export function run() { throw new Error("a parser bug"); }').parse(Buffer.from("x"), { format: "pdf" })).toMatchObject({ ok: false, reason: "unreadable", code: "parser_error" });
+    const missing = parser({ loadCode: async () => Promise.reject(new Error("ENOENT: attachment-parser.js")) });
+    expect(await missing.parse(Buffer.from("x"), { format: "pdf" })).toMatchObject({ ok: false, reason: "unavailable", code: "unavailable" });
   });
 
   it("reads a truncated PDF as far as it goes or says it can't", async () => {
@@ -225,14 +240,14 @@ describe("sandbox", () => {
   });
 
   it("contains a crash and an out-of-memory child", async () => {
-    expect(await hostile("export function run() { process.abort(); }").parse(Buffer.from("x"), { format: "pdf" })).toMatchObject({ ok: false, reason: "crashed" });
+    expect(await hostile("export function run() { process.abort(); }").parse(Buffer.from("x"), { format: "pdf" })).toMatchObject({ ok: false, reason: "crashed", code: "crashed" });
     const oom = hostile("export function run() { const keep = []; for (;;) keep.push(new Array(1e6).fill(keep.length)); }", { heapMb: 64 });
     expect(await oom.parse(Buffer.from("x"), { format: "pdf" })).toMatchObject({ ok: false, reason: "crashed" });
   });
 
   it("kills a child whose output runs past the cap", async () => {
     const p = hostile('export function run() { return { ok: true, result: { format: "docx", markdown: "x".repeat(40 * 1024 * 1024), notes: [] } }; }', { heapMb: 512 });
-    expect(await p.parse(Buffer.from("x"), { format: "docx" })).toMatchObject({ ok: false, reason: "unreadable", message: expect.stringMatching(/more output/) });
+    expect(await p.parse(Buffer.from("x"), { format: "docx" })).toMatchObject({ ok: false, reason: "unreadable", code: "too_complex", message: expect.stringMatching(/more output/) });
   });
 
   it("doesn't trust the child's answer: a wrong shape or another format is refused", async () => {

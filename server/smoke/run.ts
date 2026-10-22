@@ -5,8 +5,8 @@
 //   their drafts and Drive folders reported for the owner to check.
 // - Reads anywhere: a few existing Drive files (newest Doc, Sheet, Slides) and ONE email with attachments. Only
 //   names, the subject, kinds and sizes are printed, never content. Only attachments get_attachment can show inline
-//   are extracted, with format "inline" (which never saves): a file it couldn't read passes as "couldn't read
-//   (<reason>)", and a saved copy anyway fails the step and is listed.
+//   are extracted, with format "inline" (which never saves): a password-protected or encrypted file passes as
+//   "couldn't read (<reason>)", any other parse failure fails, and a saved copy anyway fails the step and is listed.
 // - Every write goes into ONE new Drive folder named after the run (xaq-smoke-<UTC timestamp>), through
 //   ScratchGuard (guards.ts): the target must be that folder or a file this run created whose drive_get parents
 //   include it. The only mail is ONE draft to the account's own address, deleted again; nothing is ever sent.
@@ -272,14 +272,22 @@ export function describeExtraction(out: CallOutcome): string {
 }
 
 /**
- * A format "inline" answer that didn't show the file (structuredContent.attachment.notShown): its code, and the reason
- * without a closing period. The reason is xaq's own words (the parser's fixed messages), never the file's content.
+ * Parse failures that are the file's own doing: the smoke passes them as "couldn't read (…)". Every other one (corrupt,
+ * a parser that's missing, crashed, timed out, busy, …) may be xaq's fault, and this run is what would notice.
  */
-export function notShownOf(out: CallOutcome): { code: string; reason: string } | null {
-  const a = out.structured?.attachment as { notShown?: unknown; reason?: unknown } | undefined;
+export const FILE_OWN_PARSE_FAILURES: ReadonlySet<string> = new Set(["password", "encrypted"]);
+
+/**
+ * A format "inline" answer that didn't show the file (structuredContent.attachment.notShown): its code, the parser's
+ * failure code when it couldn't read it, and the reason without a closing period. The reason is xaq's own words (the
+ * parser's fixed messages), never the file's content, unless the parser child is subverted (it's cleaned anyway).
+ */
+export function notShownOf(out: CallOutcome): { code: string; parseFailure: string | null; reason: string } | null {
+  const a = out.structured?.attachment as { notShown?: unknown; parseFailure?: unknown; reason?: unknown } | undefined;
   if (!a || typeof a.notShown !== "string" || !a.notShown) return null;
   const reason = typeof a.reason === "string" ? cleanLine(a.reason, 200).replace(/\.$/, "") : "";
-  return { code: a.notShown, reason: reason || "no reason given" };
+  const parseFailure = typeof a.parseFailure === "string" && a.parseFailure ? cleanLine(a.parseFailure, 40) : null;
+  return { code: cleanLine(a.notShown, 40), parseFailure, reason: reason || "no reason given" };
 }
 
 /** A get_attachment answer that saved the file to disk (A2: structuredContent.attachment.savedPath). */
@@ -668,9 +676,14 @@ export class SmokeRun {
           throw new Error(`get_attachment saved "${a.filename}" to disk (${saved}) instead of showing it`);
         }
         if (out.isError) throw new Error(out.text);
-        // Not shown (an encrypted or damaged file): xaq answered correctly and saved nothing, which is what this checks.
         const not = notShownOf(out);
-        if (not) return not.code === "unreadable" ? `${kind}: couldn't read (${not.reason})` : `${kind}: not shown inline (${not.reason})`;
+        if (not?.code === "unreadable") {
+          // A password-protected or encrypted file: xaq answered correctly and saved nothing. Anything else (a corrupt
+          // file, or the parser missing, crashing, timing out) fails: this run is the only check that would see it.
+          if (not.parseFailure && FILE_OWN_PARSE_FAILURES.has(not.parseFailure)) return `${kind}: couldn't read (${not.reason})`;
+          throw new Error(`get_attachment couldn't read "${a.filename}" (${not.parseFailure ?? "no failure code"}: ${not.reason})`);
+        }
+        if (not) return `${kind}: not shown inline (${not.reason})`;
         return `${kind}: ${describeExtraction(out)}`;
       });
     }

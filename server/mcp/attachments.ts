@@ -10,8 +10,8 @@
 //   (server/mail/saved-attachments.ts). `format: "file"` saves any attachment; `format: "base64"` returns small
 //   files' bytes as an embedded resource, as get_attachment used to.
 // - `format: "inline"`: as auto, but what auto would save gets metadata plus why it isn't shown instead
-//   (structuredContent.attachment.notShown and .reason). It never saves, so it never touches the saved folder or its
-//   quota (a save there can delete older saved files).
+//   (structuredContent.attachment.notShown and .reason; .parseFailure is the parser's code when it couldn't read it).
+//   It never saves, so it never touches the saved folder or its quota (a save there can delete older saved files).
 // All third-party text is wrapped as untrusted.
 
 import { createHash } from "node:crypto";
@@ -228,19 +228,21 @@ export async function attachmentOutput(ctx: AppContext, r: FetchedAttachment, ar
       return { path: null, line: `It couldn't be saved to a file: ${err instanceof SaveError ? err.message : "unexpected error"}.` };
     }
   };
-  const saved = async (lead: string) => {
+  /** `extra`: more structured fields (parseFailure, when the parser couldn't read it). */
+  const saved = async (lead: string, extra: Record<string, unknown> = {}) => {
     const s = await save();
     const text = `${head}\n${lead}${lead ? "\n" : ""}${s.line}`;
-    return { content: [{ type: "text" as const, text }], structuredContent: safeStructured({ attachment: { ...meta, savedPath: s.path } }) };
+    return { content: [{ type: "text" as const, text }], structuredContent: safeStructured({ attachment: { ...meta, savedPath: s.path, ...extra } }) };
   };
 
   /** format "inline" instead of a save: metadata and why it isn't shown. The saved folder and its quota stay untouched. */
-  const notShown = (code: NotShown, reason: string, lead: string) => {
+  const notShown = (code: NotShown, reason: string, lead: string, extra: Record<string, unknown>) => {
     const text = `${head}\n${lead}\nNothing was saved (format "inline"); format "file" saves it to disk.`;
-    return { content: [{ type: "text" as const, text }], structuredContent: safeStructured({ attachment: { ...meta, savedPath: null, notShown: code, reason } }) };
+    return { content: [{ type: "text" as const, text }], structuredContent: safeStructured({ attachment: { ...meta, savedPath: null, notShown: code, reason, ...extra } }) };
   };
   /** Where auto saves the file: format "inline" answers without saving. */
-  const fallback = (code: NotShown, reason: string, autoLead: string, inlineLead = autoLead) => (format === "inline" ? notShown(code, reason, inlineLead) : saved(autoLead));
+  const fallback = (code: NotShown, reason: string, lead: { auto: string; inline?: string }, extra: Record<string, unknown> = {}) =>
+    format === "inline" ? notShown(code, reason, lead.inline ?? lead.auto, extra) : saved(lead.auto, extra);
 
   if (format === "file") return saved("");
   if (format === "base64") {
@@ -262,7 +264,7 @@ export async function attachmentOutput(ctx: AppContext, r: FetchedAttachment, ar
 
   if (kind === "image") {
     if (r.data.length > MAX_ATTACHMENT_BYTES) {
-      return fallback("too_large", `over ${formatSize(MAX_ATTACHMENT_BYTES)}, too large to show inline`, `The image is over ${formatSize(MAX_ATTACHMENT_BYTES)}, so it isn't shown inline.`);
+      return fallback("too_large", `over ${formatSize(MAX_ATTACHMENT_BYTES)}, too large to show inline`, { auto: `The image is over ${formatSize(MAX_ATTACHMENT_BYTES)}, so it isn't shown inline.` });
     }
     return [
       { type: "text", text: head },
@@ -286,13 +288,16 @@ export async function attachmentOutput(ctx: AppContext, r: FetchedAttachment, ar
   }
 
   if (kind === "other") {
-    return fallback("unsupported", "this kind of file can't be shown inline", "This file type isn't shown as text; the file was saved so you can open it with another tool.", "This kind of file can't be shown inline.");
+    return fallback("unsupported", "this kind of file can't be shown inline", {
+      auto: "This file type isn't shown as text; the file was saved so you can open it with another tool.",
+      inline: "This kind of file can't be shown inline.",
+    });
   }
 
   // A document: parsed in the sandbox (or from the cache).
   const formatName = FORMAT_NAMES[kind];
   if (r.data.length > PARSE_LIMITS.inputBytes) {
-    return fallback("too_large", `over ${formatSize(PARSE_LIMITS.inputBytes)}, too large to show inline`, `This ${formatName} is over ${formatSize(PARSE_LIMITS.inputBytes)}, too large to read here.`);
+    return fallback("too_large", `over ${formatSize(PARSE_LIMITS.inputBytes)}, too large to show inline`, { auto: `This ${formatName} is over ${formatSize(PARSE_LIMITS.inputBytes)}, too large to read here.` });
   }
   const key = `${kind}:${createHash("sha256").update(r.data).digest("base64url")}`;
   let doc = cached(ctx, key);
@@ -300,7 +305,8 @@ export async function attachmentOutput(ctx: AppContext, r: FetchedAttachment, ar
     const outcome = await attachmentParser(ctx).parse(r.data, { format: kind });
     if (!outcome.ok) {
       const why = failureText(outcome.reason, outcome.message);
-      return fallback("unreadable", why, `Couldn't read this ${formatName}: ${why}`);
+      // parseFailure: why, as a code (password, corrupt, …, or the daemon side's timeout, crashed, unavailable, …).
+      return fallback("unreadable", why, { auto: `Couldn't read this ${formatName}: ${why}` }, { parseFailure: outcome.code });
     }
     doc = render(outcome.result);
     remember(ctx, key, doc);

@@ -217,9 +217,12 @@ What it does, in order (tool names as the extension lists them; agents see `<slu
      - text and HTML.
 
      Anything else is never requested (it would only be downloaded to be told it can't be shown); the table says
-     "skipped (can't be shown inline)". A file xaq can't read (encrypted, damaged, over a parser limit) passes as
-     "couldn't read (<reason>)": xaq answered correctly and saved nothing. If an answer still carries a saved path,
-     the step fails and the path is listed under Left behind.
+     "skipped (can't be shown inline)". A password-protected or encrypted file (`parseFailure` `password` or
+     `encrypted`, the file's own doing) passes as "couldn't read (<reason>)": xaq answered correctly and saved
+     nothing. Every other parse failure fails the step with the reason: a corrupt file, a file over a parser limit, or
+     a parser that's missing, crashed, timed out or busy. Corrupt files are included because a parser regression would
+     look the same, and this run is the only check that would catch one. If an answer still carries a saved path, the
+     step fails and the path is listed under Left behind.
 2. **Scratch folder.** `drive_create_folder` creates `xaq-smoke-<ts>` at the top of My Drive. If that fails, nothing
    is written.
 3. **Docs.** `docs_create` from markdown, in the folder. Then `docs_append`, `docs_replace_text` (exactly 2 matches),
@@ -683,9 +686,18 @@ over 100,000), and every answer ends with what it showed and how to get the next
 | `format` | Answer |
 |---|---|
 | `auto` (default) | The content above; anything else is saved (see Saved files) and the answer gives the path |
-| `inline` | The same content, but **never saves**: no file is written and the saved folder and its quota are untouched (a save can delete older saved files). What can't be shown comes back as name, type, size, `message_id` and `attachment_id` plus the reason: "Couldn't read this PDF: The PDF is password-protected.", "The image is over 5.0 MB, so it isn't shown inline.", "This kind of file can't be shown inline." `structuredContent.attachment` then has `savedPath: null`, `notShown` (`unreadable`, `too_large` or `unsupported`) and `reason` |
+| `inline` | The same content, but **never saves**: no file is written and the saved folder and its quota are untouched (a save can delete older saved files). What can't be shown comes back as name, type, size, `message_id` and `attachment_id` plus the reason: "Couldn't read this PDF: The PDF is password-protected.", "The image is over 5.0 MB, so it isn't shown inline.", "This kind of file can't be shown inline." `structuredContent.attachment` then has `savedPath: null`, `notShown` (`unreadable`, `too_large` or `unsupported`) and `reason`; for `unreadable` also `parseFailure` (below) |
 | `file` | Saves any attachment and returns the path |
 | `base64` | The raw bytes of a file up to 5 MB as an embedded resource, as `get_attachment` used to for non-text files |
+
+When the parser couldn't read a document, `structuredContent.attachment.parseFailure` says why, with `auto` and
+`inline` alike:
+
+- From the parser: `password` (a password-protected PDF), `encrypted` (an encrypted Office file), `corrupt` (damaged,
+  or not the format it claims), `unsupported` (ZIP64, multi-part, an unsupported compression), `too_complex` (over a
+  cap), `hostile` (a zip bomb, XML entities, a path outside the archive) or `parser_error` (anything else it threw).
+- From the daemon side: `timeout`, `crashed`, `memory`, `busy` or `unavailable` (the parser code couldn't be loaded
+  or started).
 
 **Saved files.** With `auto`, files that aren't shown as text, files too large to read (images over 5 MB, documents
 over 25 MB) and files that couldn't be read ("Couldn't read this PDF: reading it took too long. Saved at: …") are

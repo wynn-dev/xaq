@@ -14,11 +14,13 @@ import { isSmokeDir } from "../shared/smoke.ts";
 import { type AdminChannel, openAdminChannel } from "../server/connections-cli/admin.ts";
 import { DRIVE_READONLY_SCOPE, GMAIL_SCOPE } from "../server/google/scopes.ts";
 import { GOOGLE_WORKSPACE_EXTENSION } from "../server/google/workspace-binding.ts";
+import { AttachmentParser, setAttachmentParser } from "../server/mail/extract/sandbox.ts";
 import { type AgentMcp, type CallOutcome, connectAgentMcp } from "../server/smoke/agent.ts";
 import { installSmokeSignals, safeWriter } from "../server/smoke/cli.ts";
 import { GuardError, newLedger, ScratchGuard, WRITE_TARGETS } from "../server/smoke/guards.ts";
 import { renderReport } from "../server/smoke/report.ts";
 import { chooseTargets, inlineKind, parseAttachmentList, SKIPPED_NOT_INLINE, SmokeRun, SmokeSetupError } from "../server/smoke/run.ts";
+import { createLogger } from "../server/util/log.ts";
 import { makePdf } from "./attachment-fixtures.ts";
 import { HAS_AGENTS } from "./e2e/features.ts";
 import { type Stack, startStack } from "./e2e/harness.ts";
@@ -249,29 +251,55 @@ describe.runIf(HAS_AGENTS)("xaq smoke google-workspace", () => {
     expect(report.ok).toBe(true);
   });
 
-  it("a PDF xaq can't read (corrupt, encrypted) passes as \"couldn't read (…)\", and nothing is saved or left behind", async () => {
-    // Listed as small PDFs, so the run asks for them; with format "inline" get_attachment says why and saves nothing.
+  const extractions = (report: { steps: { tool: string; step: string; status: string; detail: string }[] }) =>
+    report.steps.filter((s) => s.tool === "get_attachment").map((s) => `${s.step}: ${s.status} ${s.detail}`);
+
+  it("an encrypted PDF passes as \"couldn't read (…)\" (the file's own doing), and nothing is saved or left behind", async () => {
+    // Listed as a small PDF, so the run asks for it; with format "inline" get_attachment says why and saves nothing.
     const w = await world({
       attachments: [
-        { filename: "broken.pdf", mimeType: "application/pdf", content: Buffer.from("%PDF-1.4 ATTACHMENT-SECRET not really a pdf") },
         { filename: "locked.pdf", mimeType: "application/pdf", content: makePdf(["ATTACHMENT-SECRET-LOCKED"], { encrypted: true }) },
         { filename: "notes.txt", mimeType: "text/plain", content: "ATTACHMENT-SECRET-TEXT" },
       ],
     });
     const run = w.run();
     const report = await run.run();
-    expect(report.steps.filter((s) => s.tool === "get_attachment").map((s) => `${s.step}: ${s.status} ${s.detail}`)).toEqual([
-      `extract "broken.pdf": PASS pdf: couldn't read (The file isn't a readable PDF)`,
+    expect(extractions(report)).toEqual([
       `extract "locked.pdf": PASS pdf: couldn't read (The PDF is password-protected)`,
       expect.stringMatching(/^extract "notes.txt": PASS text: text, \d+ chars$/),
     ]);
-    expect(w.knobs.formats).toEqual(["inline", "inline", "inline"]);
+    expect(w.knobs.formats).toEqual(["inline", "inline"]);
     expect(report.leftBehind).toEqual([]);
     expect(report.ok).toBe(true);
     // Nothing saved: the attachment folder was never even created.
     expect(existsSync(join(w.s.dataDir, "attachments"))).toBe(false);
     for (const secret of SECRETS) expect([...w.out, JSON.stringify(report)].join("\n")).not.toContain(secret);
     await expectClean(w, run);
+  });
+
+  it("a corrupt PDF fails the step with the reason (it could be a parser regression), and still nothing is saved", async () => {
+    const w = await world({ attachments: [{ filename: "broken.pdf", mimeType: "application/pdf", content: Buffer.from("%PDF-1.4 ATTACHMENT-SECRET not really a pdf") }] });
+    const run = w.run();
+    const report = await run.run();
+    expect(extractions(report)).toEqual([`extract "broken.pdf": FAIL get_attachment couldn't read "broken.pdf" (corrupt: The file isn't a readable PDF)`]);
+    expect(report.leftBehind).toEqual([]);
+    expect(report.ok).toBe(false);
+    expect(existsSync(join(w.s.dataDir, "attachments"))).toBe(false);
+    for (const secret of SECRETS) expect([...w.out, JSON.stringify(report)].join("\n")).not.toContain(secret);
+    await expectClean(w, run);
+  });
+
+  it("a document parser that isn't available (attachment-parser.js missing) fails the step, with the reason", async () => {
+    const w = await world();
+    // What a package without dist/attachment-parser.js does: the parser code can't be loaded.
+    setAttachmentParser(w.s.ctx, new AttachmentParser(createLogger("test").child("parser"), { loadCode: async () => Promise.reject(new Error("ENOENT: attachment-parser.js")) }));
+    const report = await w.run().run();
+    expect(extractions(report)).toEqual([
+      `extract "lease.pdf": FAIL get_attachment couldn't read "lease.pdf" (unavailable: the document parser isn't available on this server)`,
+      expect.stringMatching(/^extract "notes.txt": PASS text: text, \d+ chars$/),
+    ]);
+    expect(report.leftBehind).toEqual([]);
+    expect(report.ok).toBe(false);
   });
 
   it("a get_attachment answer that saved the file anyway (an xaq that ignores format \"inline\") fails the step and lists the saved copy", async () => {

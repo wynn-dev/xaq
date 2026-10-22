@@ -207,12 +207,12 @@ describe.runIf(HAS_AGENTS)("attachment content over MCP", () => {
     expect(locked.text).toMatch(/^Attachment locked\.pdf \(application\/pdf, .+\) from message \S+, attachment_id \S+\nCouldn't read this PDF: The PDF is password-protected\.\nNothing was saved \(format "inline"\); format "file" saves it to disk\.$/);
     expect(locked.text).not.toContain("ATTACHMENT-SECRET");
     expect(locked.raw.structuredContent).toEqual({
-      attachment: { filename: "locked.pdf", mimeType: "application/pdf", size: expect.any(Number), messageId: msg.id, attachmentId: lockedId, savedPath: null, notShown: "unreadable", reason: "The PDF is password-protected." },
+      attachment: { filename: "locked.pdf", mimeType: "application/pdf", size: expect.any(Number), messageId: msg.id, attachmentId: lockedId, savedPath: null, notShown: "unreadable", reason: "The PDF is password-protected.", parseFailure: "password" },
     });
 
     const broken = await inline(brokenId!);
     expect(broken.text).toContain("Couldn't read this PDF: The file isn't a readable PDF.");
-    expect(broken.raw.structuredContent).toMatchObject({ attachment: { filename: "broken.pdf", savedPath: null, notShown: "unreadable", reason: "The file isn't a readable PDF." } });
+    expect(broken.raw.structuredContent).toMatchObject({ attachment: { filename: "broken.pdf", savedPath: null, notShown: "unreadable", reason: "The file isn't a readable PDF.", parseFailure: "corrupt" } });
 
     const png = await inline(pngId!);
     expect(png.text).toContain("The image is over 5.0 MB, so it isn't shown inline.");
@@ -228,8 +228,10 @@ describe.runIf(HAS_AGENTS)("attachment content over MCP", () => {
     expect(existsSync(join(dir, msg.id))).toBe(false);
     expect(snapshot()).toEqual(was);
 
-    // auto, the default, is unchanged: the same corrupt PDF is saved.
-    expect(savedPath(await mcp.ok("get_attachment", { message_id: msg.id, attachment_id: brokenId }))).toBe(join(dir, msg.id, "broken.pdf"));
+    // auto, the default, is unchanged: the same corrupt PDF is saved (its parseFailure said there too).
+    const auto = await mcp.call("get_attachment", { message_id: msg.id, attachment_id: brokenId });
+    expect(savedPath(auto.text)).toBe(join(dir, msg.id, "broken.pdf"));
+    expect(auto.raw.structuredContent).toMatchObject({ attachment: { savedPath: join(dir, msg.id, "broken.pdf"), parseFailure: "corrupt" } });
   });
 
   it('format "inline" shows what it can, as auto does: a PDF as text, an image as an image', async () => {

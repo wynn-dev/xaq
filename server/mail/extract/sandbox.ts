@@ -51,7 +51,7 @@ import type { AppContext } from "../../context.ts";
 import { CHILD_PRELOAD, codeExtensionNodeProblem } from "../../extensions/host/spawn.ts";
 import { errorMessage } from "../../util/errors.ts";
 import type { Logger } from "../../util/log.ts";
-import { type Extracted, PARSE_LIMITS, type ParseReply, type ParseTask } from "./types.ts";
+import { DOCUMENT_FAILURES, type DocumentFailure, type Extracted, PARSE_LIMITS, type ParseReply, type ParseTask } from "./types.ts";
 
 export const PARSER_DEADLINE_MS = 20_000;
 export const PARSER_HEAP_MB = 256;
@@ -119,7 +119,7 @@ export const BOOTSTRAP = [
   "const chunks=[];for await(const c of process.stdin)chunks.push(c);const buf=Buffer.concat(chunks);",
   "const n=buf.readUInt32BE(0),code=buf.subarray(4,4+n),m=buf.readUInt32BE(4+n),task=JSON.parse(buf.subarray(8+n,8+n+m).toString());",
   "const input=Buffer.from(buf.subarray(8+n+m));chunks.length=0;",
-  'let reply;try{const mod=await import("data:text/javascript;base64,"+code.toString("base64"));reply=await mod.run(input,task)}catch(e){reply={ok:false,error:"The file couldn\'t be parsed."}}',
+  'let reply;try{const mod=await import("data:text/javascript;base64,"+code.toString("base64"));reply=await mod.run(input,task)}catch(e){reply={ok:false,code:"parser_error",error:"The file couldn\'t be parsed."}}',
   "process.stdout.write(JSON.stringify(reply),()=>process.exit(0));",
 ].join("");
 
@@ -188,7 +188,12 @@ function preferOomKill(pid: number): void {
 // ───────────── The parser ─────────────
 
 export type ParseFailure = "timeout" | "crashed" | "memory" | "busy" | "unreadable" | "unavailable";
-export type ParseOutcome = { ok: true; result: Extracted } | { ok: false; reason: ParseFailure; message: string };
+/**
+ * A failure's code: the child's DocumentFailure when it read the file and refused it (reason "unreadable"), else the
+ * reason itself (the daemon side: timeout, crashed, memory, busy, unavailable).
+ */
+export type ParseFailureCode = DocumentFailure | Exclude<ParseFailure, "unreadable">;
+export type ParseOutcome = { ok: true; result: Extracted } | { ok: false; reason: ParseFailure; code: ParseFailureCode; message: string };
 
 export interface ParserOptions {
   deadlineMs?: number;
@@ -236,7 +241,7 @@ export class AttachmentParser {
   private active = new Set<Job>();
   private running = 0;
   /** Inputs whose parse failed while running (timeout, crash, memory): key → reason. Insertion-ordered (LRU-ish). */
-  private failed = new Map<string, ParseFailure>();
+  private failed = new Map<string, Exclude<ParseFailure, "unreadable">>();
   private inflight = new Map<string, Promise<ParseOutcome>>();
   private code: Promise<Buffer> | null = null;
   private closed = false;
@@ -299,7 +304,7 @@ export class AttachmentParser {
   }
 
   /** Only failures of a running child count: a job that waited too long in the queue says nothing about the file. */
-  private remember(job: Job, reason: ParseFailure): void {
+  private remember(job: Job, reason: Exclude<ParseFailure, "unreadable">): void {
     if (job.state !== "running") return;
     this.failed.delete(job.key);
     this.failed.set(job.key, reason);
@@ -417,7 +422,7 @@ export class AttachmentParser {
         this.remember(job, "memory");
         return this.settle(job, fail("memory", "Reading this file needed too much memory."));
       }
-      if (overflow) return this.settle(job, fail("unreadable", "The document produced more output than is read."));
+      if (overflow) return this.settle(job, unreadable("too_complex", "The document produced more output than is read."));
       let json: unknown = null;
       try {
         json = JSON.parse(Buffer.concat(out).toString("utf8"));
@@ -437,7 +442,7 @@ export class AttachmentParser {
         return this.settle(job, fail("crashed", "The document parser answered something unexpected."));
       }
       const r = reply.data as ParseReply;
-      if (!r.ok) return this.settle(job, fail("unreadable", r.error.slice(0, 300)));
+      if (!r.ok) return this.settle(job, unreadable(r.code, r.error.slice(0, 300)));
       this.settle(job, { ok: true, result: r.result });
     });
     const head = Buffer.alloc(4);
@@ -449,7 +454,8 @@ export class AttachmentParser {
   }
 }
 
-const fail = (reason: ParseFailure, message: string): ParseOutcome => ({ ok: false, reason, message });
+const fail = (reason: Exclude<ParseFailure, "unreadable">, message: string): ParseOutcome => ({ ok: false, reason, code: reason, message });
+const unreadable = (code: DocumentFailure, message: string): ParseOutcome => ({ ok: false, reason: "unreadable", code, message });
 
 const text = z.string().max(PARSE_LIMITS.textChars + 100_000);
 const n = z.number().int().min(0).max(10_000_000);
@@ -461,7 +467,8 @@ const EXTRACTED = z.discriminatedUnion("format", [
   z.object({ format: z.enum(["xlsx", "csv"]), sheets: z.array(SHEET).max(PARSE_LIMITS.sheets), totalSheets: n, ...extras }),
   z.object({ format: z.literal("pptx"), totalSlides: n, slides: z.array(z.object({ n, text, notes: text })).max(PARSE_LIMITS.slides), ...extras }),
 ]);
-const REPLY = z.union([z.object({ ok: z.literal(true), result: EXTRACTED }), z.object({ ok: z.literal(false), error: z.string().max(2000) })]);
+const REPLY = z.union([z.object({ ok: z.literal(true), result: EXTRACTED }), // A refusal without a code (older or foreign parser code) is a parser_error; an unknown code is an unexpected answer.
+z.object({ ok: z.literal(false), code: z.enum(DOCUMENT_FAILURES).default("parser_error"), error: z.string().max(2000) })]);
 
 const parsers = new WeakMap<AppContext, AttachmentParser>();
 
