@@ -8,6 +8,7 @@ import type { ExtensionVerifier, InstalledExtension } from "./types.ts";
 
 export { CodeToolSource, CREDENTIALS_ERROR, createCodeSource } from "./source.ts";
 export {
+  belowRecommendedNode,
   CHILD_PRELOAD,
   CODE_EXTENSION_NODE_FLOOR,
   childArgs,
@@ -17,6 +18,7 @@ export {
   entryPath,
   extensionStateDir,
   NODE_HAS_ALLOW_NET,
+  RECOMMENDED_NODE,
   removeConnectionState,
   XAQ_EXT_PROTOCOL,
 } from "./spawn.ts";

@@ -111,7 +111,10 @@ key; the broker holds every upstream credential and lists only the tools the age
   which is why extensions from outside the official registry come with a warning. A crash restarts it with backoff;
   five crashes in a row mark the connection Error with its last output (secrets redacted). Code extensions need Node
   ≥ 22.23.2, ≥ 24.18.1 or ≥ 26.5.1 (older releases have permission-model bypasses); on an older Node the connection
-  says so and nothing runs, while xaq itself and remote extensions work from 22.13.
+  says so and nothing runs, while xaq itself and remote extensions work from 22.13. Node's 2026-10-21 security
+  release (22.23.4, 24.22.1, 26.12.1) is recommended: it fixes a permission-model bypass (`fs.realpathSync`) and
+  high-severity issues in Node itself (a Brotli decoder out-of-bounds write, TLS hostname checks, `dns.resolve`).
+  Below it xaq still runs, and warns (see "Which Node.js the service runs").
 - **Search mode**: the tool list shows only `search_tools`, `call_read_tool`, `call_write_tool` and `get_call_status`;
   the agent finds the rest by searching. Calling a tool by its name still works, with the same access, approvals and
   audit. A new agent gets search mode if it has more than about 30 tools the first time it connects. After that its
@@ -475,9 +478,12 @@ to an empty value to remove it).
 When a newer version is published, the console shows **Update available** with the exact command to run.
 
 **Which Node.js the service runs.** `service install` records one Node.js binary in the unit or plist, and checks
-its version by running it (`<node> -p process.versions.node`). While any code extension is installed in the data
+its version by running it (`<node> -p process.versions.node`, with only `PATH`, `HOME` and `LANG` in its
+environment: no `NODE_OPTIONS`, no `XAQ_MASTER_KEY`). While any code extension is installed in the data
 directory, it must meet the code-extension floor (22.23.2+, 24.18.1+ or 26.5.1+, or a newer line); otherwise xaq's own
-minimum (22.13) applies, though a Node that meets the floor is still preferred. In order, it takes:
+minimum (22.13) applies, though a Node that meets the floor is still preferred. Before either, a Node with Node's
+October 2026 security release (22.23.4+, 24.22.1+ or 26.12.1+) is preferred when there is one. For each of those
+bars in turn, it takes:
 
 1. the Node running `service install`, if it is new enough;
 2. else the Node the existing service (or the agentinbox one it replaces) runs, if it is still there and new enough;
@@ -485,13 +491,24 @@ minimum (22.13) applies, though a Node that meets the floor is still preferred. 
    `~/Library/Application Support/fnm`), nvm (`$NVM_DIR`, `~/.nvm`), Volta (`~/.volta`), Homebrew
    (`/opt/homebrew` and `/usr/local`: `bin/node` and `opt/node@*`), asdf and mise installs, and `/usr/bin/node`.
 
+A found Node is used only when it and every directory above it are owned by you or root and can't be written by
+anyone else: never world-writable, and group-writable only when the group is your own private group (your primary
+group, with no other member in `/etc/group` and no other user's primary group in `/etc/passwd`; Linux only), as
+fnm and nvm leave their directories under umask 002. The existing service's Node may be group-writable (the service
+already runs it at every start), but not world-writable. Skipped ones are listed as "group- or world-writable, or
+owned by another user".
+
 fnm's per-shell links (`…/fnm_multishells/…`, deleted with the shell) are never recorded: they are resolved to the
 install they point to. `--node <path>` names the binary instead; it is still checked. When no Node qualifies,
 nothing is changed: the install stops and lists what it found (path → version), what is needed, and how to fix it
 (install a newer Node, e.g. `fnm install 24 && fnm default 24`, `nvm install 24`, `brew install node@24`, or pass
 `--node`). The success message names the Node, its version and why it was chosen. If you remove or replace that
 Node, run `service install` again. `service status` checks it too: it reports a problem (and exits non-zero) when
-the service's Node no longer runs, or is below the code-extension floor while code extensions are installed.
+the service's Node no longer runs, or is below the code-extension floor while code extensions are installed. On a
+Node that runs fine but is older than the October 2026 security release, `service status` prints a warning instead
+(the exit code is unchanged), the daemon logs the same once at start, and the install's success message says so:
+update Node (`fnm install 24 && fnm default 24`, `nvm install 24 && nvm alias default 24`, `brew upgrade node@24`),
+then run `service install` again.
 
 If the service doesn't come up, `service install` rolls back and prints where to look (`systemctl --user status
 xaq`, `journalctl --user -u xaq`). Over `su` or `sudo -u` there is often no systemd user session: log in

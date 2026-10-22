@@ -10,6 +10,7 @@ import { type Config, type ConfigInput, loadConfig, resolveDataDir } from "./con
 import type { AppContext } from "./context.ts";
 import { acquireInstanceLock, assertMasterKeyUsable, cliCommand, type InstanceLock, serviceInstallCommand } from "./instance.ts";
 import { startMaintenance } from "./maintenance.ts";
+import { recommendedNodeWarning } from "./service-node.ts";
 import { consoleUrls, isPrivateIPv4, isWildcardHost, loopbackUrl, networkAddresses } from "./urls.ts";
 import { errorMessage } from "./util/errors.ts";
 import { createAppContext, type ServiceOverrides, startServices, stopServices } from "./wire.ts";
@@ -167,6 +168,9 @@ export async function runForeground(opts: RunOptions): Promise<void> {
     throw err;
   }
 
+  const nodeWarning = startupNodeWarning(config);
+  if (nodeWarning) console.warn(`  Warning: ${nodeWarning}\n`);
+
   const token = currentSetupToken(running.ctx);
   if (token && opts.open && process.stdout.isTTY && !config.dev && !config.service) {
     openBrowser(`${consoleUrls(config.host, config.port)[0]}/setup?token=${token}`);
@@ -188,6 +192,14 @@ export async function runForeground(opts: RunOptions): Promise<void> {
       );
     });
   }
+}
+
+/**
+ * What the daemon logs once at start when its Node is below RECOMMENDED_NODE (see recommendedNodeWarning), or null.
+ * Under the service the fix is to run `service install` again (it records the Node); otherwise to restart xaq.
+ */
+export function startupNodeWarning(config: Pick<Config, "dataDir" | "host" | "port" | "service">, version = process.versions.node): string | null {
+  return recommendedNodeWarning(version, config.service ? serviceInstallCommand(config) : undefined);
 }
 
 function printBanner(ctx: AppContext, info: { mcp: boolean }): void {

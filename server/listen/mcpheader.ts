@@ -75,32 +75,91 @@ export function helperNode(execPath = process.execPath, works: (path: string) =>
   return stable ? { path: stable, versioned: false } : { path: execPath, versioned: true };
 }
 
+/**
+ * The environment a Node binary is probed with (`node --version` and the like): built from scratch, so the
+ * binary never sees the caller's secrets (an exported XAQ_MASTER_KEY, API keys), and NODE_OPTIONS can't change
+ * or break what it does (a `--require` of a missing file would fail every probe).
+ */
+export function nodeProbeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const k of ["PATH", "HOME", "LANG"] as const) if (env[k] !== undefined) out[k] = env[k];
+  return out;
+}
+
 /** `node --version` of a binary ("22.20.0"), or null when it doesn't run. */
 export function nodeVersionOf(path: string): string | null {
   if (!existsSync(path)) return null;
-  const r = spawnSync(path, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 });
+  const r = spawnSync(path, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000, killSignal: "SIGKILL", env: nodeProbeEnv() });
   const v = /^v(\d+\.\d+\.\d+)/.exec(r.stdout ?? "")?.[1];
   return r.status === 0 && v ? v : null;
 }
 
 /**
- * A node binary the service may run: the real file, and every directory above both the path as given and
- * the real file, are owned by root or by this user and not writable by group or others (a sticky
- * directory such as /tmp excepted). Otherwise someone else could replace what the service runs at every login.
+ * The user's own private group (Linux's user-private-group scheme: group `ada` for user `ada`), whose write bit
+ * gives no one else anything: the gid when the user's primary group (in /etc/passwd) lists no member in
+ * /etc/group but the user, and is no other user's primary group. Null when that can't be shown: on macOS (users
+ * live in Directory Services and share `staff`), without entries in /etc/passwd and /etc/group (LDAP, NIS), or
+ * when anyone else is in the group. Under umask 002 (common on Linux) fnm and nvm create their directories
+ * group-writable for this group.
  */
-export function trustedNodeFile(path: string, uid = process.getuid?.() ?? 0): boolean {
+export function userPrivateGroup(opts: { platform?: NodeJS.Platform; uid?: number; passwd?: string; group?: string } = {}): number | null {
+  if ((opts.platform ?? process.platform) !== "linux") return null;
+  try {
+    const uid = opts.uid ?? process.getuid?.() ?? -1;
+    // NIS compat lines (+ / -) pull in entries this can't see: then nothing is known to be private.
+    const rows = (text: string) => text.split("\n").filter((l) => l.trim() && !l.startsWith("#")).map((l) => l.split(":"));
+    const users = rows(opts.passwd ?? readFileSync("/etc/passwd", "utf8"));
+    const groups = rows(opts.group ?? readFileSync("/etc/group", "utf8"));
+    if ([...users, ...groups].some((r) => /^[+-]/.test(r[0] ?? ""))) return null;
+    const me = users.find((u) => u[2] !== undefined && Number(u[2]) === uid);
+    if (!me || !/^\d+$/.test(me[3] ?? "")) return null;
+    const gid = Number(me[3]);
+    if (gid === 0) return null;
+    if (users.some((u) => u !== me && u[3] !== undefined && Number(u[3]) === gid)) return null;
+    const mine = groups.filter((g) => g[2] !== undefined && Number(g[2]) === gid);
+    if (mine.length !== 1) return null;
+    const members = (mine[0]![3] ?? "").split(",").map((m) => m.trim()).filter(Boolean);
+    return members.every((m) => m === me[0]) ? gid : null;
+  } catch {
+    return null;
+  }
+}
+
+let privateGroup: { gid: number | null } | null = null;
+
+export interface TrustOptions {
+  /** This user (default: the process's uid). */
+  uid?: number;
+  /** The user's private group, whose write bit is harmless (default: userPrivateGroup()); null for none. */
+  privateGid?: number | null;
+  /** Accept group-writable (never world-writable): for a Node the service already runs at every start. */
+  groupWritable?: boolean;
+}
+
+/**
+ * A node binary the service may run: the real file, and every directory above both the path as given and
+ * the real file, are owned by root or by this user and not writable by others. Never world-writable (a
+ * sticky directory such as /tmp excepted); group-writable only when the group is the user's private group
+ * (see userPrivateGroup), or with opts.groupWritable. Otherwise someone else could replace what the service
+ * runs at every login.
+ */
+export function trustedNodeFile(path: string, opts: TrustOptions = {}): boolean {
+  const uid = opts.uid ?? process.getuid?.() ?? 0;
+  const privateGid = opts.privateGid !== undefined ? opts.privateGid : (privateGroup ??= { gid: userPrivateGroup() }).gid;
   const owned = (st: { uid: number }) => st.uid === 0 || st.uid === uid;
+  const notWritable = (st: { mode: number; gid: number }) =>
+    (st.mode & 0o002) === 0 && ((st.mode & 0o020) === 0 || !!opts.groupWritable || (privateGid !== null && st.gid === privateGid));
   const dirsOk = (p: string) => {
     for (let d = dirname(p); ; d = dirname(d)) {
       const st = statSync(d);
-      if (!owned(st) || ((st.mode & 0o022) !== 0 && (st.mode & 0o1000) === 0)) return false;
+      if (!owned(st) || (!notWritable(st) && (st.mode & 0o1000) === 0)) return false;
       if (d === dirname(d)) return true;
     }
   };
   try {
     const real = realpathSync(path);
     const st = statSync(real);
-    return owned(st) && (st.mode & 0o022) === 0 && dirsOk(path) && dirsOk(real);
+    return owned(st) && notWritable(st) && dirsOk(path) && dirsOk(real);
   } catch {
     return false;
   }
