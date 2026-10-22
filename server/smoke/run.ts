@@ -1017,11 +1017,17 @@ export class SmokeRun {
         if (!f.trashed) throw new Error("approved, but the folder isn't in the trash");
         return `pending, approved (${approved}), in the trash`;
       });
-      // The leftover check on Drive, while the agent can still look.
+      // The leftover check on Drive, while the agent can still look. Drive trashes a folder's children asynchronously:
+      // for a while after the folder is in the trash, a file inside it still reads trashed: false. A file whose parent is
+      // the scratch folder, once that folder is confirmed in the trash, goes with it.
+      let folderTrashed = false;
       for (const [id, f] of [[folder.id, { kind: "folder", name: folder.name }] as const, ...this.ledger.files]) {
         reported.add(id);
         try {
-          if (!(await this.driveFacts(id)).trashed) this.leftBehind.push(`Drive ${f.kind} "${f.name}" (${id}) is not in the trash.`);
+          const facts = await this.driveFacts(id);
+          if (id === folder.id) folderTrashed = facts.trashed;
+          const gone = facts.trashed || (folderTrashed && facts.parents.includes(folder.id));
+          if (!gone) this.leftBehind.push(`Drive ${f.kind} "${f.name}" (${id}) is not in the trash.`);
         } catch (err) {
           this.leftBehind.push(`Drive ${f.kind} "${f.name}" (${id}): couldn't check it (${errText(err)}).`);
         }

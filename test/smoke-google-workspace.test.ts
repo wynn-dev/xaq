@@ -432,6 +432,31 @@ describe.runIf(HAS_AGENTS)("xaq smoke google-workspace", () => {
     expect(report.leftBehind).toEqual([]);
   });
 
+  it("files inside the trashed scratch folder count as gone while Drive is still trashing them (no false leftover)", async () => {
+    const w = await world();
+    w.ws.lazyTrashCascade = true;
+    const run = w.run();
+    const report = await run.run();
+    expect(report.leftBehind).toEqual([]);
+    expect(report.ok).toBe(true);
+    // The children really are still marked untrashed on their own: only the folder carries the flag.
+    const children = [...w.ws.files.values()].filter((f) => f.parents.includes(run.ledger.folder!.id));
+    expect(children.length).toBeGreaterThan(0);
+    expect(children.every((f) => !f.trashed)).toBe(true);
+  });
+
+  it("a file the run made outside the trashed folder is still reported", async () => {
+    const w = await world();
+    w.ws.lazyTrashCascade = true;
+    w.ws.fault("drive_trash", () => {
+      // The doc got moved out of the scratch folder before cleanup (to My Drive's top level).
+      for (const f of w.ws.files.values()) if (f.kind === "doc" && f.name.endsWith(" doc")) f.parents = ["root"];
+      w.ws.fault("drive_trash", () => {});
+    });
+    const report = await w.run().run();
+    expect(report.leftBehind.some((l) => /Drive doc ".* doc" .* is not in the trash/.test(l))).toBe(true);
+  });
+
   it("when cleanup itself fails, what's left is reported, and the agent and settings are still removed", async () => {
     const w = await world();
     w.ws.fault("drive_trash", () => {
