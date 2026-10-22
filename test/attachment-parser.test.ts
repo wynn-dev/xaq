@@ -149,6 +149,10 @@ describe("hostile documents", () => {
     expect(await real.parse(Buffer.from("PK nonsense"), { format: "docx" })).toMatchObject({ ok: false, reason: "unreadable" });
   });
 
+  it("says a password-protected PDF is password-protected", async () => {
+    expect(await real.parse(makePdf(["locked"], { encrypted: true }), { format: "pdf" })).toEqual({ ok: false, reason: "unreadable", message: "The PDF is password-protected." });
+  });
+
   it("reads a truncated PDF as far as it goes or says it can't", async () => {
     const pdf = makePdf(["Some text"]);
     const r = await real.parse(pdf.subarray(0, Math.floor(pdf.length / 2)), { format: "pdf" });

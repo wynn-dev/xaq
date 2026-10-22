@@ -473,7 +473,7 @@ export function buildMcpServer(ctx: AppContext, principal: AgentPrincipal, opts:
           "Read an attachment (ids from list_attachments, get_message or get_thread) as usable content: PDFs as text per page, Word documents as markdown, " +
           "spreadsheets and CSV as tables per sheet, presentations as text per slide with speaker notes, text and HTML as text, images as images. " +
           "Long content comes in parts: each answer says what it showed and the offset (or page/slide/sheet) for the next part. " +
-          `Other files, and files that can't be read, are saved on the xaq server and their path returned; format "file" saves any attachment, format "base64" returns the bytes of files up to ${formatSize(MAX_ATTACHMENT_BYTES)}. ${UNTRUSTED_NOTE}`,
+          `Other files, and files that can't be read, are saved on the xaq server and their path returned; format "inline" never saves (it gives the name, type, size and why instead); format "file" saves any attachment, format "base64" returns the bytes of files up to ${formatSize(MAX_ATTACHMENT_BYTES)}. ${UNTRUSTED_NOTE}`,
         input: { account, message_id: messageId, attachment_id: z.string().min(1).describe("Attachment id from list_attachments, get_message or get_thread."), ...attachmentArgs },
         annotations: READ,
       },

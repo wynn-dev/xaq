@@ -3,7 +3,7 @@
 // agent, and a fake google-workspace extension (test/fake-workspace.ts) as an MCP upstream connection at "ask", bound
 // to the account like the extension's Google setup leaves it (preset google-workspace, connections.google_account_id).
 // Every mail tool is the real one: create_draft's { path } and { drive_file_id } (#86, #90), list_attachments and
-// get_attachment's extraction and saved files (#87). No stand-ins.
+// get_attachment's extraction (format "inline", which never saves) and saved files (#87). No stand-ins.
 
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,7 +18,7 @@ import { type AgentMcp, type CallOutcome, connectAgentMcp } from "../server/smok
 import { installSmokeSignals, safeWriter } from "../server/smoke/cli.ts";
 import { GuardError, newLedger, ScratchGuard, WRITE_TARGETS } from "../server/smoke/guards.ts";
 import { renderReport } from "../server/smoke/report.ts";
-import { chooseTargets, inlineKind, parseAttachmentList, SKIPPED_WOULD_SAVE, SmokeRun, SmokeSetupError } from "../server/smoke/run.ts";
+import { chooseTargets, inlineKind, parseAttachmentList, SKIPPED_NOT_INLINE, SmokeRun, SmokeSetupError } from "../server/smoke/run.ts";
 import { makePdf } from "./attachment-fixtures.ts";
 import { HAS_AGENTS } from "./e2e/features.ts";
 import { type Stack, startStack } from "./e2e/harness.ts";
@@ -42,8 +42,12 @@ afterEach(async () => {
 interface McpKnobs {
   /** Every get_attachment call the run made (file names, from what list_attachments listed). */
   extracted: string[];
+  /** The format each get_attachment call asked for. */
+  formats: unknown[];
   /** create_draft makes the draft, but its answer is lost (the run never learns the draft id). */
   dropDraftAnswer: boolean;
+  /** get_attachment's format is dropped (an xaq that saves what it can't show anyway). */
+  ignoreFormat: boolean;
 }
 
 function recordingMcp(mcp: AgentMcp, knobs: McpKnobs): AgentMcp {
@@ -56,7 +60,11 @@ function recordingMcp(mcp: AgentMcp, knobs: McpKnobs): AgentMcp {
         const text = "The connection dropped before the answer arrived.";
         return { isError: true, text, structured: null, content: [{ type: "text", text }] };
       }
-      if (name === "get_attachment") knobs.extracted.push(names.get(String(args.attachment_id)) ?? "?");
+      if (name === "get_attachment") {
+        knobs.extracted.push(names.get(String(args.attachment_id)) ?? "?");
+        knobs.formats.push(args.format);
+        if (knobs.ignoreFormat) args = Object.fromEntries(Object.entries(args).filter(([k]) => k !== "format"));
+      }
       const out = await mcp.call(name, args);
       if (name === "list_attachments") for (const a of parseAttachmentList(out)) names.set(a.id, a.filename);
       return out;
@@ -132,7 +140,7 @@ async function world(opts: { attachments?: { filename: string; mimeType: string;
   const controller = new AbortController();
   const tmpRoot = mkdtempSync(join(tmpdir(), "xaq-smoke-test-"));
   cleanup.push(() => rmSync(tmpRoot, { recursive: true, force: true }));
-  const knobs: McpKnobs = { extracted: [], dropDraftAnswer: false };
+  const knobs: McpKnobs = { extracted: [], formats: [], dropDraftAnswer: false, ignoreFormat: false };
   const run = (flags: Record<string, unknown> = {}) =>
     new SmokeRun(
       { scratch: true, yes: true, connection: "workspace", ...flags },
@@ -222,7 +230,7 @@ describe.runIf(HAS_AGENTS)("xaq smoke google-workspace", () => {
     await expectClean(w, run);
   });
 
-  it("extracts only attachments get_attachment shows inline: anything it would save to disk is skipped", async () => {
+  it("extracts only attachments get_attachment can show inline: anything else is skipped, never downloaded", async () => {
     const w = await world({
       attachments: [
         { filename: "photos.zip", mimeType: "application/zip", content: Buffer.from("PK\u0003\u0004 ATTACHMENT-SECRET") },
@@ -232,17 +240,44 @@ describe.runIf(HAS_AGENTS)("xaq smoke google-workspace", () => {
     });
     const report = await w.run().run();
     expect(report.steps.filter((s) => s.tool === "get_attachment").map((s) => `${s.step}: ${s.status} ${s.detail}`)).toEqual([
-      `extract "photos.zip": PASS ${SKIPPED_WOULD_SAVE}`,
-      `extract "setup.bin": PASS ${SKIPPED_WOULD_SAVE}`,
+      `extract "photos.zip": PASS ${SKIPPED_NOT_INLINE}`,
+      `extract "setup.bin": PASS ${SKIPPED_NOT_INLINE}`,
       expect.stringMatching(/^extract "notes.txt": PASS text: text, \d+ chars$/),
     ]);
     expect(w.knobs.extracted).toEqual(["notes.txt"]);
+    expect(w.knobs.formats).toEqual(["inline"]);
     expect(report.ok).toBe(true);
   });
 
-  it("a get_attachment answer that saved the file anyway (a PDF it couldn't read) fails the step and lists the saved copy", async () => {
-    // Listed as a small PDF, so the run asks for it; the real get_attachment can't parse it and saves it instead.
+  it("a PDF xaq can't read (corrupt, encrypted) passes as \"couldn't read (…)\", and nothing is saved or left behind", async () => {
+    // Listed as small PDFs, so the run asks for them; with format "inline" get_attachment says why and saves nothing.
+    const w = await world({
+      attachments: [
+        { filename: "broken.pdf", mimeType: "application/pdf", content: Buffer.from("%PDF-1.4 ATTACHMENT-SECRET not really a pdf") },
+        { filename: "locked.pdf", mimeType: "application/pdf", content: makePdf(["ATTACHMENT-SECRET-LOCKED"], { encrypted: true }) },
+        { filename: "notes.txt", mimeType: "text/plain", content: "ATTACHMENT-SECRET-TEXT" },
+      ],
+    });
+    const run = w.run();
+    const report = await run.run();
+    expect(report.steps.filter((s) => s.tool === "get_attachment").map((s) => `${s.step}: ${s.status} ${s.detail}`)).toEqual([
+      `extract "broken.pdf": PASS pdf: couldn't read (The file isn't a readable PDF)`,
+      `extract "locked.pdf": PASS pdf: couldn't read (The PDF is password-protected)`,
+      expect.stringMatching(/^extract "notes.txt": PASS text: text, \d+ chars$/),
+    ]);
+    expect(w.knobs.formats).toEqual(["inline", "inline", "inline"]);
+    expect(report.leftBehind).toEqual([]);
+    expect(report.ok).toBe(true);
+    // Nothing saved: the attachment folder was never even created.
+    expect(existsSync(join(w.s.dataDir, "attachments"))).toBe(false);
+    for (const secret of SECRETS) expect([...w.out, JSON.stringify(report)].join("\n")).not.toContain(secret);
+    await expectClean(w, run);
+  });
+
+  it("a get_attachment answer that saved the file anyway (an xaq that ignores format \"inline\") fails the step and lists the saved copy", async () => {
+    // Listed as a small PDF, so the run asks for it; this get_attachment can't parse it and saves it instead.
     const w = await world({ attachments: [{ filename: "broken.pdf", mimeType: "application/pdf", content: Buffer.from("%PDF-1.4 ATTACHMENT-SECRET not really a pdf") }] });
+    w.knobs.ignoreFormat = true;
     const report = await w.run().run();
     const step = report.steps.find((s) => s.step === 'extract "broken.pdf"')!;
     expect(step.status).toBe("FAIL");
@@ -618,12 +653,12 @@ describe("the smoke command's setup", () => {
     expect(isSmokeDir("/tmp/xaq-smoke-abc123")).toBe(false);
   });
 
-  it("extracts only what get_attachment shows inline (A2's kinds and caps); anything it would save is skipped", () => {
+  it("extracts only what get_attachment can show inline (A2's kinds and caps); anything else is skipped", () => {
     const k = (filename: string, mimeType: string, size = 1000) => inlineKind({ filename, mimeType, size });
     expect([k("a.pdf", "application/pdf"), k("a.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"), k("a.xlsx", "application/octet-stream")]).toEqual(["pdf", "docx", "xlsx"]);
     expect([k("a.csv", "text/csv"), k("a.pptx", "application/zip"), k("a.txt", "text/plain"), k("a.html", "text/html"), k("a.md", "application/octet-stream")]).toEqual(["csv", "pptx", "text", "html", "text"]);
     expect(k("a.png", "image/png")).toBe("image");
-    // Saved by get_attachment: other types, images at or over 5 MB, documents at or over 25 MB, unknown sizes.
+    // Not shown inline (auto would save them): other types, images at or over 5 MB, documents at or over 25 MB, unknown sizes.
     expect([k("a.zip", "application/zip"), k("a.exe", "application/x-msdownload"), k("a.heic", "image/heic"), k("noext", "application/octet-stream")]).toEqual([null, null, null, null]);
     expect(k("big.png", "image/png", 5 * 1024 * 1024)).toBeNull();
     expect(k("big.pdf", "application/pdf", 25 * 1024 * 1024)).toBeNull();

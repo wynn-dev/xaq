@@ -9,6 +9,9 @@
 // - Anything else, anything too large, and anything the parser couldn't read: metadata plus a saved file path
 //   (server/mail/saved-attachments.ts). `format: "file"` saves any attachment; `format: "base64"` returns small
 //   files' bytes as an embedded resource, as get_attachment used to.
+// - `format: "inline"`: as auto, but what auto would save gets metadata plus why it isn't shown instead
+//   (structuredContent.attachment.notShown and .reason). It never saves, so it never touches the saved folder or its
+//   quota (a save there can delete older saved files).
 // All third-party text is wrapped as untrusted.
 
 import { createHash } from "node:crypto";
@@ -37,10 +40,10 @@ export const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "ima
 
 export const attachmentArgs = {
   format: z
-    .enum(["auto", "file", "base64"])
+    .enum(["auto", "inline", "file", "base64"])
     .optional()
     .describe(
-      `auto (default): readable content (text, tables, pages, slides, images); other files are saved and their path returned. file: save it and return the path. base64: the raw bytes, files up to ${formatSize(MAX_ATTACHMENT_BYTES)} only.`,
+      `auto (default): readable content (text, tables, pages, slides, images); other files are saved and their path returned. inline: the same content, but never saves anything; what can't be shown comes back as name, type, size and ids plus the reason. file: save it and return the path. base64: the raw bytes, files up to ${formatSize(MAX_ATTACHMENT_BYTES)} only.`,
     ),
   offset: z.number().int().min(0).optional().describe("Character offset to continue from (each answer says the next one)."),
   max_chars: z.number().int().min(200).max(ATTACHMENT_MAX_CHARS).optional().describe("Characters to show (default: the operator's body limit, at most 100,000)."),
@@ -48,7 +51,7 @@ export const attachmentArgs = {
   slide: z.number().int().min(1).optional().describe("PPTX: start at this slide."),
   sheet: z.union([z.string().min(1), z.number().int().min(1)]).optional().describe("XLSX: start at this sheet (name or 1-based number)."),
 };
-type Args = { format?: "auto" | "file" | "base64"; offset?: number; max_chars?: number; page?: number; slide?: number; sheet?: string | number };
+type Args = { format?: "auto" | "inline" | "file" | "base64"; offset?: number; max_chars?: number; page?: number; slide?: number; sheet?: string | number };
 
 export interface FetchedAttachment {
   messageId: string;
@@ -204,6 +207,9 @@ function windowOf(text: string, start: number, max: number): { shown: string; en
 
 // ───────────── The answer ─────────────
 
+/** Why format "inline" didn't show an attachment (structuredContent.attachment.notShown). */
+export type NotShown = "too_large" | "unreadable" | "unsupported";
+
 type Output = string | CallToolResult["content"] | { content: CallToolResult["content"]; structuredContent: Record<string, unknown> };
 
 export async function attachmentOutput(ctx: AppContext, r: FetchedAttachment, args: Args): Promise<Output> {
@@ -228,6 +234,14 @@ export async function attachmentOutput(ctx: AppContext, r: FetchedAttachment, ar
     return { content: [{ type: "text" as const, text }], structuredContent: safeStructured({ attachment: { ...meta, savedPath: s.path } }) };
   };
 
+  /** format "inline" instead of a save: metadata and why it isn't shown. The saved folder and its quota stay untouched. */
+  const notShown = (code: NotShown, reason: string, lead: string) => {
+    const text = `${head}\n${lead}\nNothing was saved (format "inline"); format "file" saves it to disk.`;
+    return { content: [{ type: "text" as const, text }], structuredContent: safeStructured({ attachment: { ...meta, savedPath: null, notShown: code, reason } }) };
+  };
+  /** Where auto saves the file: format "inline" answers without saving. */
+  const fallback = (code: NotShown, reason: string, autoLead: string, inlineLead = autoLead) => (format === "inline" ? notShown(code, reason, inlineLead) : saved(autoLead));
+
   if (format === "file") return saved("");
   if (format === "base64") {
     if (r.data.length > MAX_ATTACHMENT_BYTES) {
@@ -247,7 +261,9 @@ export async function attachmentOutput(ctx: AppContext, r: FetchedAttachment, ar
   }
 
   if (kind === "image") {
-    if (r.data.length > MAX_ATTACHMENT_BYTES) return saved(`The image is over ${formatSize(MAX_ATTACHMENT_BYTES)}, so it isn't shown inline.`);
+    if (r.data.length > MAX_ATTACHMENT_BYTES) {
+      return fallback("too_large", `over ${formatSize(MAX_ATTACHMENT_BYTES)}, too large to show inline`, `The image is over ${formatSize(MAX_ATTACHMENT_BYTES)}, so it isn't shown inline.`);
+    }
     return [
       { type: "text", text: head },
       { type: "image", data: r.data.toString("base64"), mimeType: r.mimeType.toLowerCase() },
@@ -269,16 +285,23 @@ export async function attachmentOutput(ctx: AppContext, r: FetchedAttachment, ar
     return `${head}\n${wrapUntrusted(r.from, w.shown)}${notes.length ? `\n${notes.join("\n")}` : ""}`;
   }
 
-  if (kind === "other") return saved("This file type isn't shown as text; the file was saved so you can open it with another tool.");
+  if (kind === "other") {
+    return fallback("unsupported", "this kind of file can't be shown inline", "This file type isn't shown as text; the file was saved so you can open it with another tool.", "This kind of file can't be shown inline.");
+  }
 
   // A document: parsed in the sandbox (or from the cache).
   const formatName = FORMAT_NAMES[kind];
-  if (r.data.length > PARSE_LIMITS.inputBytes) return saved(`This ${formatName} is over ${formatSize(PARSE_LIMITS.inputBytes)}, too large to read here.`);
+  if (r.data.length > PARSE_LIMITS.inputBytes) {
+    return fallback("too_large", `over ${formatSize(PARSE_LIMITS.inputBytes)}, too large to show inline`, `This ${formatName} is over ${formatSize(PARSE_LIMITS.inputBytes)}, too large to read here.`);
+  }
   const key = `${kind}:${createHash("sha256").update(r.data).digest("base64url")}`;
   let doc = cached(ctx, key);
   if (!doc) {
     const outcome = await attachmentParser(ctx).parse(r.data, { format: kind });
-    if (!outcome.ok) return saved(`Couldn't read this ${formatName}: ${failureText(outcome.reason, outcome.message)}`);
+    if (!outcome.ok) {
+      const why = failureText(outcome.reason, outcome.message);
+      return fallback("unreadable", why, `Couldn't read this ${formatName}: ${why}`);
+    }
     doc = render(outcome.result);
     remember(ctx, key, doc);
   }
