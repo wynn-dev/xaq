@@ -67,5 +67,9 @@ jobs:
           base="$(node -p 'require("./package.json").version.split("-")[0]')"
           version="${base}-nightly.${{ github.run_number }}"
           npm version "$version" --no-git-tag-version
+          # Pins the runtime dependency tree in the package: the console's update job refuses a release
+          # without npm-shrinkwrap.json (scripts/shrinkwrap.mjs, docs/adr/0002-console-self-update.md).
+          node scripts/shrinkwrap.mjs
+          tar tzf "$(npm pack --ignore-scripts --loglevel=error | tail -1)" | grep -x package/npm-shrinkwrap.json
           npm publish --tag latest --access public
           echo "Published xaq-cli@${version}" >> "$GITHUB_STEP_SUMMARY"

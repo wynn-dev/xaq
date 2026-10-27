@@ -27,7 +27,7 @@ import { overviewApi } from "./api/overview.ts";
 import { pairingsApi } from "./api/pairings.ts";
 import { settingsApi } from "./api/settings.ts";
 import { setupApi, setupPublicApi } from "./api/setup.ts";
-import { healthRoutes, systemApi } from "./api/system.ts";
+import { healthRoutes, type SelfUpdateHost, systemApi } from "./api/system.ts";
 import type { AppEnv } from "./api/util.ts";
 import { webhooksApi } from "./api/webhooks.ts";
 import { csrfGuard, currentSetupToken, requireAdmin } from "./auth/index.ts";
@@ -42,6 +42,8 @@ export interface AppOptions {
   webDir?: string;
   /** Inbound webhooks for native presets (POST /hooks/connections/:id); 404 without it or with brokerUpstreams off. */
   connectionHooks?: ConnectionHookHost;
+  /** The console's one-click update (server/update.ts); tests fake it. */
+  selfUpdate?: SelfUpdateHost;
 }
 
 /**
@@ -166,7 +168,8 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Hono<AppEnv> 
   app.use("/api/*", requireAdmin(ctx));
   // brokerApprovalsApi before approvalsApi: it answers /approvals/:id for mcp.call and passes the rest on.
   // connectionsApi before brokerApprovalsApi: its /connections/:id/kill runs the service's kill (hooks first).
-  for (const api of [setupApi, authApi, settingsApi, systemApi, googleApi, accountsApi, agentsApi, connectionsApi, brokerApprovalsApi, approvalsApi, webhooksApi, eventsApi, auditApi, overviewApi, pairingsApi, extensionsApi, smokeApi]) {
+  const system = (c: AppContext) => systemApi(c, opts.selfUpdate);
+  for (const api of [setupApi, authApi, settingsApi, system, googleApi, accountsApi, agentsApi, connectionsApi, brokerApprovalsApi, approvalsApi, webhooksApi, eventsApi, auditApi, overviewApi, pairingsApi, extensionsApi, smokeApi]) {
     app.route("/api", api(ctx));
   }
 

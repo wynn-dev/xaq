@@ -45,7 +45,7 @@ export const DAEMON_UNIT: UnitId = { launchd: LAUNCHD_LABEL, systemd: SERVICE_NA
 export const LEGACY_DAEMON_UNIT: UnitId = { launchd: LEGACY_LAUNCHD_LABEL, systemd: LEGACY_SERVICE_NAME };
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 /** Package root: one level above the running module (dist/cli.js or server/service.ts). */
-const ROOT = resolve(import.meta.dirname, "..");
+export const ROOT = resolve(import.meta.dirname, "..");
 
 /**
  * Settings that come from the environment rather than flags. They are kept in `<data>/service.env`
@@ -238,31 +238,72 @@ export function serviceEnvText(env: Record<string, string>): string {
   return lines.join("");
 }
 
+/** A plain release version (no ranges, tags, URLs or paths): what may be passed as stagePackage's `version`. */
+export const RELEASE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+/** Runs npm in `cwd`, throwing on a non-zero exit (with npm's output in the message when it was captured). */
+export type NpmRunner = (args: string[], cwd: string, opts?: { capture?: boolean }) => string;
+
+const runNpm: NpmRunner = (args, cwd, opts) =>
+  opts?.capture
+    ? execFileSync(npm, args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
+    : (execFileSync(npm, args, { cwd, stdio: "inherit" }), "");
+
+export interface StageOptions {
+  where: string;
+  requireWeb: boolean;
+  /** This exact release from npm (RELEASE_VERSION), rather than `latest` or this source checkout's build. */
+  version?: string;
+  /**
+   * Supply-chain checks for an update nobody watches (the console's update job): install with
+   * --ignore-scripts, then refuse unless the package's npm-shrinkwrap.json pins what was installed and
+   * `npm audit signatures` verifies the registry signatures and provenance.
+   */
+  harden?: boolean;
+  /** Runs npm (tests fake it). */
+  npm?: NpmRunner;
+}
+
 /**
  * Installs the package into `staging` (a fresh private npm prefix), so a failed npm install leaves the
- * current install untouched. From an installed package that is the latest release; from a source
- * checkout, the local build. Returns `staging`. The one install path for the daemon and the listeners.
+ * current install untouched. From an installed package that is the latest release (or `version`); from a
+ * source checkout without a `version`, the local build. Returns `staging`. The one install path for the
+ * daemon, the listeners and the update job.
  */
-export function stagePackage(staging: string, opts: { where: string; requireWeb: boolean }): string {
-  const fromSource = basename(dirname(ROOT)) !== "node_modules";
-  let spec = `${PACKAGE}@latest`;
+export function stagePackage(staging: string, opts: StageOptions): string {
+  const run = opts.npm ?? runNpm;
+  if (opts.version !== undefined && !RELEASE_VERSION.test(opts.version)) throw new Error(`"${opts.version}" is not a release version.`);
+  const fromSource = opts.version === undefined && basename(dirname(ROOT)) !== "node_modules";
+  let spec = `${PACKAGE}@${opts.version ?? "latest"}`;
   let tmp: string | undefined;
   if (fromSource) {
     if (!existsSync(join(ROOT, "dist/cli.js")) || (opts.requireWeb && !existsSync(join(ROOT, "dist/web/index.html")))) {
       throw new Error("Run `pnpm build` before installing the service from a source checkout.");
     }
     tmp = mkdtempSync(join(tmpdir(), "xaq-pack-"));
-    const out = execFileSync(npm, ["pack", "--ignore-scripts", "--pack-destination", tmp, "--loglevel=error"], { cwd: ROOT, encoding: "utf8" });
+    const out = run(["pack", "--ignore-scripts", "--pack-destination", tmp, "--loglevel=error"], ROOT, { capture: true });
     spec = join(tmp, out.trim().split("\n").pop()!);
   }
 
-  console.log(fromSource ? `  Installing this build into ${opts.where}…` : `  Installing the latest release into ${opts.where}…`);
+  const what = fromSource ? "this build" : opts.version ? `xaq ${opts.version}` : "the latest release";
+  console.log(`  Installing ${what} into ${opts.where}…`);
   clearOwnInstall(staging);
   mkdirSync(staging, { recursive: true });
   writeFileSync(join(staging, "package.json"), '{ "private": true }\n');
   try {
-    execFileSync(npm, ["install", spec, "--omit=dev", "--prefer-online", "--no-audit", "--no-fund", "--loglevel=error"], { cwd: staging, stdio: "inherit" });
+    const hardening = opts.harden ? ["--ignore-scripts"] : [];
+    run(["install", spec, "--omit=dev", "--prefer-online", "--no-audit", "--no-fund", ...hardening, "--loglevel=error"], staging);
     if (!existsSync(installedEntry(staging))) throw new Error("the installed package has no dist/cli.js");
+    if (opts.version && installedVersion(staging) !== opts.version) throw new Error(`npm installed ${installedVersion(staging) ?? "no version"} instead of ${opts.version}`);
+    if (opts.harden) {
+      const problems = shrinkwrapProblems(staging);
+      if (problems.length) throw new Error(`Refused: ${problems.slice(0, 3).join("; ")}${problems.length > 3 ? ` (and ${problems.length - 3} more)` : ""}.`);
+      try {
+        run(["audit", "signatures", "--loglevel=error"], staging, { capture: true });
+      } catch (err) {
+        throw new Error(`Refused: \`npm audit signatures\` failed: ${commandFailure(err)}`);
+      }
+    }
   } catch (err) {
     rmSync(staging, { recursive: true, force: true });
     throw new Error(`Installing xaq failed, so the existing service was left as it was. ${err instanceof Error ? err.message : ""}`.trim());
@@ -270,6 +311,46 @@ export function stagePackage(staging: string, opts: { where: string; requireWeb:
     if (tmp) rmSync(tmp, { recursive: true, force: true });
   }
   return staging;
+}
+
+/** The version of our package in an install made by stagePackage (`<data>/app`, app.old…), if any. */
+export const installedVersion = (app: string): string | null => installedPackageVersion(join(app, "node_modules", PACKAGE));
+
+/**
+ * What doesn't match between the installed package's npm-shrinkwrap.json and the tree npm installed next to it:
+ * no shrinkwrap at all, or a runtime dependency that is missing, at another version, or pinned without an
+ * integrity hash. Empty when the install is exactly what the release pinned. Dev and optional entries are
+ * skipped (--omit=dev leaves the first out; the second depend on the platform).
+ */
+export function shrinkwrapProblems(staging: string): string[] {
+  const pkg = join(staging, "node_modules", PACKAGE);
+  let wrap: { lockfileVersion?: unknown; packages?: Record<string, { version?: string; integrity?: string; dev?: boolean; optional?: boolean; devOptional?: boolean; link?: boolean }> };
+  try {
+    wrap = JSON.parse(readFileSync(join(pkg, "npm-shrinkwrap.json"), "utf8"));
+  } catch {
+    return ["the release has no npm-shrinkwrap.json, so its dependencies aren't pinned"];
+  }
+  if (typeof wrap.lockfileVersion !== "number" || wrap.lockfileVersion < 2 || !wrap.packages) return ["the release's npm-shrinkwrap.json has no package list (lockfileVersion 2 or later)"];
+  const problems: string[] = [];
+  for (const [path, meta] of Object.entries(wrap.packages)) {
+    if (!path || meta.dev || meta.optional || meta.devOptional || meta.link) continue;
+    const name = path.slice(path.lastIndexOf("node_modules/") + "node_modules/".length);
+    if (!meta.integrity) problems.push(`${name} is pinned without an integrity hash`);
+    // npm installs a shrinkwrapped tree under the package; a dependency hoisted to the top is found there.
+    const installed = installedPackageVersion(join(pkg, path)) ?? installedPackageVersion(join(staging, path));
+    if (installed === null) problems.push(`${name} ${meta.version ?? ""} wasn't installed`.replace("  ", " "));
+    else if (installed !== meta.version) problems.push(`${name} is ${installed}, the shrinkwrap pins ${meta.version}`);
+  }
+  return problems;
+}
+
+function installedPackageVersion(dir: string): string | null {
+  try {
+    const version = (JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { version?: unknown }).version;
+    return typeof version === "string" ? version : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The CLI entry inside an install made by stagePackage. */
