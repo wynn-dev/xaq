@@ -121,7 +121,7 @@ export function loadConfig(input: ConfigInput = {}, version = "0.0.0"): Config {
 // (install.lock: the listeners' shared install directory holds app* and that lock; same rule there.)
 // (extensions, extension-state: installed extensions and code extensions' state, docs/EXTENSIONS.md.)
 // (attachments: files get_attachment saved for agents, server/mail/saved-attachments.ts.)
-// (update: the console update job's status, log and database snapshot, server/update.ts.)
+// (update: the console update job's status, lock, log and database snapshots, server/update.ts.)
 const OWN_ENTRY =
   /^(?:(?:xaq|agentinbox)\.(?:db(?:-wal|-shm|-journal)?|lock|log)|master\.key|setup-token|service\.env|app(?:\.new|\.old)?|install\.lock|units|backups?|update|extensions|extension-state|attachments)$/;
 

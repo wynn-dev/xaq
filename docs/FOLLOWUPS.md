@@ -497,9 +497,14 @@ Known non-blocking issues from the onboarding sweep (fresh-persona walks p9–p1
 - **The job doesn't rewrite the unit file.** A release that changes the unit (new environment variables, flags,
   `OOMPolicy`…) still needs `service install`. The job could re-render the unit with the new version's CLI after
   the swap.
-- **"Go back" keeps the current database.** Restoring the pre-update snapshot is manual
-  (`<data>/update/db-snapshot/`). If a migration ever stops being additive, "go back" has to restore the snapshot,
-  or refuse.
+- **"Go back" keeps the current database.** Restoring the pre-update snapshot is manual: every job snapshots into
+  `<data>/update/snapshots/<started>-<kind>-<from>-to-<to>/` and the newest 3 are kept, so the one from before an
+  update survives a go-back. If a migration ever stops being additive, "go back" has to restore the snapshot, or
+  refuse. (W75: the single `db-snapshot/` that every job overwrote is gone; one left by a job from before W75
+  stays where it is until removed by hand.)
 - **Listeners aren't covered.** The console could show listeners that run an older version than the daemon.
-- **A job that dies mid-run** leaves `status.json` at `running`. Another update can start after 30 minutes. A stuck
-  stop or start isn't timed out by the job itself (systemd's own timeouts apply).
+- **A job that dies mid-run** leaves `status.json` at `running` (and its `update/lock`). Another update can start
+  at once when the job's process is gone, or after 30 minutes. A stuck stop or start isn't timed out by the job
+  itself (systemd's own timeouts apply), and a job hung for over 30 minutes no longer blocks a new one: on macOS
+  the new launch is then refused while launchd still runs the old job, on Linux `systemd-run` refuses the unit
+  name. (W75 closed the race where two requests at once could both start a job.)

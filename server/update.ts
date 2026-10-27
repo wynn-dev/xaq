@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { NPM_PACKAGE as PACKAGE, type SelfUpdateStatus } from "../shared/types.ts";
 import { AuditLog } from "./audit.ts";
@@ -14,6 +14,7 @@ import {
   isHealthResponse,
   isOwnInstall,
   LAUNCHD_LABEL,
+  launchdTarget,
   readText,
   ROOT,
   SERVICE_NAME,
@@ -31,6 +32,7 @@ import {
 } from "./service.ts";
 import { loopbackUrl } from "./urls.ts";
 import { errorMessage } from "./util/errors.ts";
+import { compareVersions } from "./util/semver.ts";
 
 /**
  * One-click update from the console (docs/adr/0002-console-self-update.md). The console asks; the app checks
@@ -38,15 +40,18 @@ import { errorMessage } from "./util/errors.ts";
  * job does the work: stage the new version with the supply-chain checks, stop the service, snapshot the
  * database, swap `app` for the new install (the current one becomes `app.old`), start, wait for /api/health
  * to answer with the new version, and put everything back when it doesn't. It writes `update/status.json`
- * as it goes, which the console polls.
+ * as it goes, which the console polls. One job at a time: the app takes `update/lock` for it and the job holds it
+ * until it ends.
  *
  * The job runs this module from the install it is about to move aside, so everything it needs is imported
  * statically here: after the swap, a lazy import would load the other version's files. Keep it that way.
  */
 
 export const UPDATE_UNIT: UnitId = { launchd: "sh.xaq.update", systemd: "xaq-update" };
-/** A `running` status older than this is a job that died: another one may start. */
+/** A lock older than this is a job that died (or hung): another one may start. */
 const STALE_MS = 30 * 60_000;
+/** Database snapshots kept in `update/snapshots/`, newest first: enough that an update's survives a go-back. */
+export const KEEP_SNAPSHOTS = 3;
 
 export interface UpdateJobRequest {
   dataDir: string;
@@ -76,18 +81,118 @@ export function writeUpdateStatus(dataDir: string, status: SelfUpdateStatus): vo
   renameSync(`${file}.tmp`, file);
 }
 
-/** The job running now, if any (a `running` status that isn't stale). */
-export function activeUpdate(dataDir: string, now = Date.now()): SelfUpdateStatus | null {
-  const status = readUpdateStatus(dataDir);
-  return status?.state === "running" && now - Date.parse(status.startedAt) < STALE_MS ? status : null;
+// ───────────── One job at a time ─────────────
+
+/** Who holds `update/lock`: the job's id, and the process to check (the app's until the job takes it over). */
+export interface UpdateLock {
+  id: string;
+  pid: number;
+  at: string;
 }
 
-/** The version in `<data>/app.old` when it is our install and not this version: what "go back" returns to. */
+export const updateLockPath = (dataDir: string) => join(updateDir(dataDir), "lock");
+
+export function readUpdateLock(dataDir: string, file = updateLockPath(dataDir)): UpdateLock | null {
+  try {
+    const lock = JSON.parse(readFileSync(file, "utf8")) as UpdateLock;
+    return typeof lock?.id === "string" && Number.isInteger(lock.pid) ? lock : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether a process is there (EPERM: it is, as another user). */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+/** A lock left by a job that died: its process is gone, or it is older than STALE_MS (a reused pid, a hung job). */
+export function staleLock(lock: UpdateLock, now = Date.now()): boolean {
+  const age = now - Date.parse(lock.at);
+  return !alive(lock.pid) || !(age < STALE_MS);
+}
+
+/** Writes the lock whole and links it into place: fails with EEXIST when there is one, so of two claims one wins. */
+function linkLock(file: string, lock: UpdateLock): boolean {
+  const tmp = `${file}.${lock.id}.${randomBytes(4).toString("hex")}`;
+  writeFileSync(tmp, JSON.stringify(lock), { mode: 0o600 });
+  try {
+    linkSync(tmp, file);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw err;
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+
+/**
+ * Takes the update lock for job `id`, or returns who holds it. A stale lock is moved aside and checked to
+ * still be the one found stale before it is dropped; a fresh one moved aside by a concurrent claim is put back.
+ */
+export function claimUpdateLock(dataDir: string, id: string, pid = process.pid, now = Date.now()): { ok: true } | { ok: false; holder: UpdateLock } {
+  mkdirSync(updateDir(dataDir), { recursive: true, mode: 0o700 });
+  const file = updateLockPath(dataDir);
+  const mine: UpdateLock = { id, pid, at: new Date(now).toISOString() };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (linkLock(file, mine)) return { ok: true };
+    const holder = readUpdateLock(dataDir);
+    if (holder && !staleLock(holder, now)) return { ok: false, holder };
+    if (!existsSync(file)) continue; // Released since.
+    // Stale, or not a lock at all.
+    const aside = `${file}.stale.${randomBytes(4).toString("hex")}`;
+    try {
+      renameSync(file, aside);
+    } catch {
+      continue; // Someone else moved it first.
+    }
+    const moved = readUpdateLock(dataDir, aside);
+    if (moved && (moved.id !== holder?.id || moved.at !== holder?.at)) {
+      // Not the stale one: another claim replaced it in between. Put it back and let it run.
+      try {
+        linkSync(aside, file);
+      } catch {
+        // A third claim got in; it holds the lock now.
+      }
+      rmSync(aside, { force: true });
+      return { ok: false, holder: moved };
+    }
+    rmSync(aside, { force: true });
+  }
+  const holder = readUpdateLock(dataDir);
+  return { ok: false, holder: holder ?? { id: "unknown", pid: 0, at: mine.at } };
+}
+
+/**
+ * The job takes over the lock the app took for it (same id), so the lock follows the job's own process once
+ * the app stops; a job started by hand claims it. Anyone else's lock that isn't stale wins.
+ */
+export function adoptUpdateLock(dataDir: string, id: string, pid = process.pid): { ok: true } | { ok: false; holder: UpdateLock } {
+  const file = updateLockPath(dataDir);
+  if (readUpdateLock(dataDir)?.id !== id) return claimUpdateLock(dataDir, id, pid);
+  const tmp = `${file}.${id}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ id, pid, at: new Date().toISOString() } satisfies UpdateLock), { mode: 0o600 });
+  renameSync(tmp, file);
+  return { ok: true };
+}
+
+/** Drops the lock if job `id` still holds it. */
+export function releaseUpdateLock(dataDir: string, id: string): void {
+  if (readUpdateLock(dataDir)?.id === id) rmSync(updateLockPath(dataDir), { force: true });
+}
+
+/** The version in `<data>/app.old` when it is our install and older than this one: what "go back" returns to. */
 export function previousVersion(dataDir: string, current: string): string | null {
   const old = join(dataDir, "app.old");
   if (!isOwnInstall(old) || !existsSync(installedEntry(old))) return null;
   const version = installedVersion(old);
-  return version && version !== current ? version : null;
+  return version && compareVersions(version, current) < 0 ? version : null;
 }
 
 /**
@@ -144,14 +249,26 @@ ${command.map((a) => `    <string>${esc(a)}</string>`).join("\n")}
 `;
 }
 
+/** Whether launchd runs the update job now. One that ended stays loaded (`state = not running`) until the next is bootstrapped. */
+export function launchdJobRunning(ops: Pick<ServiceOps, "capture" | "uid">): boolean {
+  try {
+    return /^\s*state = running\s*$/m.test(ops.capture("launchctl", ["print", `${launchdTarget(ops)}/${UPDATE_UNIT.launchd}`]));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Starts the update job outside the service, so stopping the service doesn't stop it: a transient systemd
- * unit (`systemd-run`, collected when it ends) or a launchd job. Throws when it couldn't be started.
+ * unit (`systemd-run`, collected when it ends) or a launchd job. Throws when it couldn't be started. The
+ * caller holds the update lock; on top of it, a launchd job still running is never replaced (bootstrapping
+ * the label again would tear it down mid-update), and systemd-run refuses a unit name that is still active.
  */
 export async function launchUpdateJob(ops: ServiceOps, req: UpdateJobRequest, execPath: string = process.execPath, env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const command = updateJobCommand(req, execPath);
   const path = jobPath(execPath, env);
   if (ops.platform === "darwin") {
+    if (launchdJobRunning(ops)) throw new Error(`launchd is still running the previous update job (${UPDATE_UNIT.launchd})`);
     const file = join(updateDir(req.dataDir), `${UPDATE_UNIT.launchd}.plist`);
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     writeFileSync(file, renderUpdatePlist(command, req.dataDir, path), { mode: 0o600 });
@@ -209,15 +326,31 @@ async function startDaemon(ops: ServiceOps): Promise<void> {
 
 const DB_SUFFIXES = ["", "-wal", "-shm"];
 
-/** Copies the database (with its WAL) while the service is stopped. Returns what restoreDatabase needs. */
-export function snapshotDatabase(dataDir: string): { db: string; dir: string } {
+export const snapshotsDir = (dataDir: string) => join(updateDir(dataDir), "snapshots");
+
+/** A job's snapshot folder: when it started (UTC), then what it did, e.g. `2026-10-27T101500.123Z-update-1.0.0-to-2.0.0`. */
+export function snapshotName(status: Pick<SelfUpdateStatus, "startedAt" | "kind" | "from" | "to">): string {
+  const safe = (v: string) => v.replace(/[^\w.+-]/g, "_");
+  return `${status.startedAt.replace(/:/g, "")}-${status.kind}-${safe(status.from)}-to-${safe(status.to)}`;
+}
+
+/**
+ * Copies the database (with its WAL) while the service is stopped, into `update/snapshots/<name>/`, then
+ * drops all but the newest KEEP_SNAPSHOTS, so the one from before an update outlives a go-back. Returns what
+ * restoreDatabase needs.
+ */
+export function snapshotDatabase(dataDir: string, name: string): { db: string; dir: string } {
   const db = dataFiles(dataDir).db;
-  const dir = join(updateDir(dataDir), "db-snapshot");
+  const root = snapshotsDir(dataDir);
+  const dir = join(root, name);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   for (const suffix of DB_SUFFIXES) {
     if (existsSync(db + suffix)) copyFileSync(db + suffix, join(dir, basename(db) + suffix));
   }
+  // Names start with the time, so they sort oldest first.
+  const older = readdirSync(root).filter((n) => n !== name).sort();
+  for (const old of older.slice(0, Math.max(0, older.length - (KEEP_SNAPSHOTS - 1)))) rmSync(join(root, old), { recursive: true, force: true });
   return { db, dir };
 }
 
@@ -253,7 +386,7 @@ export function swapBack(app: string, dataDir: string): { restore(): void } {
 }
 
 /** Records the job's outcome in the audit log (the service may be running: SQLite takes turns). */
-function auditOutcome(dataDir: string, status: SelfUpdateStatus, log: (line: string) => void): void {
+function auditOutcome(dataDir: string, status: SelfUpdateStatus, log: (line: string) => void, reason: string | null = status.state === "succeeded" ? null : status.state): void {
   try {
     const db = new Db(dataFiles(dataDir).db);
     try {
@@ -262,7 +395,7 @@ function auditOutcome(dataDir: string, status: SelfUpdateStatus, log: (line: str
         action: "system.update.result",
         target: status.to,
         outcome: status.state === "succeeded" ? "ok" : "error",
-        reason: status.state === "succeeded" ? null : status.state,
+        reason,
         detail: { id: status.id, kind: status.kind, from: status.from, to: status.to, message: status.message },
       });
     } finally {
@@ -275,7 +408,7 @@ function auditOutcome(dataDir: string, status: SelfUpdateStatus, log: (line: str
 
 /**
  * The update job (`xaq service update-run`). Never throws: every outcome ends up in the status file and the
- * audit log. A failure before the swap changes nothing; after it, the previous install and the database
+ * audit log, except a job refused because another one holds the lock, which leaves that one's status alone. A failure before the swap changes nothing; after it, the previous install and the database
  * snapshot are put back and the previous version is started again.
  */
 export async function runUpdateJob(req: UpdateJobRequest, deps: UpdateJobDeps = jobDeps()): Promise<SelfUpdateStatus> {
@@ -294,6 +427,7 @@ export async function runUpdateJob(req: UpdateJobRequest, deps: UpdateJobDeps = 
     set({ state, message, finishedAt: new Date().toISOString(), ...(state === "succeeded" ? { step: "done" as const } : {}) });
     log(`[${status.id}] ${state}${message ? `: ${message}` : ""}`);
     auditOutcome(dataDir, status, log);
+    releaseUpdateLock(dataDir, req.id);
     return status;
   };
   const quietly = async (fn: () => unknown) => {
@@ -303,6 +437,14 @@ export async function runUpdateJob(req: UpdateJobRequest, deps: UpdateJobDeps = 
       log(`  (${errorMessage(err)})`);
     }
   };
+  const lock = adoptUpdateLock(dataDir, req.id);
+  if (!lock.ok) {
+    // Another job runs: its status file and lock stay as they are.
+    status = { ...status, state: "failed", message: `Another update (${lock.holder.id}) is already running. Nothing was changed.`, finishedAt: new Date().toISOString() };
+    log(`[${status.id}] failed: ${status.message}`);
+    auditOutcome(dataDir, status, log, "in_progress");
+    return status;
+  }
   set({});
 
   const unit = readText(unitPath(ops, DAEMON_UNIT));
@@ -336,7 +478,7 @@ export async function runUpdateJob(req: UpdateJobRequest, deps: UpdateJobDeps = 
   set({ step: "snapshot" });
   let snapshot: ReturnType<typeof snapshotDatabase>;
   try {
-    snapshot = snapshotDatabase(dataDir);
+    snapshot = snapshotDatabase(dataDir, snapshotName(status));
   } catch (err) {
     return unchanged("Couldn't snapshot the database", err);
   }
@@ -357,7 +499,7 @@ export async function runUpdateJob(req: UpdateJobRequest, deps: UpdateJobDeps = 
   } catch (err) {
     failure = errorMessage(err);
   }
-  // Success keeps app.old (and the snapshot) for "go back".
+  // Success keeps app.old for "go back", and the snapshot (snapshotDatabase keeps the last few).
   if (!failure) return finish("succeeded", null);
 
   set({ step: "restoring" });
