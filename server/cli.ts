@@ -141,6 +141,20 @@ service
     uninstallService({ dataDir: resolveDataDir(o.data, { quiet: true }) });
   });
 
+// The console's update job (server/update.ts), started by the service as its own systemd unit or launchd job.
+service
+  .command("update-run", { hidden: true })
+  .requiredOption("-d, --data <dir>", "the service's data directory")
+  .requiredOption("--id <id>", "the update's id (the status file and audit entries carry it)")
+  .option("--to <version>", "the version to install")
+  .option("--back", "go back to the previous install (app.old)")
+  .action(async (o: { data: string; id: string; to?: string; back?: boolean }) => {
+    if (!o.back === !o.to) throw new Error("Give either --to or --back.");
+    const { runUpdateJob } = await import("./update.ts");
+    const status = await runUpdateJob({ dataDir: o.data, id: o.id, kind: o.back ? "rollback" : "update", version: o.to });
+    if (status.state !== "succeeded") process.exitCode = 1;
+  });
+
 service
   .command("status")
   .description("show service status, and check the Node.js it runs (code extensions need a recent one)")

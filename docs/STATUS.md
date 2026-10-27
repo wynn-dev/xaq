@@ -110,6 +110,12 @@ The merge train is idle.
 - #89: `npx xaq-cli smoke google-workspace --scratch`, the live end-to-end check, safe by construction.
 - #91: `service install` picks a Node that meets the code-extension floor (`--node`; `service status` flags a too-old one).
 
+**In review: one-click update from the console (W69, T662).** The service-mode **Update now** and **Go back** buttons,
+the update job (`server/update.ts`; staged install with shrinkwrap and `npm audit signatures` checks, a database
+snapshot, a swap, a health check and automatic rollback), and the shrinkwrap step in `nightly.yml`. Design:
+[ADR 0002](adr/0002-console-self-update.md). The publish step is unverified until the first nightly after the merge.
+Updating to a release from before it is refused (it has no shrinkwrap).
+
 **Waiting on Adri and Wynn:** Wynn connects Google Workspace on the Mac (enable the 4 APIs, then consent). Adri grants Hermes
 and runs the smoke command, then sends the PASS/FAIL table. Unverified against real Google: downscoped refresh, the
 `removeParents=root` move, and the link-shared Drive image via `webContentLink`.

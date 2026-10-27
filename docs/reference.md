@@ -481,6 +481,36 @@ to an empty value to remove it).
 
 When a newer version is published, the console shows **Update available** with the exact command to run.
 
+**Update now (service mode).** A service running from its own install in the data directory gets an **Update now**
+button in that dialog. It asks for the admin password again, then starts a separate one-shot job: the transient
+systemd unit `xaq-update`, or the launchd job `sh.xaq.update`. The job:
+
+1. installs the npm `latest` version into `<data>/app.new` with `--ignore-scripts`, and refuses unless the release's
+   `npm-shrinkwrap.json` pins exactly what was installed and `npm audit signatures` passes (nothing changes on a refusal);
+2. stops the service and copies the database to `<data>/update/db-snapshot/`;
+3. swaps the new install in (the current one becomes `<data>/app.old`) and starts the service;
+4. waits for `/api/health` to answer with the new version.
+
+If the new version doesn't come up, the job puts the previous install and the database snapshot back and starts the
+previous version again. The console polls until the new version answers, reloads, and shows the result, including any
+rollback. While a previous install is kept, the dialog also offers **Go back to `<version>`**, which runs the same job
+with that install and keeps the current database. Updates are never automatic and only ever go to npm `latest`.
+Extensions and listeners aren't updated. Foreground and source runs keep the command to run.
+
+- Progress: `<data>/update/status.json`. Logs: `journalctl --user -u xaq-update` (without `--user` for a system
+  service), or `<data>/update/update.log` on macOS.
+- Audit log: every request as `system.update` (wrong passwords as `denied`), and every outcome as
+  `system.update.result`.
+- The restart drops pending Google consents (start them again), in-flight MCP calls (agents retry), and the
+  in-memory list of handed-out tokens to scrub. Listener streams resume where they were.
+- The unit file isn't rewritten. Run `service install` when a release says it changed the unit.
+- Design: [ADR 0002](adr/0002-console-self-update.md).
+
+| Endpoint | What |
+|---|---|
+| `GET /api/system/update` | `{supported, reason, previous, status}`: whether this instance can update itself, the version in `app.old`, and the last job's status |
+| `POST /api/system/update` `{password, action: "update"\|"rollback", version?}` | Starts the job (202 with its status). `version` must be the current npm `latest`; 400 on a wrong password, 409 when refused |
+
 **Which Node.js the service runs.** `service install` records one Node.js binary in the unit or plist, and checks
 its version by running it (`<node> -p process.versions.node`, with only `PATH`, `HOME` and `LANG` in its
 environment: no `NODE_OPTIONS`, no `XAQ_MASTER_KEY`). While any code extension is installed in the data

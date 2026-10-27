@@ -173,6 +173,44 @@ export interface UpdateInfo {
   command: string;
 }
 
+/**
+ * The status file the update job writes (`<data>/update/status.json`, server/update.ts). `running` until the
+ * job ends; then `succeeded`, `failed` (refused or failed before anything changed), `rolled_back` (the
+ * new version didn't come up, the previous install and database are back) or `rollback_failed`.
+ */
+export interface SelfUpdateStatus {
+  id: string;
+  /** `update`: to the npm `latest` version; `rollback`: back to the previous install (app.old). */
+  kind: "update" | "rollback";
+  from: string;
+  to: string;
+  state: "running" | "succeeded" | "failed" | "rolled_back" | "rollback_failed";
+  /** The step running (or the last one reached). */
+  step: "starting" | "staging" | "stopping" | "snapshot" | "swapping" | "restarting" | "health" | "restoring" | "done";
+  /** What went wrong, for the console. */
+  message: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+/** GET /api/system/update: whether this instance can update itself from the console, and the last job's status. */
+export interface SelfUpdateInfo {
+  /** Only a service running from its own install (`<data>/app`) on systemd or launchd can. */
+  supported: boolean;
+  /** Why not, when it can't. */
+  reason: string | null;
+  /** The version kept in `<data>/app.old`, when it is older than this one (offered as "go back"). */
+  previous: string | null;
+  status: SelfUpdateStatus | null;
+}
+
+/** POST /api/system/update. `version` (for `update`) must be the npm `latest` the console showed. */
+export interface SelfUpdateRequest {
+  password: string;
+  action: "update" | "rollback";
+  version?: string;
+}
+
 /** Ordered setup checklist; the console's setup wizard and overview both render this. */
 export interface SetupState {
   /** True once an admin password exists. Before that, only /api/setup/claim with the setup token works. */

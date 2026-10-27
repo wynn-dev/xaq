@@ -1,13 +1,27 @@
 import { resolve } from "node:path";
 import type { Context } from "hono";
-import { type HealthResponse, type IngestStatus, NPM_PACKAGE, type SystemInfo, type UpdateInfo } from "../../shared/types.ts";
+import { z } from "zod";
+import {
+  type AuditOutcome,
+  type HealthResponse,
+  type IngestStatus,
+  NPM_PACKAGE,
+  type SelfUpdateInfo,
+  type SelfUpdateStatus,
+  type SystemInfo,
+  type UpdateInfo,
+} from "../../shared/types.ts";
+import { adminAuth, checkSecret, clientIp, lockedOut, MAX_PASSWORD_LENGTH, rejection } from "../auth/index.ts";
 import { type Config, DEFAULT_PORT, defaultDataDir } from "../config.ts";
 import type { AppContext } from "../context.ts";
+import { verifyPasswordAsync } from "../crypto.ts";
 import { serviceInstallCommand } from "../instance.ts";
+import { systemOps } from "../service.ts";
+import { activeUpdate, launchUpdateJob, newUpdateId, previousVersion, readUpdateStatus, selfUpdateSupport, type UpdateJobRequest, writeUpdateStatus } from "../update.ts";
 import { consoleUrls } from "../urls.ts";
-import { errorMessage } from "../util/errors.ts";
+import { conflict, errorMessage, HttpError } from "../util/errors.ts";
 import { setupState } from "./setup.ts";
-import { type AppEnv, router } from "./util.ts";
+import { ADMIN_ACTOR, type AppEnv, readBody, router } from "./util.ts";
 
 const DEFAULT_HOST = "0.0.0.0";
 const LATEST_TTL_MS = 30 * 60_000;
@@ -52,8 +66,29 @@ export function health(ctx: AppContext): HealthResponse {
   };
 }
 
-/** Authenticated: instance facts and the update notice. */
-export function systemApi(ctx: AppContext) {
+/** What the update routes need from the machine; tests fake it. */
+export interface SelfUpdateHost {
+  support(): { supported: boolean; reason: string | null };
+  /** The npm `latest` version (null when the check failed). */
+  latest(): Promise<string | null>;
+  /** Starts the update job (server/update.ts); throws when it couldn't. */
+  launch(req: UpdateJobRequest): Promise<void>;
+}
+
+export const selfUpdateHost = (ctx: AppContext): SelfUpdateHost => ({
+  support: () => selfUpdateSupport(ctx.config),
+  latest: () => latestVersion(ctx),
+  launch: (req) => launchUpdateJob(systemOps(), req),
+});
+
+const SelfUpdateBody = z.object({
+  password: z.string().min(1, "Password is required").max(MAX_PASSWORD_LENGTH),
+  action: z.enum(["update", "rollback"]),
+  version: z.string().max(100).optional(),
+});
+
+/** Authenticated: instance facts, the update notice, and the console's one-click update (service mode). */
+export function systemApi(ctx: AppContext, host: SelfUpdateHost = selfUpdateHost(ctx)) {
   return router()
     .get("/system", (c) => {
       let ingest: IngestStatus;
@@ -82,6 +117,85 @@ export function systemApi(ctx: AppContext) {
         updateAvailable: !!latest && compareVersions(latest, current) > 0,
         command: upgradeCommand(ctx.config),
       });
+    })
+    .get("/system/update", (c) => {
+      const { supported, reason } = host.support();
+      return c.json<SelfUpdateInfo>({
+        supported,
+        reason,
+        previous: supported ? previousVersion(ctx.config.dataDir, ctx.config.version) : null,
+        status: readUpdateStatus(ctx.config.dataDir),
+      });
+    })
+    // Admin session plus the password again; every attempt is audited (system.update), and the job audits
+    // its outcome (system.update.result).
+    .post("/system/update", async (c) => {
+      const ip = clientIp(c, ctx.config.trustProxy);
+      const { dataDir, version: current } = ctx.config;
+      const audit = (outcome: AuditOutcome, reason: string | null, detail: Record<string, unknown> = {}) =>
+        ctx.audit.record({ ...ADMIN_ACTOR, action: "system.update", outcome, reason, detail: { ip, ...detail } });
+      const banned = adminAuth(ctx).limiter.bannedMinutes(ip);
+      if (banned) {
+        audit("denied", "lockout");
+        return lockedOut(c, banned);
+      }
+      const body = await readBody(c, SelfUpdateBody);
+      const hash = ctx.settings.getState("admin.passwordHash");
+      const check = await checkSecret(ctx, ip, body.password, async () => !!hash && (await verifyPasswordAsync(body.password, hash)));
+      if (!check.ok) {
+        audit("denied", check.busy ? "busy" : check.nowBanned || check.lockedMinutes ? "lockout" : "bad_password", { action: body.action });
+        const rejected = rejection(c, check);
+        if (rejected) return rejected;
+        // 400, not 401: a wrong password here is a form error, not an expired session.
+        throw new HttpError(400, "invalid_password", "Wrong password");
+      }
+      const refuse = (reason: string, message: string, detail: Record<string, unknown> = {}): never => {
+        audit("denied", reason, { action: body.action, ...detail });
+        throw conflict(message);
+      };
+      const support = host.support();
+      if (!support.supported) refuse("unsupported", support.reason ?? "This instance can't update itself.");
+      const running = activeUpdate(dataDir);
+      if (running) refuse("in_progress", `An update to ${running.to} is already running.`, { running: running.id });
+
+      let to: string;
+      if (body.action === "update") {
+        // Only ever the npm `latest` the console showed, and only forward.
+        const latest = await host.latest();
+        if (!latest) refuse("no_latest", "Couldn't reach npm to check the latest version. Try again in a few minutes.");
+        if (body.version !== latest || compareVersions(latest!, current) <= 0) {
+          refuse("not_latest", `${body.version ?? "That version"} isn't the latest release newer than ${current}${latest ? ` (${latest} is)` : ""}. Reload and try again.`, { version: body.version ?? null });
+        }
+        to = latest!;
+      } else {
+        const previous = previousVersion(dataDir, current);
+        if (!previous) refuse("no_previous", "There is no previous install to go back to.");
+        to = previous!;
+      }
+
+      const status: SelfUpdateStatus = {
+        id: newUpdateId(),
+        kind: body.action,
+        from: current,
+        to,
+        state: "running",
+        step: "starting",
+        message: null,
+        startedAt: new Date().toISOString(),
+        finishedAt: null,
+      };
+      const detail = { action: body.action, id: status.id, from: current, to };
+      writeUpdateStatus(dataDir, status);
+      try {
+        await host.launch({ dataDir, id: status.id, kind: status.kind, version: to });
+      } catch (err) {
+        const message = `Couldn't start the update job: ${errorMessage(err)}`;
+        writeUpdateStatus(dataDir, { ...status, state: "failed", message, finishedAt: new Date().toISOString() });
+        audit("error", "launch_failed", { ...detail, message });
+        throw new HttpError(500, "update_failed", message);
+      }
+      audit("ok", null, detail);
+      return c.json<SelfUpdateStatus>(status, 202);
     });
 }
 

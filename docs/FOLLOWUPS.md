@@ -483,3 +483,23 @@ Known non-blocking issues from the onboarding sweep (fresh-persona walks p9–p1
 - `sync_now` on a cold start can exceed the host's 60 s; a cold load over a year of history is ~50 s.
 - Fixtures lack DST, workouts across midnight, two main sleeps in one cycle, and records edited between warm loads.
 - Tool descriptions and server instructions still mention "the dashboard" (kept verbatim for `tools/list` parity).
+
+## Console self-update (W69, T662)
+
+- **The shrinkwrap is npm's resolution, not pnpm's.** `scripts/shrinkwrap.mjs` resolves `package.json`'s ranges with
+  npm at publish time, so a release's `npm-shrinkwrap.json` can pin newer patch versions than `pnpm-lock.yaml`, which
+  CI tested. Either generate it from `pnpm-lock.yaml`, or run the tests against an `npm ci` of the shrinkwrap before
+  publishing.
+- **The publish step is unverified until the next nightly.** The steps were run locally: shrinkwrap, `npm pack`,
+  install the tarball with `--ignore-scripts`, the shrinkwrap check and `npm audit signatures` all passed. The real
+  publish (OIDC, provenance) hasn't run with it yet. Releases from before it have no shrinkwrap, so updating to them
+  is refused.
+- **The job doesn't rewrite the unit file.** A release that changes the unit (new environment variables, flags,
+  `OOMPolicy`…) still needs `service install`. The job could re-render the unit with the new version's CLI after
+  the swap.
+- **"Go back" keeps the current database.** Restoring the pre-update snapshot is manual
+  (`<data>/update/db-snapshot/`). If a migration ever stops being additive, "go back" has to restore the snapshot,
+  or refuse.
+- **Listeners aren't covered.** The console could show listeners that run an older version than the daemon.
+- **A job that dies mid-run** leaves `status.json` at `running`. Another update can start after 30 minutes. A stuck
+  stop or start isn't timed out by the job itself (systemd's own timeouts apply).

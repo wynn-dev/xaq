@@ -23,6 +23,7 @@
   },
   "files": [
     "dist",
+    "npm-shrinkwrap.json",
     "README.md",
     "LICENSE"
   ],
