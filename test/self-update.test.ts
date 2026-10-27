@@ -4,26 +4,33 @@
 // npm and the service manager are fakes.
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SelfUpdateHost } from "../server/api/system.ts";
 import { AuditLog } from "../server/audit.ts";
 import { createBus } from "../server/bus.ts";
 import { Db } from "../server/db/index.ts";
 import { installedVersion, type NpmRunner, type ServiceOps, shrinkwrapProblems, stagePackage } from "../server/service.ts";
 import {
-  activeUpdate,
+  adoptUpdateLock,
+  claimUpdateLock,
+  KEEP_SNAPSHOTS,
+  launchdJobRunning,
   launchUpdateJob,
   previousVersion,
+  readUpdateLock,
   readUpdateStatus,
+  releaseUpdateLock,
   renderUpdatePlist,
   runUpdateJob,
   selfUpdateSupport,
   type UpdateJobDeps,
   type UpdateJobRequest,
   updateJobCommand,
+  updateLockPath,
   waitForVersion,
   writeUpdateStatus,
 } from "../server/update.ts";
@@ -231,8 +238,8 @@ function jobWorld(opts: { current?: string; old?: string; answers?: string[]; st
 }
 
 /** The versions whose start left their row in the database. */
-const startedBy = (w: JobWorld) => {
-  const db = new Db(w.db);
+const startedBy = (w: JobWorld, file = w.db) => {
+  const db = new Db(file);
   try {
     return db.all<{ key: string }>("SELECT key FROM settings WHERE key LIKE 'test.started.%' ORDER BY key").map((r) => r.key.slice("test.started.".length));
   } finally {
@@ -247,6 +254,7 @@ const auditEntries = (w: JobWorld, action: string) => {
     db.close();
   }
 };
+const snapshots = (w: JobWorld) => readdirSync(join(w.dataDir, "update/snapshots")).sort();
 const req = (w: JobWorld, patch: Partial<UpdateJobRequest> = {}): UpdateJobRequest => ({ dataDir: w.dataDir, id: "abc123", kind: "update", version: "2.0.0", ...patch });
 
 describe("update job", () => {
@@ -260,7 +268,9 @@ describe("update job", () => {
     expect(w.calls).toEqual(["systemctl --user stop xaq", "systemctl --user start xaq"]);
     expect(w.asked).toEqual(["2.0.0"]);
     expect(startedBy(w)).toEqual(["2.0.0"]);
-    expect(existsSync(join(w.dataDir, "update/db-snapshot/xaq.db"))).toBe(true);
+    expect(snapshots(w)).toEqual([expect.stringMatching(/^\d{4}-\d\d-\d\dT\d{6}\.\d{3}Z-update-1\.0\.0-to-2\.0\.0$/)]);
+    expect(existsSync(join(w.dataDir, "update/snapshots", snapshots(w)[0]!, "xaq.db"))).toBe(true);
+    expect(readUpdateLock(w.dataDir)).toBeNull();
     const [entry] = auditEntries(w, "system.update.result");
     expect(entry).toMatchObject({ actorType: "system", outcome: "ok", target: "2.0.0", detail: { id: "abc123", kind: "update", from: "1.0.0", to: "2.0.0" } });
     expect(previousVersion(w.dataDir, "2.0.0")).toBe("1.0.0");
@@ -307,12 +317,62 @@ describe("update job", () => {
     expect(installedVersion(join(w.dataDir, "app"))).toBe("1.0.0");
     expect(installedVersion(join(w.dataDir, "app.old"))).toBe("2.0.0");
     // The newer install kept in app.old isn't offered as "go back".
-    expect(previousVersion(w.dataDir, "1.0.0")).toBe("2.0.0");
+    expect(previousVersion(w.dataDir, "1.0.0")).toBeNull();
+    expect(previousVersion(w.dataDir, "1.0.0-nightly.1")).toBeNull();
+    expect(previousVersion(w.dataDir, "2.0.1")).toBe("2.0.0");
 
     const failing = jobWorld({ current: "2.0.0", old: "1.0.0", answers: ["2.0.0"] });
     expect((await runUpdateJob(req(failing, { kind: "rollback", version: undefined }), failing.deps)).state).toBe("rolled_back");
     expect(installedVersion(join(failing.dataDir, "app"))).toBe("2.0.0");
     expect(installedVersion(join(failing.dataDir, "app.old"))).toBe("1.0.0");
+  });
+
+  it("keeps the database from before an update through a go-back, and only the last few snapshots", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const w = jobWorld({ answers: ["2.0.0", "1.0.0"] });
+      const at = (time: string, patch: Partial<UpdateJobRequest> = {}) => {
+        vi.setSystemTime(new Date(`2026-10-27T${time}Z`));
+        return runUpdateJob(req(w, patch), w.deps);
+      };
+      const back = { kind: "rollback" as const, version: undefined };
+      expect((await at("10:00:00")).state).toBe("succeeded");
+      expect((await at("11:00:00", { id: "def456", ...back })).state).toBe("succeeded");
+      expect(snapshots(w)).toEqual(["2026-10-27T100000.000Z-update-1.0.0-to-2.0.0", "2026-10-27T110000.000Z-rollback-2.0.0-to-1.0.0"]);
+      // The update's snapshot is the database before 2.0.0 ever started; the go-back's has 2.0.0's changes.
+      const db = (name: string) => join(w.dataDir, "update/snapshots", name, "xaq.db");
+      expect(startedBy(w, db(snapshots(w)[0]!))).toEqual([]);
+      expect(startedBy(w, db(snapshots(w)[1]!))).toEqual(["2.0.0"]);
+
+      expect((await at("12:00:00", { id: "ghi789" })).state).toBe("succeeded");
+      expect((await at("13:00:00", { id: "jkl012", ...back })).state).toBe("succeeded");
+      expect(snapshots(w)).toHaveLength(KEEP_SNAPSHOTS);
+      expect(snapshots(w)[0]).toMatch(/^2026-10-27T110000/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("holds the lock the app took for it until it ends, and never runs next to another job", async () => {
+    const w = jobWorld({ answers: ["2.0.0"] });
+    const other: SelfUpdateStatus = { id: "other1", kind: "update", from: "1.0.0", to: "2.0.0", state: "running", step: "staging", message: null, startedAt: new Date().toISOString(), finishedAt: null };
+    writeUpdateStatus(w.dataDir, other);
+    expect(claimUpdateLock(w.dataDir, "other1").ok).toBe(true);
+    const refused = await runUpdateJob(req(w), w.deps);
+    expect(refused).toMatchObject({ state: "failed", message: expect.stringMatching(/Another update \(other1\) is already running/) });
+    expect(w.calls).toEqual([]);
+    expect(readUpdateStatus(w.dataDir)).toEqual(other);
+    expect(readUpdateLock(w.dataDir)?.id).toBe("other1");
+    expect(auditEntries(w, "system.update.result")[0]).toMatchObject({ outcome: "error", reason: "in_progress", detail: { id: "abc123" } });
+
+    releaseUpdateLock(w.dataDir, "other1");
+    expect(claimUpdateLock(w.dataDir, "abc123").ok).toBe(true);
+    const held: (string | undefined)[] = [];
+    const stage = w.deps.stage;
+    w.deps.stage = (dir, version) => (held.push(readUpdateLock(w.dataDir)?.id), stage(dir, version));
+    expect((await runUpdateJob(req(w), w.deps)).state).toBe("succeeded");
+    expect(held).toEqual(["abc123"]);
+    expect(readUpdateLock(w.dataDir)).toBeNull();
   });
 
   it("refuses to go back without a previous install", async () => {
@@ -378,6 +438,24 @@ describe("starting the job", () => {
     expect(plist).toContain("<string>/d&amp;x/cli.js</string>");
     expect(plist).toContain("<string>/Users/me/.xaq/update/update.log</string>");
     expect(plist).not.toContain("KeepAlive");
+  });
+
+  it("on macOS, never replaces an update job launchd still runs", async () => {
+    const calls: string[] = [];
+    let state = "running";
+    const ops = {
+      platform: "darwin",
+      root: false,
+      uid: 501,
+      exec: (cmd: string, args: string[]) => void calls.push(`${cmd} ${args[0]}`),
+      capture: (cmd: string, args: string[]) => (calls.push(`${cmd} ${args[0]}`), args[0] === "print" ? `gui/501/sh.xaq.update = {\n\tstate = ${state}\n}\n` : ""),
+    } as unknown as ServiceOps;
+    const job = { dataDir: tempDir(), id: "abc", kind: "update" as const, version: "2.0.0" };
+    await expect(launchUpdateJob(ops, job, "/n", {})).rejects.toThrow(/still running the previous update job/);
+    expect(calls).toEqual(["launchctl print"]);
+    // One that ended stays loaded as "not running": replacing it is fine.
+    state = "not running";
+    expect(launchdJobRunning(ops)).toBe(false);
   });
 
   it("is only offered to a service running from its own install", () => {
@@ -465,6 +543,43 @@ describe("POST /api/system/update", () => {
     expect(info).toMatchObject({ supported: true, previous: null, status: { id: status.id, state: "running" } });
   });
 
+  it("starts exactly one job for two requests at once, and audits the other", async () => {
+    const launched: UpdateJobRequest[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { host } = fakeHost({ launch: async (r) => (launched.push(r), gate) });
+    h = harness({}, { selfUpdate: host });
+    const cookie = await h.claim();
+    writeInstall(join(h.ctx.config.dataDir, "app.old"), "0.0.0-older");
+    const requests = [post(cookie, { password: PASSWORD, action: "update", version: "9.9.9" }), post(cookie, { password: PASSWORD, action: "rollback" })];
+    // One is still starting its job when the other is turned away.
+    const refused = await Promise.race(requests);
+    expect(refused.status).toBe(409);
+    expect((await json(refused)).error.message).toMatch(/(An update to 9\.9\.9|Going back to 0\.0\.0-older) is already running/);
+    release();
+    expect((await Promise.all(requests)).map((r) => r.status).sort()).toEqual([202, 409]);
+    expect(launched).toHaveLength(1);
+    const audited = updates();
+    expect(audited.map((e) => e.outcome).sort()).toEqual(["denied", "ok"]);
+    expect(audited.find((e) => e.outcome === "denied")).toMatchObject({ reason: "in_progress", detail: { running: launched[0]!.id } });
+    expect(readUpdateLock(h.ctx.config.dataDir)?.id).toBe(launched[0]!.id);
+  });
+
+  it("audits an empty password and a malformed request as denied", async () => {
+    const { host, launched } = fakeHost();
+    h = harness({}, { selfUpdate: host });
+    const cookie = await h.claim();
+    expect((await post(cookie, { password: "", action: "update", version: "9.9.9" })).status).toBe(400);
+    expect(updates()[0]).toMatchObject({ outcome: "denied", reason: "invalid_request", detail: { error: expect.stringMatching(/Password is required/) } });
+    expect((await post(cookie, { password: PASSWORD, action: "reinstall" })).status).toBe(400);
+    expect(updates()[0]).toMatchObject({ outcome: "denied", reason: "invalid_request" });
+    const garbled = await h.request("/api/system/update", { method: "POST", headers: { ...CSRF, "content-type": "application/json" }, cookie, body: "{not json" });
+    expect(garbled.status).toBe(400);
+    expect(updates()[0]).toMatchObject({ outcome: "denied", reason: "invalid_request", detail: { error: expect.stringMatching(/valid JSON/) } });
+    expect(updates()).toHaveLength(3);
+    expect(launched).toEqual([]);
+  });
+
   it("refuses (and audits) a foreground run, a version that isn't the latest, and going back with nothing kept", async () => {
     const unsupported = fakeHost({ support: () => ({ supported: false, reason: "xaq runs in a terminal, not as a service, so it can't update itself." }) });
     h = harness({}, { selfUpdate: unsupported.host });
@@ -486,6 +601,9 @@ describe("POST /api/system/update", () => {
     expect(res.status).toBe(409);
     expect(updates()[0]).toMatchObject({ outcome: "denied", reason: "no_previous" });
     expect(launched).toEqual([]);
+    // A refusal leaves no lock behind.
+    expect(readUpdateLock(h.ctx.config.dataDir)).toBeNull();
+    expect((await post(cookie, { password: PASSWORD, action: "update", version: "9.9.9" })).status).toBe(202);
   });
 
   it("goes back to the kept install", async () => {
@@ -497,6 +615,18 @@ describe("POST /api/system/update", () => {
     const res = await post(cookie, { password: PASSWORD, action: "rollback" });
     expect(res.status).toBe(202);
     expect(launched[0]).toMatchObject({ kind: "rollback", version: "0.0.0-older" });
+  });
+
+  it("never offers going back to a newer install (app.old after a go-back)", async () => {
+    const { host, launched } = fakeHost();
+    h = harness({}, { selfUpdate: host });
+    const cookie = await h.claim();
+    writeInstall(join(h.ctx.config.dataDir, "app.old"), "0.0.1");
+    expect((await json(await h.request("/api/system/update", { cookie }))).previous).toBeNull();
+    const res = await post(cookie, { password: PASSWORD, action: "rollback" });
+    expect(res.status).toBe(409);
+    expect(updates()[0]).toMatchObject({ outcome: "denied", reason: "no_previous" });
+    expect(launched).toEqual([]);
   });
 
   it("records a job that couldn't start as failed", async () => {
@@ -511,18 +641,46 @@ describe("POST /api/system/update", () => {
     expect(res.status).toBe(500);
     expect(readUpdateStatus(h.ctx.config.dataDir)).toMatchObject({ state: "failed", message: expect.stringMatching(/Failed to connect to bus/) });
     expect(updates()[0]).toMatchObject({ outcome: "error", reason: "launch_failed" });
-    expect(activeUpdate(h.ctx.config.dataDir)).toBeNull();
+    expect(readUpdateLock(h.ctx.config.dataDir)).toBeNull();
   });
 });
 
-describe("status file", () => {
-  it("treats a running status older than 30 minutes as a dead job", () => {
+describe("the update lock", () => {
+  const deadPid = () => spawnSync(process.execPath, ["-e", ""]).pid!;
+
+  it("goes to exactly one of two claims, until its holder releases it", () => {
     const dataDir = tempDir();
-    const status: SelfUpdateStatus = { id: "a", kind: "update", from: "1", to: "2", state: "running", step: "staging", message: null, startedAt: new Date(0).toISOString(), finishedAt: null };
-    writeUpdateStatus(dataDir, status);
-    expect(activeUpdate(dataDir, 10 * 60_000)).toEqual(status);
-    expect(activeUpdate(dataDir, 31 * 60_000)).toBeNull();
-    expect(readFileSync(join(dataDir, "update/status.json"), "utf8")).toContain('"state": "running"');
+    expect(claimUpdateLock(dataDir, "a")).toEqual({ ok: true });
+    expect(claimUpdateLock(dataDir, "b")).toMatchObject({ ok: false, holder: { id: "a", pid: process.pid } });
+    releaseUpdateLock(dataDir, "b");
+    expect(readUpdateLock(dataDir)?.id).toBe("a");
+    releaseUpdateLock(dataDir, "a");
+    expect(claimUpdateLock(dataDir, "b")).toEqual({ ok: true });
+    expect(readdirSync(join(dataDir, "update"))).toEqual(["lock"]);
+  });
+
+  it("is taken over when its job died, hung for 30 minutes, or it isn't a lock", () => {
+    const dataDir = tempDir();
+    expect(claimUpdateLock(dataDir, "crashed", deadPid()).ok).toBe(true);
+    expect(claimUpdateLock(dataDir, "next")).toEqual({ ok: true });
+    expect(claimUpdateLock(dataDir, "later", process.pid, Date.now() + 10 * 60_000).ok).toBe(false);
+    expect(claimUpdateLock(dataDir, "later", process.pid, Date.now() + 31 * 60_000)).toEqual({ ok: true });
+    writeFileSync(updateLockPath(dataDir), "{");
+    expect(claimUpdateLock(dataDir, "fresh")).toEqual({ ok: true });
+    expect(readdirSync(join(dataDir, "update"))).toEqual(["lock"]);
+  });
+
+  it("follows the job: it takes over the app's lock for its id, and claims one when run by hand", () => {
+    const dataDir = tempDir();
+    expect(claimUpdateLock(dataDir, "job1").ok).toBe(true);
+    const gone = deadPid();
+    expect(adoptUpdateLock(dataDir, "job1", gone)).toEqual({ ok: true });
+    expect(readUpdateLock(dataDir)).toMatchObject({ id: "job1", pid: gone });
+    // Once that process is gone, the lock is stale.
+    expect(adoptUpdateLock(dataDir, "job2").ok).toBe(true);
+    expect(adoptUpdateLock(dataDir, "job3")).toMatchObject({ ok: false, holder: { id: "job2" } });
+    releaseUpdateLock(dataDir, "job2");
+    expect(adoptUpdateLock(dataDir, "job3")).toEqual({ ok: true });
   });
 });
 

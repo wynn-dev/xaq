@@ -487,19 +487,22 @@ systemd unit `xaq-update`, or the launchd job `sh.xaq.update`. The job:
 
 1. installs the npm `latest` version into `<data>/app.new` with `--ignore-scripts`, and refuses unless the release's
    `npm-shrinkwrap.json` pins exactly what was installed and `npm audit signatures` passes (nothing changes on a refusal);
-2. stops the service and copies the database to `<data>/update/db-snapshot/`;
+2. stops the service and copies the database to a folder of its own under `<data>/update/snapshots/` (named by
+   when it started and the versions; the newest 3 are kept, so the one from before an update survives a go-back);
 3. swaps the new install in (the current one becomes `<data>/app.old`) and starts the service;
 4. waits for `/api/health` to answer with the new version.
 
 If the new version doesn't come up, the job puts the previous install and the database snapshot back and starts the
 previous version again. The console polls until the new version answers, reloads, and shows the result, including any
-rollback. While a previous install is kept, the dialog also offers **Go back to `<version>`**, which runs the same job
-with that install and keeps the current database. Updates are never automatic and only ever go to npm `latest`.
+rollback. While an older install is kept, the dialog also offers **Go back to `<version>`**, which runs the same job
+with that install and keeps the current database. One job runs at a time: a second request while one runs is refused
+with "already running". Updates are never automatic and only ever go to npm `latest`.
 Extensions and listeners aren't updated. Foreground and source runs keep the command to run.
 
-- Progress: `<data>/update/status.json`. Logs: `journalctl --user -u xaq-update` (without `--user` for a system
+- Progress: `<data>/update/status.json`; `<data>/update/lock` while a job runs. Logs: `journalctl --user -u xaq-update` (without `--user` for a system
   service), or `<data>/update/update.log` on macOS.
-- Audit log: every request as `system.update` (wrong passwords as `denied`), and every outcome as
+- Audit log: every request as `system.update` (wrong or empty passwords, malformed requests and a job already
+  running as `denied`), and every outcome as
   `system.update.result`.
 - The restart drops pending Google consents (start them again), in-flight MCP calls (agents retry), and the
   in-memory list of handed-out tokens to scrub. Listener streams resume where they were.

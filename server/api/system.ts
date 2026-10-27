@@ -17,9 +17,20 @@ import type { AppContext } from "../context.ts";
 import { verifyPasswordAsync } from "../crypto.ts";
 import { serviceInstallCommand } from "../instance.ts";
 import { systemOps } from "../service.ts";
-import { activeUpdate, launchUpdateJob, newUpdateId, previousVersion, readUpdateStatus, selfUpdateSupport, type UpdateJobRequest, writeUpdateStatus } from "../update.ts";
+import {
+  claimUpdateLock,
+  launchUpdateJob,
+  newUpdateId,
+  previousVersion,
+  readUpdateStatus,
+  releaseUpdateLock,
+  selfUpdateSupport,
+  type UpdateJobRequest,
+  writeUpdateStatus,
+} from "../update.ts";
 import { consoleUrls } from "../urls.ts";
 import { conflict, errorMessage, HttpError } from "../util/errors.ts";
+import { compareVersions } from "../util/semver.ts";
 import { setupState } from "./setup.ts";
 import { ADMIN_ACTOR, type AppEnv, readBody, router } from "./util.ts";
 
@@ -128,7 +139,7 @@ export function systemApi(ctx: AppContext, host: SelfUpdateHost = selfUpdateHost
       });
     })
     // Admin session plus the password again; every attempt is audited (system.update), and the job audits
-    // its outcome (system.update.result).
+    // its outcome (system.update.result). One job at a time: the update lock is taken here and the job keeps it.
     .post("/system/update", async (c) => {
       const ip = clientIp(c, ctx.config.trustProxy);
       const { dataDir, version: current } = ctx.config;
@@ -139,7 +150,14 @@ export function systemApi(ctx: AppContext, host: SelfUpdateHost = selfUpdateHost
         audit("denied", "lockout");
         return lockedOut(c, banned);
       }
-      const body = await readBody(c, SelfUpdateBody);
+      let body: z.infer<typeof SelfUpdateBody>;
+      try {
+        body = await readBody(c, SelfUpdateBody);
+      } catch (err) {
+        // A missing password or a malformed body is still an attempt.
+        audit("denied", "invalid_request", { error: errorMessage(err) });
+        throw err;
+      }
       const hash = ctx.settings.getState("admin.passwordHash");
       const check = await checkSecret(ctx, ip, body.password, async () => !!hash && (await verifyPasswordAsync(body.password, hash)));
       if (!check.ok) {
@@ -155,46 +173,48 @@ export function systemApi(ctx: AppContext, host: SelfUpdateHost = selfUpdateHost
       };
       const support = host.support();
       if (!support.supported) refuse("unsupported", support.reason ?? "This instance can't update itself.");
-      const running = activeUpdate(dataDir);
-      if (running) refuse("in_progress", `An update to ${running.to} is already running.`, { running: running.id });
-
-      let to: string;
-      if (body.action === "update") {
-        // Only ever the npm `latest` the console showed, and only forward.
-        const latest = await host.latest();
-        if (!latest) refuse("no_latest", "Couldn't reach npm to check the latest version. Try again in a few minutes.");
-        if (body.version !== latest || compareVersions(latest!, current) <= 0) {
-          refuse("not_latest", `${body.version ?? "That version"} isn't the latest release newer than ${current}${latest ? ` (${latest} is)` : ""}. Reload and try again.`, { version: body.version ?? null });
-        }
-        to = latest!;
-      } else {
-        const previous = previousVersion(dataDir, current);
-        if (!previous) refuse("no_previous", "There is no previous install to go back to.");
-        to = previous!;
+      const id = newUpdateId();
+      const lock = claimUpdateLock(dataDir, id);
+      if (!lock.ok) {
+        const running = readUpdateStatus(dataDir);
+        const what = running?.id === lock.holder.id && running.state === "running" ? (running.kind === "update" ? `An update to ${running.to}` : `Going back to ${running.to}`) : "An update";
+        refuse("in_progress", `${what} is already running. Wait for it to finish.`, { running: lock.holder.id });
       }
 
-      const status: SelfUpdateStatus = {
-        id: newUpdateId(),
-        kind: body.action,
-        from: current,
-        to,
-        state: "running",
-        step: "starting",
-        message: null,
-        startedAt: new Date().toISOString(),
-        finishedAt: null,
-      };
-      const detail = { action: body.action, id: status.id, from: current, to };
-      writeUpdateStatus(dataDir, status);
+      let status: SelfUpdateStatus;
       try {
-        await host.launch({ dataDir, id: status.id, kind: status.kind, version: to });
+        let to: string;
+        if (body.action === "update") {
+          // Only ever the npm `latest` the console showed, and only forward.
+          const latest = await host.latest();
+          if (!latest) refuse("no_latest", "Couldn't reach npm to check the latest version. Try again in a few minutes.");
+          if (body.version !== latest || compareVersions(latest!, current) <= 0) {
+            refuse("not_latest", `${body.version ?? "That version"} isn't the latest release newer than ${current}${latest ? ` (${latest} is)` : ""}. Reload and try again.`, { version: body.version ?? null });
+          }
+          to = latest!;
+        } else {
+          const previous = previousVersion(dataDir, current);
+          if (!previous) refuse("no_previous", "There is no older install to go back to.");
+          to = previous!;
+        }
+
+        status = { id, kind: body.action, from: current, to, state: "running", step: "starting", message: null, startedAt: new Date().toISOString(), finishedAt: null };
+        const detail = { action: body.action, id, from: current, to };
+        writeUpdateStatus(dataDir, status);
+        try {
+          await host.launch({ dataDir, id, kind: status.kind, version: to });
+        } catch (err) {
+          const message = `Couldn't start the update job: ${errorMessage(err)}`;
+          writeUpdateStatus(dataDir, { ...status, state: "failed", message, finishedAt: new Date().toISOString() });
+          audit("error", "launch_failed", { ...detail, message });
+          throw new HttpError(500, "update_failed", message);
+        }
       } catch (err) {
-        const message = `Couldn't start the update job: ${errorMessage(err)}`;
-        writeUpdateStatus(dataDir, { ...status, state: "failed", message, finishedAt: new Date().toISOString() });
-        audit("error", "launch_failed", { ...detail, message });
-        throw new HttpError(500, "update_failed", message);
+        // Refused or not started: no job will release it.
+        releaseUpdateLock(dataDir, id);
+        throw err;
       }
-      audit("ok", null, detail);
+      audit("ok", null, { action: body.action, id, from: current, to: status.to });
       return c.json<SelfUpdateStatus>(status, 202);
     });
 }
@@ -217,44 +237,6 @@ async function latestVersion(ctx: AppContext): Promise<string | null> {
   latestCache = { at: Date.now(), version };
   return version;
 }
-
-/**
- * Semver precedence: numeric core, then a pre-release sorts before its release, and pre-release
- * identifiers compare numerically when both are numbers ("nightly.10" > "nightly.9").
- */
-export function compareVersions(a: string, b: string): number {
-  const parse = (v: string) => {
-    const clean = v.trim().replace(/^v/, "").split("+")[0]!;
-    const dash = clean.indexOf("-");
-    const core = dash === -1 ? clean : clean.slice(0, dash);
-    return { parts: core.split(".").map((n) => Number.parseInt(n, 10) || 0), pre: dash === -1 ? null : clean.slice(dash + 1).split(".") };
-  };
-  const x = parse(a);
-  const y = parse(b);
-  for (let i = 0; i < Math.max(x.parts.length, y.parts.length); i++) {
-    const d = (x.parts[i] ?? 0) - (y.parts[i] ?? 0);
-    if (d) return Math.sign(d);
-  }
-  if (!x.pre || !y.pre) return x.pre === y.pre ? 0 : x.pre ? -1 : 1;
-  for (let i = 0; i < Math.max(x.pre.length, y.pre.length); i++) {
-    const p = x.pre[i];
-    const q = y.pre[i];
-    if (p === undefined) return -1;
-    if (q === undefined) return 1;
-    const pn = /^\d+$/.test(p);
-    const qn = /^\d+$/.test(q);
-    if (pn && qn) {
-      const d = Number(p) - Number(q);
-      if (d) return Math.sign(d);
-    } else if (pn !== qn) {
-      return pn ? -1 : 1;
-    } else if (p !== q) {
-      return p < q ? -1 : 1;
-    }
-  }
-  return 0;
-}
-
 
 /** Runs, or reinstalls as a service, the latest version with this instance's options. */
 export function upgradeCommand(config: Pick<Config, "service" | "dataDir" | "port" | "host" | "trustProxy">, env: NodeJS.ProcessEnv = process.env): string {
