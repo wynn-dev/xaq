@@ -19,9 +19,8 @@ import {
   type MimeTools,
   type ParsedMessage,
 } from "../server/google/types.ts";
-import type { IngestService } from "../server/ingest/types.ts";
+import type { IngestService } from "../server/ingest/index.ts";
 import { buildMcpServer } from "../server/mcp/server.ts";
-import { stubService } from "../server/util/stub.ts";
 import { testContext } from "./helpers.ts";
 
 export interface FakeMessage {
@@ -312,8 +311,7 @@ export class FakeGoogle {
   }
 
   service(): GoogleService {
-    const stub = stubService<GoogleService>("google");
-    return new Proxy(stub, {
+    return new Proxy({} as GoogleService, {
       get: (target, prop) => {
         if (prop === "mime") return this.mime;
         if (prop === "gmail") return (id: string) => this.gmail(id);
@@ -401,15 +399,15 @@ export class FakeEvents {
       const result: FeedResult & { hasMore: boolean } = { events, cursor: events.at(-1)?.seq ?? after, ackedSeq, hasMore: false };
       return result;
     };
-    return {
-      ...stubService<EventsService>("events"),
+    const service: Pick<EventsService, "feed" | "wait" | "ack"> = {
       feed,
       wait: async (agentId, opts) => feed(agentId, opts),
       ack: (agentId, seq) => {
         this.acked.set(agentId, seq);
         return { ackedSeq: seq };
       },
-    } as EventsService;
+    };
+    return service as EventsService;
   }
 }
 
@@ -436,7 +434,7 @@ export function mailTestContext() {
     google: () => google.service(),
     accounts: (ctx) => fakeAccounts(ctx),
     events: (ctx) => events.service(ctx),
-    ingest: () => ({ ...stubService<IngestService>("ingest"), kick: (id?: string) => void kicks.push(id) }) as IngestService,
+    ingest: () => ({ kick: (id?: string) => void kicks.push(id) }) as unknown as IngestService,
   });
   const { ctx } = t;
   const addAccount = (id: string, email: string, status: Account["status"] = "active") => {

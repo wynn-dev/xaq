@@ -4,7 +4,7 @@ import type { AppContext } from "../context.ts";
 import { json } from "../db/index.ts";
 import { type AccountRow, accountScopes, allRows } from "./accounts.ts";
 import { clientWarnings, redirectWarning } from "./client.ts";
-import { CALENDAR_SCOPES, describeScopes, missingScopes } from "./scopes.ts";
+import { CALENDAR_SCOPES, describeScopes, missingScopes } from "../../shared/google-scopes.ts";
 
 type Ctx = Pick<AppContext, "db" | "settings" | "config" | "crypto">;
 

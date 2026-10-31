@@ -6,7 +6,8 @@ import { z } from "zod";
 import type { ExtensionErrorBody, ExtensionRegistryEntryView, ExtensionResolveResult, ExtensionUpdateResult, ExtensionView } from "../../shared/extensions.ts";
 import type { AppContext } from "../context.ts";
 import { INTEGRITY_RE } from "../extensions/integrity.ts";
-import { ExtensionError, type ExtensionErrorCode, extensionStore, type InstalledExtension, manifestFacts, thirdPartyWarning } from "../extensions/store.ts";
+import { ExtensionError, type ExtensionErrorCode } from "../extensions/sources.ts";
+import { extensionStore, type InstalledExtension, manifestFacts, thirdPartyWarning } from "../extensions/store.ts";
 import { notFound } from "../util/errors.ts";
 import { ADMIN_ACTOR, type AppEnv, readBody, router } from "./util.ts";
 

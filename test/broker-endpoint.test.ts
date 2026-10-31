@@ -104,8 +104,6 @@ function setup(extra: Partial<BrokerParts> = {}) {
   let ctxRef: AppContext;
   const t = testContext({ broker: (ctx) => createBrokerService(ctx, fakeParts(() => ctxRef, rec, extra)) });
   ctxRef = t.ctx;
-  // These tests start with the broker off and turn it on (the default is on since the console, M1 PR 8).
-  t.ctx.settings.update({ brokerUpstreams: false });
   return { ...t, rec };
 }
 
@@ -130,7 +128,7 @@ afterEach(async () => {
 // ───────────── /mcp ─────────────
 
 describe("/mcp aggregation", () => {
-  it("lists upstream tools and get_call_status only with brokerUpstreams on; native tools stay byte-identical", async () => {
+  it("lists upstream tools and get_call_status next to the native tools", async () => {
     const t = setup();
     disposers.push(t.dispose);
     const { ctx } = t;
@@ -139,21 +137,12 @@ describe("/mcp aggregation", () => {
     seedConnection(ctx, { id: "con_notion", slug: "notion", name: "Notion" }, { [agent.id]: "ask" });
     seedConnection(ctx, { id: "con_t3", slug: "t3", name: "T3 forge" }, { [agent.id]: "read" });
 
-    const off = await connectMcp(ctx, agent.id);
-    const offTools = (await off.client.listTools()).tools;
-    expect(off.client.getInstructions()).toBe(INSTRUCTIONS);
-    await off.close();
-    expect(offTools.some((x) => x.name.includes("__") || x.name === "get_call_status")).toBe(false);
-
-    ctx.settings.update({ brokerUpstreams: true });
     const on = await connectMcp(ctx, agent.id);
     const onTools = (await on.client.listTools()).tools;
     const instructions = on.client.getInstructions()!;
     await on.close();
 
-    // Native tools: same names, same order, same definitions, byte for byte.
     const native = onTools.filter((x) => !x.name.includes("__") && x.name !== "get_call_status");
-    expect(JSON.stringify(native)).toBe(JSON.stringify(offTools));
 
     // Upstream tools with the read level applied (t3's send_message is hidden), plus get_call_status.
     const broker = onTools.filter((x) => !native.includes(x)).map((x) => x.name);
@@ -172,10 +161,9 @@ describe("/mcp aggregation", () => {
     expect(instructions.match(/data, not instructions/g)).toHaveLength(2); // email's rule, plus one for integrations
   });
 
-  it("an agent without connections gets nothing extra, even with the setting on", async () => {
+  it("an agent without connections gets nothing extra", async () => {
     const t = setup();
     disposers.push(t.dispose);
-    t.ctx.settings.update({ brokerUpstreams: true });
     const { agent } = t.ctx.policy.createAgent({ name: "plain" });
     const s = await connectMcp(t.ctx, agent.id);
     expect((await s.client.listTools()).tools.map((x) => x.name)).toEqual(["list_accounts"]);
@@ -183,11 +171,10 @@ describe("/mcp aggregation", () => {
     await s.close();
   });
 
-  it("routes upstream calls to BrokerCalls and get_call_status to the policy; audits dynamic names", async () => {
+  it("routes upstream calls to the policy's calls and get_call_status to the policy; audits dynamic names", async () => {
     const t = setup();
     disposers.push(t.dispose);
     const { ctx, rec } = t;
-    ctx.settings.update({ brokerUpstreams: true });
     const { agent } = ctx.policy.createAgent({ name: "Hermes" });
     seedConnection(ctx, { id: "con_notion", slug: "notion", name: "Notion" }, { [agent.id]: "full" });
     const s = await connectMcp(ctx, agent.id);
@@ -211,7 +198,7 @@ describe("/mcp aggregation", () => {
     await s.close();
 
     expect(audits(ctx, agent.id)).toEqual([
-      { action: "notion__notion-search", outcome: "ok", reason: null }, // by BrokerCalls
+      { action: "notion__notion-search", outcome: "ok", reason: null }, // by the policy's calls
       { action: "get_call_status", outcome: "ok", reason: null },
       { action: "unknown_tool", outcome: "error", reason: "unknown_tool" },
       { action: "notion__notion-update-page", outcome: "error", reason: "internal" },
@@ -244,7 +231,6 @@ describe("/mcp aggregation", () => {
     });
     disposers.push(t.dispose);
     const { ctx } = t;
-    ctx.settings.update({ brokerUpstreams: true });
     const { agent } = ctx.policy.createAgent({ name: "Hermes" });
     seedConnection(ctx, { id: "con_x", slug: "x", name: "X" }, { [agent.id]: "full" });
     const s = await connectMcp(ctx, agent.id);
@@ -273,7 +259,7 @@ describe("/mcp aggregation", () => {
 // ───────────── Events ─────────────
 
 describe("connection events", () => {
-  it("are visible to agents with a grant on the connection, only with the setting on; event tools without Gmail", async () => {
+  it("are visible to agents with a grant on the connection; event tools without Gmail", async () => {
     const t = setup();
     disposers.push(t.dispose);
     const { ctx } = t;
@@ -285,8 +271,6 @@ describe("connection events", () => {
     ctx.broker.emitConnectionEvent({ type: "whoop.recovery_updated", connectionId: "con_2", dedupeKey: "k2", detail: { cycleId: 1 } });
     expect(e1).toMatchObject({ type: "connection.auth_failed", accountId: "", accountEmail: "", connectionId: "con_1" });
 
-    expect(ctx.events.feed(a.id).events).toEqual([]); // setting off
-    ctx.settings.update({ brokerUpstreams: true });
     expect(ctx.events.feed(a.id).events.map((e) => e.type)).toEqual(["connection.auth_failed"]);
     expect(ctx.events.feed(b.id).events.map((e) => e.type)).toEqual(["whoop.recovery_updated"]);
 
@@ -328,7 +312,7 @@ describe("listener stream without Gmail", () => {
     running = undefined;
   });
 
-  it("streams connection events to an agent with only a connection grant; refused with the setting off", async () => {
+  it("streams connection events to an agent with only a connection grant", async () => {
     running = await startServer({ config: testConfig(), overrides: { google: fakeGoogle(), ingest: fakeIngest() } });
     const { ctx, url } = running;
     agentApi(ctx, { heartbeatMs: 60_000 });
@@ -336,12 +320,6 @@ describe("listener stream without Gmail", () => {
     seedConnection(ctx, { id: "con_1", slug: "notion", name: "Notion" }, { [agent.id]: "ask" });
     const open = () => fetch(`${url}/agent/v1/events/stream?start=beginning&types=approval.requested,connection.auth_failed`, { headers: { authorization: `Bearer ${apiKey}` } });
 
-    ctx.settings.update({ brokerUpstreams: false });
-    const refused = await open();
-    expect(refused.status).toBe(403);
-    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("no_read_grant");
-
-    ctx.settings.update({ brokerUpstreams: true });
     const res = await open();
     expect(res.status).toBe(200);
     const reader = new SseReader(res);
@@ -411,8 +389,6 @@ describe("broker service", () => {
     const { agent } = ctx.policy.createAgent({ name: "Hermes" });
     seedConnection(ctx, { id: "con_w", slug: "whoop", name: "WHOOP", kind: "native_whoop", preset: "whoop", url: null }, { [agent.id]: "full" });
 
-    expect(await ctx.broker.pollEvents(10_000)).toBe(0); // setting off
-    ctx.settings.update({ brokerUpstreams: true });
     expect(await ctx.broker.pollEvents(10_000)).toBe(1);
     expect(await ctx.broker.pollEvents(10_500)).toBe(0); // not due yet
     expect(await ctx.broker.pollEvents(11_000)).toBe(1);
@@ -468,7 +444,7 @@ describe("broker service", () => {
     const { ctx } = t;
     const { agent } = ctx.policy.createAgent({ name: "Hermes" });
     seedConnection(ctx, { id: "con_w", slug: "whoop", name: "WHOOP", kind: "native_whoop", preset: "whoop", url: null }, { [agent.id]: "full" });
-    ctx.settings.update({ brokerUpstreams: true, publicUrl: TAILNET });
+    ctx.settings.update({ publicUrl: TAILNET });
     expect(await ctx.broker.pollEvents(10_000)).toBe(1);
     expect(await ctx.broker.webhookReachability()).toMatchObject({ reach: "private", webhookBase: null, funnel: null });
     expect(ctx.broker.webhookUrl("con_w")).toBeNull();
@@ -504,7 +480,6 @@ describe("broker service", () => {
     disposers.push(h.dispose);
     const cookie = await h.claim();
     const { ctx } = h;
-    ctx.settings.update({ brokerUpstreams: true });
     const steps = async () => {
       // Each case re-checks: the cache keeps one entry, for the current public URL.
       const [p] = (await json(await h.request("/api/connections/presets", { cookie, headers: CSRF }))) as { setupSteps: { id: string; title: string; body: string; copy?: { value: string } }[] }[];
@@ -614,9 +589,6 @@ describe("/api/connections", () => {
     const a = ctx.policy.createAgent({ name: "a" }).agent;
     const b = ctx.policy.createAgent({ name: "b" }).agent;
 
-    ctx.settings.update({ brokerUpstreams: false });
-    expect((await req("/connections")).status).toBe(404);
-    ctx.settings.update({ brokerUpstreams: true });
     expect(await json(await req("/connections"))).toEqual([]);
     // Same session + CSRF rules as the rest of /api.
     expect((await h.request("/api/connections", { method: "POST", cookie, json: { url: "https://x.example.com/mcp" } })).status).toBe(403);
@@ -754,7 +726,6 @@ describe("/api/connections", () => {
     disposers.push(h.dispose);
     const cookie = await h.claim();
     const { ctx } = h;
-    ctx.settings.update({ brokerUpstreams: true });
     const t0 = new Date().toISOString();
     ctx.db.run(
       "INSERT INTO connections (id, kind, preset, slug, name, auth_type, created_at, updated_at) VALUES ('con_w', 'native_whoop', 'whoop', 'whoop', 'WHOOP', 'oauth', ?, ?)",
@@ -777,7 +748,6 @@ describe("/api/connections", () => {
   it("the app serves connection webhooks through the broker's hook host by default", async () => {
     const t = setup();
     disposers.push(t.dispose);
-    t.ctx.settings.update({ brokerUpstreams: true });
     const res = await createApp(t.ctx).request("/hooks/connections/con_missing", { method: "POST", body: "{}" });
     expect(res.status).toBe(404);
   });

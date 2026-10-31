@@ -3,8 +3,8 @@
 // The `extensions` table records the source, commit, integrity, version and manifest. Nothing updates on its own, and
 // nothing outside <dataDir>/extensions is ever written or removed.
 //
-// Other writers: B2 binds connections (fills usedBy / onRemove through setHooks) and validates the manifest; B3 runs
-// code extensions from installDir (call verify() before each child start) and restarts children on onChange.
+// The broker binds connections (usedBy / onRemove through setHooks); the code host runs code extensions from installDir
+// (verify() before each child start) and restarts children on onChange.
 
 import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
@@ -13,9 +13,9 @@ import type { AppContext } from "../context.ts";
 import { bool, type Db, json, now } from "../db/index.ts";
 import type { Logger } from "../util/log.ts";
 import { computeIntegrity, integrityDirName, IntegrityError } from "./integrity.ts";
-import { defaultExtensionUrls, EXTENSION_NAME_RE, type ExtensionUrls, fetchIndex, OFFICIAL_NAMES, OFFICIAL_OWNER, OFFICIAL_REPO, type RegistryEntry, type RegistryIndex } from "./registry.ts";
-import { type FetchDeps, fetchGit, fetchGithubTarball, fetchLocal, fetchOfficial, parseSource, resolveGithubTree, SourceError, type SourceSpec } from "./sources.ts";
-import { type Manifest, ManifestError, validateManifest } from "./manifest.ts";
+import { defaultExtensionUrls, type ExtensionUrls, fetchIndex, OFFICIAL_NAMES, OFFICIAL_OWNER, OFFICIAL_REPO, type RegistryEntry, type RegistryIndex } from "./registry.ts";
+import { ExtensionError, type FetchDeps, fetchGit, fetchGithubTarball, fetchLocal, fetchOfficial, parseSource, resolveGithubTree, type SourceSpec } from "./sources.ts";
+import { type Manifest, MANIFEST_FILE, ManifestError, validateManifest } from "./manifest.ts";
 import { type ExtractLimits, UnsafeArchiveError } from "./tar.ts";
 
 export interface InstalledExtension {
@@ -31,40 +31,20 @@ export interface InstalledExtension {
   /** From the official registry (wynn-dev/xaq-extensions at the indexed or pinned commit). */
   official: boolean;
   installDir: string;
-  manifest: unknown /* validated by B2's manifest.ts */;
+  manifest: unknown /* validated by manifest.ts */;
   installedAt: string;
 }
 
-export interface ExtensionPin {
-  name: string;
-  commit: string;
-  integrity: string;
-}
-
-export interface ExtensionStore {
-  list(): InstalledExtension[];
-  get(name: string): InstalledExtension | null;
-  resolve(source: string): Promise<{ candidate: InstalledExtension; warnings: string[] }>; // fetch + verify, no install
-  install(source: string, opts: { confirmThirdParty: boolean; expectIntegrity?: string }): Promise<InstalledExtension>;
-  installPinned(pin: ExtensionPin): Promise<InstalledExtension>; // official repo at that commit
-  /** An installed official extension swapped for its pinned build: fetched and verified first, then swapped (B2: broken installs). */
-  replacePinned(pin: ExtensionPin): Promise<InstalledExtension>;
-  /** Without `confirm`, the would-be update ({from, to}) and nothing installed; with it, installed. null: up to date. */
-  update(name: string, opts: { confirm: boolean; expectIntegrity?: string }): Promise<{ from: InstalledExtension; to: InstalledExtension } | null>;
-  remove(name: string, opts: { force: boolean }): Promise<void>; // async (queued with install and update), per the #81 review
-  verify(name: string): boolean; // re-check integrity of the installed files
-}
-
 /**
- * Filled by the other writers (B2: connection binding; B3: the code host). `usedBy` has one owner; `onChange` and
- * `onRemove` are listener lists (setHooks adds, never replaces; SqliteExtensionStore.onChange/onRemove take an order).
+ * Filled by the broker (connection binding) and the code host. `usedBy` has one owner; `onChange` and
+ * `onRemove` are listener lists (setHooks adds, never replaces; ExtensionStore.onChange/onRemove take an order).
  */
 export interface ExtensionHooks {
-  /** Names of the connections that use the extension (B2). Removal is refused while any do, unless forced. */
+  /** Names of the connections that use the extension. Removal is refused while any do, unless forced. */
   usedBy(name: string): string[];
-  /** Before a removal; with `force`, B2 disables `usedBy` (credentials stay until the connections are removed). */
+  /** Before a removal; with `force`, the broker disables `usedBy` (credentials stay until the connections are removed). */
   onRemove?(ext: InstalledExtension, opts: { force: boolean; usedBy: string[] }): void;
-  /** After an install, update or removal (B3 stops or restarts children). */
+  /** After an install, update or removal (the code host stops or restarts children). */
   onChange?(change: { from: InstalledExtension | null; to: InstalledExtension | null }): void;
 }
 
@@ -86,32 +66,6 @@ function addListener<F>(list: Listener<F>[], l: Listener<F>): () => void {
   };
 }
 
-export type ExtensionErrorCode =
-  | "not_found"
-  | "in_use"
-  | "third_party_unconfirmed"
-  | "integrity_mismatch"
-  | "already_installed"
-  | "changed"
-  | "invalid"
-  | "bad_source"
-  | "fetch_failed"
-  | "rate_limited"
-  | "unsafe"
-  | "official_name";
-
-export class ExtensionError extends Error {
-  constructor(
-    readonly code: ExtensionErrorCode,
-    message: string,
-    readonly detail?: { usedBy?: string[]; warnings?: string[]; candidate?: InstalledExtension },
-  ) {
-    super(message);
-    this.name = "ExtensionError";
-  }
-}
-
-export const MANIFEST_FILE = "xaq-extension.json";
 const MANIFEST_MAX_BYTES = 256 * 1024;
 
 /** What the store itself needs from a manifest. */
@@ -209,12 +163,12 @@ interface Staged {
 
 const short = (c: string | null) => (c ? c.slice(0, 12) : "none");
 
-export class SqliteExtensionStore implements ExtensionStore {
+export class ExtensionStore {
   readonly root: string;
   private readonly tmpRoot: string;
   private readonly deps: FetchDeps;
   private usedByHook: ExtensionHooks["usedBy"] = () => [];
-  /** Listeners, called in `order` (then registration order); several writers subscribe (B2 presets, B3 restarts). */
+  /** Listeners, called in `order` (then registration order); the preset reload and the code host's restarts. */
   private readonly changeListeners: Listener<NonNullable<ExtensionHooks["onChange"]>>[] = [];
   private readonly removeListeners: Listener<NonNullable<ExtensionHooks["onRemove"]>>[] = [];
   private listenerSeq = 0;
@@ -240,7 +194,7 @@ export class SqliteExtensionStore implements ExtensionStore {
   }
 
   /**
-   * `usedBy` replaces the previous one (there's one owner: B2). `onChange` and `onRemove` are ADDED as listeners at
+   * `usedBy` replaces the previous one (there's one owner: the broker). `onChange` and `onRemove` are ADDED as listeners at
    * order 0, never replacing another writer's; use onChange()/onRemove() for an explicit order or to unsubscribe.
    */
   setHooks(hooks: Partial<ExtensionHooks>): void {
@@ -250,7 +204,7 @@ export class SqliteExtensionStore implements ExtensionStore {
   }
 
   /**
-   * Subscribes to installs, updates and removals. Lower `order` runs first: B2's preset reload uses the default (0);
+   * Subscribes to installs, updates and removals. Lower `order` runs first: the preset reload uses the default (0);
    * the code host restarts children at LISTENER_ORDER.restart, after it, so restarts see the new preset. A throwing
    * listener is logged and the others still run. Returns the unsubscribe.
    */
@@ -258,7 +212,7 @@ export class SqliteExtensionStore implements ExtensionStore {
     return addListener(this.changeListeners, { fn: listener, order: opts.order ?? 0, seq: this.listenerSeq++ });
   }
 
-  /** Before a removal (B2 disables the connections when forced). Same ordering and unsubscribe as onChange. */
+  /** Before a removal (the broker disables the connections when forced). Same ordering and unsubscribe as onChange. */
   onRemove(listener: NonNullable<ExtensionHooks["onRemove"]>, opts: { order?: number } = {}): () => void {
     return addListener(this.removeListeners, { fn: listener, order: opts.order ?? 0, seq: this.listenerSeq++ });
   }
@@ -317,60 +271,6 @@ export class SqliteExtensionStore implements ExtensionStore {
         const installed = this.commit(staged, null);
         this.opts.log?.info("Extension installed", { name: installed.name, version: installed.version, commit: installed.commit, official: installed.official });
         this.emitChange({ from: null, to: installed });
-        return installed;
-      } finally {
-        this.discard(staged.work);
-      }
-    });
-  }
-
-  installPinned(pin: ExtensionPin): Promise<InstalledExtension> {
-    return this.serial(async () => {
-      if (!EXTENSION_NAME_RE.test(pin.name)) throw new ExtensionError("bad_source", `"${pin.name}" isn't an extension name.`);
-      const existing = this.get(pin.name);
-      if (existing) {
-        if (existing.integrity === pin.integrity) return existing;
-        throw new ExtensionError("already_installed", `${pin.name} is already installed at another version (${existing.version}, ${short(existing.commit)}).`);
-      }
-      const staged = await this.stageWith(pin.name, true, (dest) => fetchOfficial(pin.name, pin.commit, dest, this.deps));
-      try {
-        if (staged.candidate.integrity !== pin.integrity) {
-          throw new ExtensionError(
-            "integrity_mismatch",
-            `${pin.name} at ${short(pin.commit)} has integrity ${staged.candidate.integrity}, not the pinned ${pin.integrity}. Refusing to install it.`,
-          );
-        }
-        const installed = this.commit(staged, null);
-        this.opts.log?.info("Extension installed from its pin", { name: installed.name, commit: installed.commit });
-        this.emitChange({ from: null, to: installed });
-        return installed;
-      } finally {
-        this.discard(staged.work);
-      }
-    });
-  }
-
-  /**
-   * Replaces an installed official extension with its pinned build (a broken install, server/extensions/bootstrap.ts):
-   * the pinned build is fetched and verified before anything changes, then swapped in like an update. A failed fetch
-   * or a mismatch leaves the installed one as it was. Same name and kind; its connections stay bound.
-   */
-  replacePinned(pin: ExtensionPin): Promise<InstalledExtension> {
-    return this.serial(async () => {
-      const from = this.get(pin.name);
-      if (!from) throw new ExtensionError("not_found", `${pin.name} isn't installed.`);
-      if (!from.official) throw new ExtensionError("official_name", `${pin.name} is a third-party install; only an official one is replaced from a pin.`);
-      if (from.integrity === pin.integrity) return from;
-      const staged = await this.stageWith(pin.name, true, (dest) => fetchOfficial(pin.name, pin.commit, dest, this.deps));
-      try {
-        const to = staged.candidate;
-        if (to.integrity !== pin.integrity) {
-          throw new ExtensionError("integrity_mismatch", `${pin.name} at ${short(pin.commit)} has integrity ${to.integrity}, not the pinned ${pin.integrity}. Refusing to install it.`);
-        }
-        if (to.name !== from.name || to.kind !== from.kind) throw new ExtensionError("invalid", `${pin.name}'s pinned build is a different extension (${to.name}, ${to.kind}).`);
-        const installed = this.commit(staged, from);
-        this.opts.log?.info("Extension replaced by its pinned build", { name: pin.name, from: from.commit ?? from.integrity, to: installed.commit });
-        this.emitChange({ from, to: installed });
         return installed;
       } finally {
         this.discard(staged.work);
@@ -451,7 +351,6 @@ export class SqliteExtensionStore implements ExtensionStore {
       return await fn();
     } catch (err) {
       if (err instanceof ExtensionError) throw err;
-      if (err instanceof SourceError) throw new ExtensionError(err.code, err.message);
       if (err instanceof UnsafeArchiveError) throw new ExtensionError("unsafe", err.message);
       if (err instanceof IntegrityError) throw new ExtensionError("unsafe", err.message);
       if (err instanceof Error && err.name === "RegistryError") throw new ExtensionError("fetch_failed", err.message);
@@ -694,13 +593,13 @@ function makeWritable(dir: string): void {
   }
 }
 
-const stores = new WeakMap<object, SqliteExtensionStore>();
+const stores = new WeakMap<object, ExtensionStore>();
 
 /** The store for this context (created on first use; `opts` apply only then: tests point it at fakes). */
-export function extensionStore(ctx: Pick<AppContext, "db" | "config" | "log">, opts: Partial<ExtensionStoreOptions> = {}): SqliteExtensionStore {
+export function extensionStore(ctx: Pick<AppContext, "db" | "config" | "log">, opts: Partial<ExtensionStoreOptions> = {}): ExtensionStore {
   let store = stores.get(ctx);
   if (!store) {
-    store = new SqliteExtensionStore({ db: ctx.db, dataDir: ctx.config.dataDir, log: ctx.log, ...opts });
+    store = new ExtensionStore({ db: ctx.db, dataDir: ctx.config.dataDir, log: ctx.log, ...opts });
     stores.set(ctx, store);
   }
   return store;

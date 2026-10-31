@@ -44,7 +44,7 @@ export function mcpRoutes(ctx: AppContext) {
       return c.json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed: this server is stateless; use POST." }, id: null }, 405);
     }
 
-    const server = buildMcpServer(ctx, principal, { signal: c.req.raw.signal, mode: c.req.query("mode"), keepAutoMode: true });
+    const server = buildMcpServer(ctx, principal, { signal: c.req.raw.signal });
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,

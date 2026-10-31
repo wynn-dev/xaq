@@ -4,9 +4,8 @@
 import { describe, expect, it } from "vitest";
 import { CALENDAR_API_SERVICE, enableCalendarApiUrl } from "../server/google/calendar.ts";
 import { callbackMode } from "../server/google/client.ts";
-import { CALENDAR_SCOPES, GMAIL_SCOPE, PUBSUB_SCOPE } from "../server/google/scopes.ts";
 import { checkTransport } from "../server/listen/transport.ts";
-import { cloudUrl, generateProjectId, iamBindingCommand, PROJECT_ID_RE, projectCommand, projectIdProblem, SCOPES } from "../src/lib/gcp-project.ts";
+import { cloudUrl, generateProjectId, iamBindingCommand, PROJECT_ID_RE, projectCommand, projectIdProblem } from "../src/lib/gcp-project.ts";
 import { answerApplies, CHECK_NOTES, checkAgainStep, handsBack, listMatch, offersMailOnly, streamUpdateConcerns } from "../src/components/accounts/connect-attempt.ts";
 import { GMAIL_WATCH_ERROR } from "../shared/types.ts";
 import { deliveryMode, intervalInWords } from "../src/lib/delivery.ts";
@@ -159,14 +158,6 @@ describe("project IDs", () => {
     expect(cloudUrl.enableCalendar("xaq-123456")).toBe(
       "https://console.cloud.google.com/flows/enableapi?apiid=calendar-json.googleapis.com&project=xaq-123456",
     );
-  });
-});
-
-describe("scopes listed in the wizard", () => {
-  it("are the ones the server asks Google for", () => {
-    expect(SCOPES.gmail).toBe(GMAIL_SCOPE);
-    expect(SCOPES.pubsub).toBe(PUBSUB_SCOPE);
-    expect([...SCOPES.calendar]).toEqual([...CALENDAR_SCOPES]);
   });
 });
 

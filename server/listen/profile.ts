@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
-import type { AgentTool } from "../../shared/agent-api.ts";
+import { AGENT_TOOLS, type AgentTool, type ListenerConfig } from "../../shared/agent-api.ts";
 import { type EventType, isEventType } from "../../shared/types.ts";
 import { isTooOpen, writePrivateFile } from "./fsutil.ts";
 import { profilePath } from "./paths.ts";
@@ -37,8 +37,6 @@ export interface Profile extends ListenSettings {
   createdAt?: string;
 }
 
-const TOOLS = ["claude-code", "codex", "cursor", "hermes", "other"] as const;
-
 const profileSchema = z
   .object({
     url: z.string().refine((u) => URL.canParse(u), "url must be a full URL"),
@@ -55,7 +53,7 @@ const profileSchema = z
     exec: z.string().min(1).optional(),
     notFrom: z.array(z.string().min(1).max(320)).max(50).optional(),
     allCategories: z.boolean().optional(),
-    tool: z.enum(TOOLS).optional(),
+    tool: z.enum(AGENT_TOOLS).optional(),
     mcpUrl: z.string().optional(),
     skillUrl: z.string().optional(),
     createdAt: z.string().optional(),

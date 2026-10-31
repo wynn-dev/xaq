@@ -1,9 +1,9 @@
 import type { Account } from "@shared/types";
+import { CALENDAR_SCOPES } from "@shared/google-scopes";
 import { AlertTriangleIcon, BotIcon, CalendarPlusIcon, MoreHorizontalIcon, PauseIcon, PlayIcon, RefreshCwIcon, Trash2Icon, UnplugIcon } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { TimeAgo } from "@/components/common";
-import { SCOPES } from "@/lib/gcp-project";
 import { queries } from "@/lib/queries";
 import { useNow } from "@/hooks/use-now";
 import { confirm } from "@/components/confirm";
@@ -174,6 +174,6 @@ function useCalendarView(a: Account): AccountCalendarView | null {
   const enabled = setup.data?.enabled ?? false;
   if (entry) return accountCalendarView({ ...entry, error: a.calendar?.error }, enabled);
   if (!setup.isSuccess && !a.calendar) return null;
-  const c = a.calendar ?? { status: "not_granted" as const, missingScopes: [...SCOPES.calendar], error: null };
+  const c = a.calendar ?? { status: "not_granted" as const, missingScopes: [...CALENDAR_SCOPES], error: null };
   return accountCalendarView({ ...c, syncedCalendars: 0, push: false }, enabled);
 }

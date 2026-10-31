@@ -456,7 +456,7 @@ export class CodeToolSource implements ToolSource {
 }
 
 /**
- * The ToolSource for one connection of a code extension; starts its child at once. B2's presetFromManifest calls this
+ * The ToolSource for one connection of a code extension; starts its child at once. presetFromManifest calls this
  * for `kind: "code"`, usually through codeExtensionSource (server/extensions/host/index.ts), which fills stateDir,
  * emit and verify from the broker's deps.
  */

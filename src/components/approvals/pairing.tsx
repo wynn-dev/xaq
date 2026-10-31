@@ -33,7 +33,6 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { useNow } from "@/hooks/use-now";
-import { useBrokerEnabled } from "@/hooks/use-broker";
 import { AGENT_LEVELS, LEVEL_INFO } from "@/components/connections/connection-flow";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { AgentLevel } from "@/lib/broker-dto";
@@ -444,9 +443,8 @@ function ApproveForm({
   const [typing, setTyping] = useState<Record<string, boolean>>({});
   // MCP broker connections: every one is listed (the card's choices are all the agent gets). "All agents" ones
   // start at their default level, the rest at No access.
-  const broker = useBrokerEnabled();
-  const connectionsQuery = useQuery({ ...queries.connections(), enabled: broker });
-  const connections: ConnectionView[] = broker ? (connectionsQuery.data ?? []) : [];
+  const connectionsQuery = useQuery(queries.connections());
+  const connections: ConnectionView[] = connectionsQuery.data ?? [];
   const [levels, setLevels] = useState<Record<string, AgentLevel>>({});
   const levelOf = (c: ConnectionView): AgentLevel => levels[c.id] ?? pairingConnectionDefault(c);
   const anyConnection = connections.some((c) => levelOf(c) !== "none");

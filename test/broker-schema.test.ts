@@ -9,8 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CONNECTION_SLUG_RE, EXPOSED_TOOL_NAME_RE, type McpCallApproval } from "../shared/types.ts";
 import { Db } from "../server/db/index.ts";
 import { MIGRATIONS } from "../server/db/schema.ts";
-import type { IngestService } from "../server/ingest/types.ts";
-import { stubService } from "../server/util/stub.ts";
+import type { IngestService } from "../server/ingest/index.ts";
 import { createAppContext, stopServices } from "../server/wire.ts";
 import { testConfig } from "./helpers.ts";
 import { FakeGoogle, fakeAccounts } from "./mail-fakes.ts";
@@ -203,7 +202,7 @@ describe("migration 8 on an install at migration 7", () => {
     const ctx = createAppContext(config, {
       google: () => google.service(),
       accounts: (c) => fakeAccounts(c),
-      ingest: () => ({ ...stubService<IngestService>("ingest"), kick: () => {} }) as IngestService,
+      ingest: () => ({ kick: () => {} }) as unknown as IngestService,
     });
     try {
       const gmail1 = google.gmail("acc_1");

@@ -99,8 +99,7 @@ export function streamEvents(ctx: AppContext, c: Context<AgentApiEnv>, opts: Str
   const start = c.req.query("start");
   if (start !== undefined && start !== "now" && start !== "beginning") throw badRequest("start must be now or beginning");
   const heartbeatMs = opts.heartbeatMs ?? HEARTBEAT_MS;
-  const brokerOn = () => ctx.settings.get().brokerUpstreams;
-  const problem = accessProblem(ctx.db, agentId, keyHash, brokerOn());
+  const problem = accessProblem(ctx.db, agentId, keyHash);
   if (problem) throw new HttpError(403, problem, ...OPEN_REFUSALS[problem]);
   const maxStreams = opts.maxStreams ?? 5;
   if ((opts.open.get(agentId) ?? 0) >= maxStreams) {
@@ -184,7 +183,7 @@ export function streamEvents(ctx: AppContext, c: Context<AgentApiEnv>, opts: Str
       });
     };
     const checkAccess = () => {
-      const reason = accessProblem(db, agentId, keyHash, brokerOn());
+      const reason = accessProblem(db, agentId, keyHash);
       if (reason) revoke(reason);
       return !reason;
     };

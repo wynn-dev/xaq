@@ -77,7 +77,6 @@ async function world(opts: { level?: "read" | "ask" | "full" } = {}) {
   ext = installEcho(ctx);
   const cookie = await h.claim();
   const api = (path: string, init: RequestInit & { json?: unknown } = {}) => h.request(`/api${path}`, { cookie, ...init, headers: { ...CSRF, ...(init.headers as object) } });
-  ctx.settings.update({ brokerUpstreams: true });
   const { agent, apiKey } = ctx.policy.createAgent({ name: "Hermes" });
   const level = opts.level ?? "read";
 
@@ -244,7 +243,7 @@ describe("connections without their extension", () => {
     cleanup.push(() => h.dispose());
     const { ctx } = h;
     const cookie = await h.claim();
-    ctx.settings.update({ brokerUpstreams: true, publicUrl: "https://inbox.example.com" });
+    ctx.settings.update({ publicUrl: "https://inbox.example.com" });
     const t = new Date().toISOString();
     ctx.db.run("INSERT INTO connections (id, kind, preset, slug, name, auth_type, created_at, updated_at) VALUES ('con_w', 'native_whoop', 'whoop', 'whoop', 'WHOOP', 'oauth', ?, ?)", t, t);
     const view = await json(await h.request("/api/connections/con_w", { cookie, headers: CSRF }));

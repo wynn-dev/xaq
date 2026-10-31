@@ -8,7 +8,7 @@
 
 import { classifyTool } from "../broker/catalog/classify.ts";
 import type { IntegrationPreset, PresetAuth, SetupContext, SetupStep, ToolClass, ToolDef } from "../broker/types.ts";
-import { CORE_ONLY_SCOPES, EXTENSION_SCOPE_RE, GOOGLE_SERVICE_RE, isExtensionScope } from "../google/scopes.ts";
+import { CORE_ONLY_SCOPES, EXTENSION_SCOPE_RE, GOOGLE_SERVICE_RE, isExtensionScope } from "../../shared/google-scopes.ts";
 import { googleSetupSteps } from "./google-setup.ts";
 import { codeExtensionSource } from "./host/index.ts";
 import { computeIntegrity } from "./integrity.ts";

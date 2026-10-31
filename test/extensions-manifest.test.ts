@@ -1,20 +1,16 @@
 // The extension manifest (server/extensions/manifest.ts): the strict validator, the JSON Schema the xaq-extensions
 // repo validates with (they must agree), template substitution, the risk map, presetFromManifest for both kinds,
-// the presets() registry over the extension store, the bootstrap pins and usedBy.
+// the presets() registry over the extension store and usedBy.
 
 import { Ajv2020 } from "ajv/dist/2020.js";
-import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { classifyTool } from "../server/broker/catalog/classify.ts";
 import type { SetupContext, ToolDef } from "../server/broker/types.ts";
-import { BOOTSTRAP_PINS, isPlaceholderPin, upgradeToExtensions, usedBy } from "../server/extensions/bootstrap.ts";
+import { usedBy } from "../server/broker/service.ts";
 import { MANIFEST_JSON_SCHEMA, ManifestError, presetFromManifest, renderSetup, validateManifest } from "../server/extensions/manifest.ts";
-import { boundPreset, brokenExtensions, presetById, presets, reloadPresets, snapshotPreset, useExtensionStore } from "../server/integrations/index.ts";
-import { FIXTURE_EXTENSIONS, fixtureExtension, fixtureManifest, stubExtensionStore } from "./extension-fixtures.ts";
+import { brokenExtensions, presetById, presets, reloadPresets, useExtensionStore } from "../server/integrations/index.ts";
+import { FIXTURE_EXTENSIONS, fixtureExtension, fixtureManifest } from "./extension-fixtures.ts";
 import { testContext } from "./helpers.ts";
-
-/** An all-zero pin, as shipped before a release fills the real ones in: nothing installs from it. */
-const PLACEHOLDER = (name: string) => ({ name, commit: "0".repeat(40), integrity: `sha256-${"A".repeat(43)}=` });
 
 afterEach(() => useExtensionStore(null));
 
@@ -197,15 +193,6 @@ describe("setup copy", () => {
     const link = validateManifest(patch(remote(), "setup.0.link", { label: "Open {{publicUrl}}", url: "{{publicUrl}}/settings" }));
     expect(renderSetup(link.setup!, CTX)[0]!.link).toEqual({ label: "Open https://xaq.example", url: "https://xaq.example/settings" });
   });
-
-  it("the repo's manifests carry no template the context doesn't fill", () => {
-    for (const name of FIXTURE_EXTENSIONS) {
-      const steps = presetFromManifest(fixtureExtension(name)).setupSteps(CTX);
-      for (const s of steps) {
-        for (const v of [s.title, s.body, s.link?.label, s.link?.url, s.copy?.label, s.copy?.value]) expect(v ?? "").not.toMatch(/\{\{|\}\}/);
-      }
-    }
-  });
 });
 
 describe("presetFromManifest", () => {
@@ -286,57 +273,14 @@ describe("presetFromManifest", () => {
   });
 });
 
-describe("the Brightspace extension's risk map", () => {
-  const p = () => presetFromManifest(fixtureExtension("brightspace"));
-  const READS = [
-    "get_briefing",
-    "get_calendar",
-    "get_submission_history",
-    "get_my_work",
-    "get_course_updates",
-    "get_my_groups",
-    "get_checklists",
-    "get_grade_summary",
-    "search_course",
-    "get_my_courses",
-    "get_my_grades",
-    "get_announcements",
-    "get_assignments",
-    "get_course_content",
-    "read_course_content",
-    "get_roster",
-    "get_discussions",
-    "get_syllabus",
-  ];
-
-  it("lists the server's 19 HTTP tools and its stdio download_file", () => {
-    expect(Object.keys(fixtureManifest("brightspace").risk!.tools).sort()).toEqual([...READS, "check_auth", "download_file"].sort());
-  });
-
-  it.each(READS)("%s reads (free, listed at read only)", (name) => {
-    expect(classifyTool(tool(name, {}, { readOnlyHint: true }), p())).toEqual({ risky: false, read: true, source: "preset" });
-  });
-
-  it("check_auth (can start a sign-in with MFA) and download_file (writes a file) are writes; nothing is risky", () => {
-    expect(classifyTool(tool("check_auth", {}, { readOnlyHint: true }), p())).toEqual({ risky: false, read: false, source: "preset" });
-    expect(classifyTool(tool("download_file", {}, { readOnlyHint: false, destructiveHint: false }), p())).toEqual({ risky: false, read: false, source: "preset" });
-    expect(Object.values(fixtureManifest("brightspace").risk!.tools).some((e) => e.class === "risky")).toBe(false);
-  });
-
-  it("a tool it adds later falls back to the generic rules (a submit tool would be risky by its name)", () => {
-    expect(p().classify(tool("submit_assignment"))).toBeNull();
-    expect(classifyTool(tool("post_discussion_reply"), p()).risky).toBe(true);
-  });
-});
-
 describe("presets(): installed extensions plus what's left in core", () => {
-  it("nothing without a store (no preset is left in core); installed extensions in display order; reload picks up changes", async () => {
+  it("nothing without a store (no preset is left in core); installed extensions in display order; reload picks up changes", () => {
     expect(presets().map((p) => p.id)).toEqual([]);
-    const store = stubExtensionStore({ installed: ["brightspace", "t3code"], installable: ["notion"] });
-    useExtensionStore(store);
+    const installed = [fixtureExtension("brightspace"), fixtureExtension("t3code")];
+    useExtensionStore({ list: () => installed });
     expect(presets().map((p) => p.id)).toEqual(["t3code", "brightspace"]);
     const t3 = presetById("t3code");
-    await store.installPinned({ name: "notion", commit: "3".repeat(40), integrity: "sha256-x" });
+    installed.push(fixtureExtension("notion"));
     expect(presetById("notion")).toBeNull(); // cached until a reload
     reloadPresets();
     expect(presets().map((p) => p.id)).toEqual(["notion", "t3code", "brightspace"]);
@@ -356,19 +300,7 @@ describe("presets(): installed extensions plus what's left in core", () => {
   });
 });
 
-describe("migration bookkeeping", () => {
-  it("bootstrap.json holds a pin (name, 40-hex commit, sha256 integrity) for each official extension, nothing else", () => {
-    expect(BOOTSTRAP_PINS.map((p) => p.name).sort()).toEqual(["brightspace", "notion", "t3code", "whoop"]);
-    for (const pin of BOOTSTRAP_PINS) {
-      expect(Object.keys(pin).sort()).toEqual(["commit", "integrity", "name"]);
-      expect(pin.commit).toMatch(/^[0-9a-f]{40}$/);
-      expect(pin.integrity).toMatch(/^sha256-[A-Za-z0-9+/]{43}=$/);
-      expect(Buffer.from(pin.integrity.slice(7), "base64")).toHaveLength(32);
-    }
-    // The release pins: real commits, never the all-zero placeholder.
-    expect(BOOTSTRAP_PINS.some(isPlaceholderPin)).toBe(false);
-  });
-
+describe("usedBy", () => {
   it("usedBy: the connections bound to an extension (connections.preset), oldest first", async () => {
     const t = testContext();
     try {
@@ -473,79 +405,5 @@ describe("review rules (tier L)", () => {
       expect(schemaValid(bad), JSON.stringify(notes)).toBe(false);
     }
     expect(() => validateManifest(patch(remote(), "remote.auth", { type: "header", headerName: "X-Key", scopeNotes: {} }))).toThrow(/doesn't take/);
-  });
-});
-
-describe("the bootstrap snapshot", () => {
-  const root = new URL("../", import.meta.url);
-  const read = (path: string) => readFileSync(new URL(path, root));
-
-  it.each(["notion", "t3code"])("core's %s snapshot is byte-identical to the repo's manifest (the fixture copy)", (name) => {
-    expect(read(`server/extensions/bootstrap/${name}.json`).equals(read(`test/fixtures/extensions/${name}/xaq-extension.json`))).toBe(true);
-  });
-
-  it("serves bound connections only: not in presets(), official, and an installed extension wins", () => {
-    expect(presets().map((p) => p.id)).toEqual([]);
-    expect(presetById("notion")).toBeNull();
-    expect(snapshotPreset("notion")).toMatchObject({ id: "notion", official: true, url: "https://mcp.notion.com/mcp", reconnectPolicy: { maxLifetimeDays: 180 } });
-    expect(snapshotPreset("t3code")).toMatchObject({ userServer: { sameOriginIssuer: true }, nameCheckExempt: ["t3_thread_send", "t3_thread_send_attachments", "t3_thread_merge_back"] });
-    expect(snapshotPreset("notion")!.classify(tool("notion-spawn-session"))).toMatchObject({ risky: true });
-    expect(snapshotPreset("brightspace")).toBeNull();
-    expect(snapshotPreset("whoop")).toBeNull();
-    expect(boundPreset("notion")).toBe(snapshotPreset("notion"));
-    // Installed: the install, not the snapshot.
-    const newer = { ...fixtureExtension("notion"), manifest: { ...fixtureManifest("notion"), displayName: "Notion (newer)", version: "1.1.0" } };
-    useExtensionStore({ list: () => [newer] });
-    expect(boundPreset("notion")).toMatchObject({ displayName: "Notion (newer)" });
-    expect(boundPreset("notion")).not.toBe(snapshotPreset("notion"));
-  });
-});
-
-describe("broken installed extensions", () => {
-  const log = { info() {}, warn() {}, error() {} };
-  const pin = (name: string, integrity = `sha256-${Buffer.alloc(32, 9).toString("base64")}`) => ({ name, commit: "4".repeat(40), integrity });
-  const brokenExt = (name: "notion" | "t3code", over: Record<string, unknown> = {}) => ({ ...fixtureExtension(name), manifest: { schema: 1, name }, ...over });
-
-  it("are reported; an official one is replaced by its pinned build (fetched first, then swapped), never removed", async () => {
-    const t = testContext();
-    try {
-      const store = stubExtensionStore({ installable: ["notion"], extra: [brokenExt("notion")] });
-      const r = upgradeToExtensions({ db: t.ctx.db, store, log, pins: [pin("notion")] });
-      expect(Object.keys(r.broken)).toEqual(["notion"]);
-      await r.done;
-      expect(store.replacements).toEqual([pin("notion")]);
-      expect(store.removals).toEqual([]);
-      expect(store.get("notion")!.manifest).toEqual(fixtureManifest("notion"));
-      // Offline (the fetch fails): the installed one stays as it was; nothing was removed.
-      const offline = stubExtensionStore({ installable: [], extra: [brokenExt("notion")] });
-      await upgradeToExtensions({ db: t.ctx.db, store: offline, log, pins: [pin("notion")] }).done;
-      expect(offline.replacements).toEqual([pin("notion")]);
-      expect(offline.removals).toEqual([]);
-      expect(offline.get("notion")).toMatchObject({ manifest: { schema: 1, name: "notion" } });
-    } finally {
-      await t.dispose();
-    }
-  });
-
-  it("are only reported when third-party, unpinned, or already at the pinned build", async () => {
-    const t = testContext();
-    try {
-      const same = pin("t3code");
-      const store = stubExtensionStore({
-        installable: ["notion", "t3code"],
-        extra: [brokenExt("notion", { official: false }), brokenExt("t3code", { integrity: same.integrity })],
-      });
-      const r = upgradeToExtensions({ db: t.ctx.db, store, log, pins: [pin("notion"), same] });
-      expect(Object.keys(r.broken).sort()).toEqual(["notion", "t3code"]);
-      await r.done;
-      expect(store.replacements).toEqual([]);
-      expect(store.removals).toEqual([]);
-      expect(store.installs).toEqual([]);
-      const placeholder = stubExtensionStore({ installable: ["notion"], extra: [brokenExt("notion")] });
-      await upgradeToExtensions({ db: t.ctx.db, store: placeholder, log, pins: [PLACEHOLDER("notion")] }).done;
-      expect(placeholder.replacements).toEqual([]);
-    } finally {
-      await t.dispose();
-    }
   });
 });

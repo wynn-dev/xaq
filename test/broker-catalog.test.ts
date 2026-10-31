@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuditInput } from "../server/audit.ts";
+import { Db } from "../server/db/index.ts";
 import {
   Catalog,
   CatalogRegistry,
+  CatalogStore,
   CLASSIFICATION_WORDS,
   canonicalize,
   checkCollisions,
@@ -10,7 +12,6 @@ import {
   cleanText,
   cleanToolDef,
   exposedName,
-  MemoryCatalogStore,
   pinHash,
   slugProblem,
   splitWords,
@@ -51,7 +52,7 @@ class FakeSource implements ToolSource {
 }
 
 interface Harness {
-  store: MemoryCatalogStore;
+  store: CatalogStore;
   catalog: Catalog;
   registry: CatalogRegistry;
   audits: AuditInput[];
@@ -61,8 +62,19 @@ interface Harness {
   grant(agentId: string, connectionId: string, level: AccessLevel): void;
 }
 
+const dbs: Db[] = [];
+afterEach(() => {
+  for (const db of dbs.splice(0)) db.close();
+});
+
 function harness(opts: { defaultTtlMs?: number; minTtlMs?: number; debounceMs?: number } = {}): Harness {
-  const store = new MemoryCatalogStore();
+  const db = new Db(":memory:");
+  dbs.push(db);
+  const at = "2026-10-16T00:00:00.000Z";
+  for (const [id, slug] of [["con_a", "alpha"], ["con_b", "beta"], ["con_c", "alpha2"]] as const) {
+    db.run("INSERT INTO connections (id, kind, slug, name, url, created_at, updated_at) VALUES (?, 'remote_http', ?, ?, 'https://mcp.example.com/mcp', ?, ?)", id, slug, slug, at, at);
+  }
+  const store = new CatalogStore(db);
   const conns: Harness["conns"] = new Map([
     ["con_a", { slug: "alpha", status: "active", preset: null }],
     ["con_b", { slug: "beta", status: "active", preset: null }],
@@ -620,20 +632,6 @@ describe("refresh scheduling", () => {
     expect(h.store.tools("con_a")).toHaveLength(1);
     expect(h.store.state("con_a")!.lastError).toBe("upstream down");
     h.catalog.close();
-  });
-});
-
-describe("brokerUpstreams gate", () => {
-  it("attach is a no-op while the setting is off", async () => {
-    const store = new MemoryCatalogStore();
-    let on = false;
-    const catalog = new Catalog({ store, connection: () => ({ slug: "alpha", preset: null }), connections: () => [], audit: () => {}, enabled: () => on });
-    const src = new FakeSource("con_a", [tool("a")]);
-    expect(await catalog.attach(src)).toMatchObject({ ok: false, error: "disabled" });
-    expect(src.calls).toBe(0);
-    on = true;
-    expect(await catalog.attach(src)).toMatchObject({ ok: true, pinned: ["a"] });
-    catalog.close();
   });
 });
 

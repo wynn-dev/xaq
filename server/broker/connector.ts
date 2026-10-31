@@ -1,4 +1,4 @@
-// The broker service's Connector over the upstream runtime (server/broker/upstream, M1 PR 3/4): probe, connect
+// The broker service's Connector over the upstream runtime (server/broker/upstream): probe, connect
 // (static header, MCP OAuth, a native preset's own OAuth), the remote ToolSource and paste-mode finish.
 // Also gives the runtime native presets' OAuth flows (generic `user_app`, from the preset's auth): done at
 // construction, before start().

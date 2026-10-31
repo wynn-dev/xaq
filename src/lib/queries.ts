@@ -1,7 +1,6 @@
 import type {
   Account,
   Agent,
-  AgentToolMode,
   Approval,
   ApprovalStatus,
   AuditEntry,
@@ -118,8 +117,6 @@ export const queries = {
   agents: () => queryOptions({ queryKey: keys.agents, queryFn: () => apiGet<Agent[]>("/api/agents") }),
   agent: (id: string) => queryOptions({ queryKey: keys.agent(id), queryFn: () => apiGet<Agent>(`/api/agents/${encodeURIComponent(id)}`) }),
   /** How /mcp lists the agent's tools (full list or search). Under the agent's key, so grant changes refresh it. */
-  agentToolMode: (id: string) =>
-    queryOptions({ queryKey: [...keys.agent(id), "tool-mode"], queryFn: () => apiGet<AgentToolMode>(`/api/agents/${encodeURIComponent(id)}/tool-mode`) }),
   webhooks: (agentId?: string) =>
     queryOptions({
       queryKey: [...keys.webhooks, { agentId: agentId ?? null }],

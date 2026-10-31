@@ -30,7 +30,9 @@
 
 import type { CalendarWriteMode, Capability, SendMode } from "./types.ts";
 
-export type AgentTool = "claude-code" | "codex" | "cursor" | "hermes" | "other";
+/** The agent tools the CLI and the console know (recipes, connect commands). */
+export const AGENT_TOOLS = ["claude-code", "codex", "cursor", "hermes", "other"] as const;
+export type AgentTool = (typeof AGENT_TOOLS)[number];
 
 export interface PairingStartInput {
   /** Human-readable agent name, e.g. "Hermes on wynn-mbp". */
@@ -105,7 +107,7 @@ export interface AgentSelf {
    */
   consumers?: { consumer: string; startSeq: number | null; ackedSeq: number; connected: boolean }[];
   /**
-   * MCP broker connections this agent may use (absent from older daemons and while the broker is off): the
+   * MCP broker connections this agent may use (absent from older daemons): the
    * connection's name, its tool prefix (`<slug>__`) and this agent's level. Nothing else about the connection.
    */
   connections?: { name: string; slug: string; level: "full" | "ask" | "read" }[];

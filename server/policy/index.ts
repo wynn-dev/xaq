@@ -336,8 +336,6 @@ export function createPolicyService(ctx: AppContext): PolicyService {
       const r = requireRow(id);
       approvals.cancelForAgent(id, null, "the agent was deleted");
       db.run("DELETE FROM agents WHERE id = ?", id);
-      // Its tool-mode setting (server/broker/search/mode.ts) lives in the settings table, outside the cascade.
-      db.run("DELETE FROM settings WHERE key = ?", `broker.search:${id}`);
       ctx.audit.record({ ...ADMIN_ACTOR, action: "agent.delete", target: id, outcome: "ok", detail: { name: r.name } });
       changed(id, "deleted");
     },
@@ -377,7 +375,7 @@ export function createPolicyService(ctx: AppContext): PolicyService {
     grants: grantsOf,
 
     canSeeEvent(agentId, ev, via = "feed") {
-      if (isConnectionEventType(ev.type)) return !!ev.connectionId && canSeeConnectionEvent(db, ctx.settings.get().brokerUpstreams, agentId, ev, via);
+      if (isConnectionEventType(ev.type)) return !!ev.connectionId && canSeeConnectionEvent(db, agentId, ev, via);
       const r = db.get<GrantRow & { disabled: number }>(
         "SELECT g.*, a.disabled FROM grants g JOIN agents a ON a.id = g.agent_id WHERE g.agent_id = ? AND g.account_id = ?",
         agentId,

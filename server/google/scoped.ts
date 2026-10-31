@@ -4,7 +4,7 @@
 import type { AppContext } from "../context.ts";
 import { accountScopes, getRow } from "./accounts.ts";
 import { googleRuntime } from "./runtime.ts";
-import { missingScopes } from "./scopes.ts";
+import { hasScopes, missingScopes } from "../../shared/google-scopes.ts";
 import type { ScopedToken } from "./tokens.ts";
 
 export type { ScopedToken };

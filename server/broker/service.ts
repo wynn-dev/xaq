@@ -1,14 +1,7 @@
 // The MCP broker as an AppContext service. It holds one ToolSource per connection, the
 // tool registry, the policy's call path and the connector, and owns the lifecycle and the kill switch.
-//
-// The parts come from other workstreams (server/broker/types.ts lists who builds what). The policy runtime
-// (server/broker/policy) is built here and supplies calls, get_call_status, approved-call execution and the kill
-// switch; the credential store falls back to a plain table store. Parts not wired yet (catalog registry, upstream
-// connector) are inert stubs: no tools, probes that report "not available". Tests pass fakes through
-// createBrokerService(ctx, parts).
-//
-// Everything is behind Settings.brokerUpstreams (off by default): with it off, `view` is null, /mcp lists
-// only the native tools, connection events are invisible and /api/connections answers 404.
+// The policy runtime (server/broker/policy) supplies calls, get_call_status, approved-call execution and the kill
+// switch. Tests pass fakes through createBrokerService(ctx, parts).
 
 import {
   type AccessLevel,
@@ -26,38 +19,34 @@ import {
 import type { AppContext, Lifecycle } from "../context.ts";
 import { now } from "../db/index.ts";
 import { type ConnectionHookHost, connectionHookUrl } from "../integrations/hooks.ts";
-import { type UpgradeResult, type UpgradeStore, upgradeToExtensions, usedBy } from "../extensions/bootstrap.ts";
 import { OFFICIAL_NAMES } from "../extensions/registry.ts";
-import { type ExtensionPin, extensionStore, LISTENER_ORDER, type SqliteExtensionStore } from "../extensions/store.ts";
-import { boundPreset, presetSource, presets, reloadPresets, snapshotPreset, useExtensionStore } from "../integrations/index.ts";
+import { type ExtensionStore, extensionStore, LISTENER_ORDER } from "../extensions/store.ts";
+import { presetById, presetSource, presets, reloadPresets, useExtensionStore } from "../integrations/index.ts";
 import { removeConnectionState } from "../extensions/host/spawn.ts";
+import type { CredentialStore } from "./credentials/store.ts";
 import { googleConnectionState, googleConnectionView, googleTokenDeps, isGooglePreset, syncGoogleConnections } from "../extensions/google-auth.ts";
 import { forgetHandedTokens } from "../extensions/handed-tokens.ts";
 import { loopbackUrl } from "../urls.ts";
 import { conflict, errorMessage, notFound } from "../util/errors.ts";
 import { type ConnectionGrantRef, connectionGrantsOf } from "./access.ts";
-import { brokerConnections, Catalog, CatalogRegistry, connectionGrants, SqliteCatalogStore } from "./catalog/index.ts";
+import { brokerConnections, Catalog, CatalogRegistry, CatalogStore, connectionGrants } from "./catalog/index.ts";
 import { nativeDepsFor, registerNativeFlows, upstreamConnector } from "./connector.ts";
 import { type BrokerPassthrough, createPassthrough } from "./passthrough.ts";
 import { upstreams } from "./upstream/runtime.ts";
 import { type BrokerPolicyRuntime, brokerPolicyOf, createBrokerPolicyRuntime } from "./policy/index.ts";
 import { isExpired } from "./policy/store.ts";
 import { type ReachabilityDeps, type WebhookReachability, reachabilityCache } from "./reachability.ts";
-import { pinExistingAgentsDirect } from "./search/mode.ts";
 import {
-  type BrokerCalls,
-  type CredentialStore,
   type IntegrationEvent,
   type IntegrationPreset,
   type NativeSourceDeps,
   type RegisteredTool,
   SourceError,
-  type ToolRegistry,
   type ToolResult,
   type ToolSource,
 } from "./types.ts";
 
-// ───────────── Parts other workstreams provide ─────────────
+// ───────────── Parts ─────────────
 
 /** StartConnectResult without the view (the API adds the fresh ConnectionView on "connected"). */
 export type ConnectOutcome = Exclude<StartConnectResult, { status: "connected" }> | { status: "connected" };
@@ -80,10 +69,10 @@ export interface Connector {
 
 export interface BrokerParts {
   /** Catalog (server/broker/catalog/*). */
-  registry: ToolRegistry;
+  registry: Pick<CatalogRegistry, "forAgent" | "resolve">;
   /** Policy and approvals (server/broker/policy/*): the single call path. */
-  calls: BrokerCalls;
-  /** get_call_status(approval_id), from the policy workstream. */
+  calls: Pick<BrokerPolicyRuntime, "call">;
+  /** get_call_status(approval_id), from the policy runtime. */
   callStatus(agentId: string, approvalId: string): ToolResult | Promise<ToolResult>;
   /**
    * Runs an mcp.call approval already claimed ("approved"): re-checks agent, grant, pin and args hash, forwards
@@ -123,16 +112,13 @@ export interface BrokerOptions {
 export interface AgentBrokerView {
   /** The agent's connection grants (any level), by slug. */
   connections: ConnectionGrantRef[];
-  /** Tools from ToolRegistry.forAgent: levels applied. */
+  /** Tools from the registry's forAgent: levels applied. */
   tools: RegisteredTool[];
 }
 
 export interface BrokerService extends Lifecycle {
-  /** Settings.brokerUpstreams. */
-  enabled(): boolean;
-  /** null while the broker is off. */
-  view(agentId: string): AgentBrokerView | null;
-  calls: BrokerCalls;
+  view(agentId: string): AgentBrokerView;
+  calls: Pick<BrokerPolicyRuntime, "call">;
   callStatus(agentId: string, approvalId: string): Promise<ToolResult>;
   canRunApprovedCalls(): boolean;
   runApprovedCall(approval: McpCallApproval): Promise<void>;
@@ -142,7 +128,7 @@ export interface BrokerService extends Lifecycle {
   onGrantChanged(agentId: string, connectionId: string): void;
   /** A connection grant was removed: pending calls cancelled, "always allow" rules deleted. */
   onGrantRemoved(agentId: string, connectionId: string): void;
-  /** The connection's source, created on first use; null when the connection is missing or disabled, or the broker is off. */
+  /** The connection's source, created on first use; null when the connection is missing or disabled. */
   source(connectionId: string): ToolSource | null;
   connector: Connector;
   presets(): IntegrationPreset[];
@@ -153,9 +139,9 @@ export interface BrokerService extends Lifecycle {
   /** The kill switch, then the row (grants, pins, rules and approvals cascade). Audited. */
   remove(connectionId: string): Promise<void>;
   invalidate(scope: InvalidateScope): void;
-  /** The tool catalog (W5). */
+  /** The tool catalog. */
   catalog: Catalog;
-  /** (Re)starts the catalog's tool listing for a connection (create, connect, URL change); no-op while off or disabled. */
+  /** (Re)starts the catalog's tool listing for a connection (create, connect, URL change); no-op while disabled. */
   attach(connectionId: string): void;
   /** Emits a connection event (connection.*, approval.requested, `<preset>.*`) through the events outbox. */
   emitConnectionEvent(e: { type: EventType; connectionId: string; dedupeKey: string; detail?: Record<string, unknown> }): MailEvent | null;
@@ -175,31 +161,9 @@ export interface BrokerService extends Lifecycle {
    */
   pollEvents(at?: number): Promise<number>;
   /** Upstream prompts and resources for /mcp (server/broker/passthrough.ts), every connection kind. */
-  passthrough: BrokerPassthrough;
-  /**
-   * The startup upgrade to extensions (server/extensions/bootstrap.ts): connections of the Notion, T3 Code and WHOOP
-   * presets are bound to those extensions, and missing ones install in the background; once one is installed its
-   * connections are re-listed under its risk map. start() runs it with the registered extension store.
-   */
-  upgradeExtensions(store: UpgradeStore, pins?: readonly ExtensionPin[]): UpgradeResult;
-}
+  passthrough: BrokerPassthrough;}
 
-const UNAVAILABLE = "Integrations aren't available in this build of xaq yet.";
-const unavailable = (): ToolResult => ({ isError: true, content: [{ type: "text", text: UNAVAILABLE }] });
-
-/** Inert parts, for tests that don't want the catalog or the upstream runtime. */
-export function stubParts(): Pick<BrokerParts, "registry" | "connector"> {
-  return {
-    registry: { forAgent: () => [], resolve: () => null },
-    connector: {
-      probe: async () => ({ reachable: false, auth: "unknown", message: UNAVAILABLE }),
-      startConnect: async () => ({ status: "error", message: UNAVAILABLE }),
-      createSource: (c) => unavailableSource(c.id),
-    },
-  };
-}
-
-function unavailableSource(connectionId: string, message = UNAVAILABLE): ToolSource {
+function unavailableSource(connectionId: string, message: string): ToolSource {
   return {
     connectionId,
     listTools: async () => {
@@ -213,13 +177,10 @@ function unavailableSource(connectionId: string, message = UNAVAILABLE): ToolSou
 export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts> = {}, opts: BrokerOptions = {}): BrokerService {
   const log = ctx.log.child("broker");
   const sources = new Map<string, ToolSource>();
-  const enabled = () => ctx.settings.get().brokerUpstreams;
   const presetList = () => (given.presets ?? presets)();
-  // A connection's preset: the installed extension (or a core preset), else the bootstrap snapshot of an official one
-  // it was bound to before the upgrade (server/integrations/index.ts). New connections pick from presetList() only.
-  const presetFor = (presetId: string | null) => (presetId ? (presetList().find((p) => p.id === presetId) ?? snapshotPreset(presetId)) : null);
+  const presetFor = (presetId: string | null) => (presetId ? (presetList().find((p) => p.id === presetId) ?? null) : null);
 
-  // The upstream runtime (W3/W4): credential store, refresher, connect flow, remote sources. Created here, first,
+  // The upstream runtime: credential store, refresher, connect flow, remote sources. Created here, first,
   // so its connection events go to the outbox; native OAuth flows are registered before start() runs.
   const up = upstreams(ctx, {
     emit: (e) => {
@@ -233,9 +194,9 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
   registerNativeFlows(up, presetFor);
   const credentials = given.credentials ?? up.store;
 
-  // The catalog (W5): stored definitions and the per-agent registry over upstream_tools. A changed upstream tool is
+  // The catalog: stored definitions and the per-agent registry over upstream_tools. A changed upstream tool is
   // used at once; the catalog only audits it (no event, no hold).
-  const store = new SqliteCatalogStore(ctx.db);
+  const store = new CatalogStore(ctx.db);
   const catalog = new Catalog({
     store,
     connection: (id) => {
@@ -245,7 +206,6 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
     connections: () => brokerConnections(ctx.db).map((c) => ({ id: c.id, slug: c.slug })),
     audit: (input) => ctx.audit.record(input),
     log,
-    enabled,
   });
   const catalogRegistry = new CatalogRegistry({
     store,
@@ -257,7 +217,7 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
   // A disabled (killed) connection's tools aren't listed; resolve still finds them, so a direct call gets the
   // policy's clear "turned off" answer. needs_reauth ones stay listed (calls say how to reconnect).
   const disabledIds = () => new Set(ctx.db.all<{ id: string }>("SELECT id FROM connections WHERE status = 'disabled'").map((r) => r.id));
-  const visibleRegistry: ToolRegistry = {
+  const visibleRegistry: BrokerParts["registry"] = {
     forAgent: (agentId) => {
       const off = disabledIds();
       const all = catalogRegistry.forAgent(agentId);
@@ -272,7 +232,7 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
     else catalogRegistry.invalidate();
   };
 
-  // The policy runtime (W6): BrokerCalls, get_call_status, approved calls, grant hooks and the kill switch.
+  // The policy runtime: calls, get_call_status, approved calls, grant hooks and the kill switch.
   const policy = createBrokerPolicyRuntime(ctx, {
     registry: base.registry,
     sources: { source: (id) => service.source(id), close: (id) => closeSource(id) },
@@ -312,8 +272,7 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
   function createSource(c: Connection): ToolSource {
     if (c.kind === "remote_http") return parts.connector.createSource(c);
     const preset = presetOf(c);
-    if (!preset) return unavailableSource(c.id, c.preset ? missingExtensionMessage(c.preset) : UNAVAILABLE);
-    if (!preset.createSource) return unavailableSource(c.id);
+    if (!preset?.createSource) return unavailableSource(c.id, c.preset ? missingExtensionMessage(c.preset) : "This connection has no tool source.");
     return preset.createSource(parts.nativeDeps?.(c) ?? defaultNativeDeps(c));
   }
 
@@ -332,7 +291,7 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
     emit: (e) => {
       const conn = getConnection(ctx, c.id);
       // A disabled (killed) connection emits nothing, even from a child that hasn't stopped yet.
-      if (!conn || conn.status === "disabled" || !enabled()) {
+      if (!conn || conn.status === "disabled") {
         log.warn("Dropped an event from a disabled connection", { connection: c.id, type: e.type.slice(0, 80) });
         return;
       }
@@ -353,10 +312,10 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
    * reconnect (which replaces the pooled session) never leaves it on a closed one.
    */
   const attach = (connectionId: string) => {
-    if (!enabled() || !service.source(connectionId)) return;
+    if (!service.source(connectionId)) return;
     const live = (): ToolSource => {
       const s = service.source(connectionId);
-      if (!s) throw new SourceError("unavailable", "The connection is disabled or the broker is off");
+      if (!s) throw new SourceError("unavailable", "The connection is disabled");
       return s;
     };
     void catalog.attach({
@@ -368,15 +327,6 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
   };
   const attachAll = () => {
     for (const c of listConnections(ctx)) if (c.status !== "disabled") attach(c.id);
-  };
-  let wasOn = false;
-  const onSettings = (s: { brokerUpstreams: boolean }) => {
-    if (s.brokerUpstreams && !wasOn) attachAll();
-    if (!s.brokerUpstreams && wasOn) {
-      catalog.close();
-      void closeAll();
-    }
-    wasOn = s.brokerUpstreams;
   };
 
   const presetOf = (c: Connection): IntegrationPreset | null => presetFor(c.preset);
@@ -453,7 +403,7 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
   const lastPoll = new Map<string, number>();
   let polling = false;
   async function pollEvents(at = Date.now()): Promise<number> {
-    if (polling || !enabled()) return 0;
+    if (polling) return 0;
     polling = true;
     let emitted = 0;
     try {
@@ -487,7 +437,7 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
   }
   let pollTimer: NodeJS.Timeout | null = null;
   let unwatchExtensions: (() => void) | null = null;
-  let extensions: SqliteExtensionStore | null = null;
+  let extensions: ExtensionStore | null = null;
 
   /** Re-lists connections after their extension changed: cached views drop, native sources are rebuilt, and listing
    * re-classifies the pinned tools under the extension's risk map (or the generic rules, once it's gone). */
@@ -522,7 +472,7 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
         id,
       );
       ctx.audit.record({ actorType: "system", action: "connection.enable", target: id, outcome: "ok", reason: `its extension ${name} was installed again`, detail: { slug: c.slug, signedIn } });
-      if (enabled()) attach(id);
+      attach(id);
     }
   }
 
@@ -545,20 +495,16 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
   }
 
   const service: BrokerService = {
-    enabled,
     policy,
     onGrantChanged: (agentId, connectionId) => void rt().onGrantChanged(agentId, connectionId),
     onGrantRemoved: (agentId, connectionId) => void rt().onGrantRemoved(agentId, connectionId),
 
     view(agentId) {
-      if (!enabled()) return null;
       const connections = connectionGrantsOf(ctx.db, agentId);
       return { connections, tools: connections.length ? parts.registry.forAgent(agentId) : [] };
     },
 
-    calls: {
-      call: (agentId, exposedName, args, signal) => (enabled() ? parts.calls.call(agentId, exposedName, args, signal) : Promise.resolve(unavailable())),
-    },
+    calls: parts.calls,
 
     async callStatus(agentId, approvalId) {
       return parts.callStatus(agentId, approvalId);
@@ -572,7 +518,6 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
     },
 
     source(connectionId) {
-      if (!enabled()) return null;
       const c = getConnection(ctx, connectionId);
       if (!c || c.status === "disabled") return null;
       // Remote sources are pooled by the upstream runtime, which drops and rebuilds them on reconnect, URL or
@@ -647,24 +592,7 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
       log: ctx.log.child("mcp"),
     }),
 
-    upgradeExtensions(store, pins) {
-      return upgradeToExtensions({
-        db: ctx.db,
-        store,
-        ...(pins ? { pins } : {}),
-        log,
-        onInstalled: (_ext, connectionIds) => relist(connectionIds),
-      });
-    },
-
     start() {
-      // Agents from before search mode keep their full tool list (once per install).
-      try {
-        const pinned = pinExistingAgentsDirect(ctx.db, ctx.settings);
-        if (pinned) ctx.log.child("broker").info("Kept the full tool list for existing agents", { agents: pinned });
-      } catch (err) {
-        ctx.log.error("Couldn't keep the full tool list for existing agents", { error: errorMessage(err) });
-      }
       // Tools an older version left on hold (the hold was removed on 2026-10-16) become usable now.
       try {
         const released = catalog.releaseLegacyHolds();
@@ -672,9 +600,8 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
       } catch (err) {
         log.error("Couldn't release tools held by an older version", { error: errorMessage(err) });
       }
-      // Extensions: presets() reads the installed ones; the store asks us which connections use
-      // one, disables them on a forced removal, and reloads presets() after every change. Then the startup upgrade:
-      // connections of the former core presets are bound, and missing extensions install in the background.
+      // Extensions: presets() reads the installed ones; the store asks us which connections use one,
+      // disables them on a forced removal, and reloads presets() after every change.
       try {
         extensions = extensionStore(ctx);
         useExtensionStore(extensions);
@@ -700,17 +627,14 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
           },
           { order: LISTENER_ORDER.restart },
         );
-        service.upgradeExtensions(extensions);
       } catch (err) {
         log.error("Couldn't load extensions", { error: errorMessage(err) });
       }
       policy.start();
-      ctx.bus.on("settings", onSettings);
       // Google extensions' connections follow their accounts (consent, scopes backfilled, needs_reauth, reconnect).
       ctx.bus.on("account", onAccount);
       onAccount();
-      wasOn = enabled();
-      if (wasOn) attachAll();
+      attachAll();
       pollTimer = setInterval(() => void pollEvents(), opts.pollTickMs ?? 60_000);
       pollTimer.unref();
     },
@@ -721,7 +645,6 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
       // This context's store goes with it (tests run several contexts in one process).
       if (extensions && presetSource() === extensions) useExtensionStore(null);
       catalog.close();
-      ctx.bus.off("settings", onSettings);
       ctx.bus.off("account", onAccount);
       if (pollTimer) clearInterval(pollTimer);
       await closeAll();
@@ -799,6 +722,11 @@ export function listConnections(ctx: Pick<AppContext, "db">): Connection[] {
 
 const DAY_MS = 86_400_000;
 
+/** The ids of the connections bound to an extension (connections.preset), oldest first. */
+export function usedBy(db: Pick<AppContext["db"], "all">, name: string): string[] {
+  return db.all<{ id: string }>("SELECT id FROM connections WHERE preset = ? ORDER BY created_at, rowid", name).map((r) => r.id);
+}
+
 /** The status reason of a connection a forced extension removal disabled (reenableAfterReinstall matches it). */
 export const extensionRemovedReason = (name: string) => `its extension ${name} was removed`;
 
@@ -817,7 +745,7 @@ export function connectionView(ctx: Pick<AppContext, "db">, c: Connection, at = 
   const total = ctx.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM upstream_tools WHERE connection_id = ?", c.id)!.n;
   const agents = ctx.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM connection_grants WHERE connection_id = ?", c.id)!.n;
   const expiresInDays = c.expiresAt ? Math.max(0, Math.floor((Date.parse(c.expiresAt) - at) / DAY_MS)) : null;
-  const preset = c.preset ? boundPreset(c.preset) : null;
+  const preset = c.preset ? presetById(c.preset) : null;
   // A Google extension's connection: its account and access, live (an account removed or needing a reconnect shows at
   // once, even before the stored status catches up).
   const google = isGooglePreset(preset) ? googleConnectionState(ctx, c.id, preset) : null;

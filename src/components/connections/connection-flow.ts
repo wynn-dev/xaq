@@ -14,6 +14,7 @@ import type {
   SetupStepView,
   StartConnectInput,
 } from "../../../shared/types.ts";
+import { presetServerSlug, withServerPath } from "../../../shared/user-server.ts";
 import type { AgentConnection, AgentLevel } from "../../lib/broker-dto.ts";
 
 /** A subset of the console's Tone (src/lib/labels.ts). */
@@ -229,31 +230,14 @@ export function suggestSlug(url: string): string {
   return base.slice(0, 24);
 }
 
-/**
- * The MCP URL for a preset whose server the user names (T3 Code): as typed, with the preset's path when only an origin
- * was given (http://100.104.249.49:3773 → http://100.104.249.49:3773/mcp). Same rule as the server's presetServerUrl.
- */
+/** The MCP URL for a preset whose server the user names (T3 Code): as typed, with the preset's path (shared/user-server.ts). */
 export function presetServerUrl(raw: string, defaultPath: string): string {
   const text = raw.trim();
   try {
-    const u = new URL(text);
-    if (u.pathname === "/" || u.pathname === "") u.pathname = defaultPath;
-    return u.toString();
+    return withServerPath(new URL(text), defaultPath);
   } catch {
     return text;
   }
-}
-
-/** The default slug for a user-named server: `<preset slug>-<host>` (t3-forge, t3-100-104-249-49), as the server's. */
-export function presetServerSlug(presetSlug: string, url: string): string {
-  let host: string;
-  try {
-    host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  } catch {
-    return presetSlug;
-  }
-  const part = (/^[\d.]+$/.test(host) || host.includes(":") ? host : (host.split(".")[0] ?? host)).replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
-  return `${presetSlug}-${part}`.slice(0, 24).replace(/-+$/, "");
 }
 
 /** The name a connection gets when none is typed: the preset's, or the server's `host[:port]` (as the server does). */

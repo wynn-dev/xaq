@@ -11,8 +11,9 @@ import type { SetupContext } from "../server/broker/types.ts";
 import { Db } from "../server/db/index.ts";
 import { MANIFEST_JSON_SCHEMA, presetFromManifest, presetFromValidManifest, renderSetup, validateManifest } from "../server/extensions/manifest.ts";
 import { OFFICIAL_NAMES } from "../server/extensions/registry.ts";
-import { ExtensionError, SqliteExtensionStore } from "../server/extensions/store.ts";
-import { CALENDAR_EVENTS_SCOPE, GMAIL_SCOPE, PUBSUB_SCOPE, WORKSPACE_SCOPES } from "../server/google/scopes.ts";
+import { ExtensionError } from "../server/extensions/sources.ts";
+import { ExtensionStore } from "../server/extensions/store.ts";
+import { CALENDAR_EVENTS_SCOPE, GMAIL_SCOPE, PUBSUB_SCOPE, WORKSPACE_SCOPES } from "../shared/google-scopes.ts";
 import { fixtureExtension } from "./extension-fixtures.ts";
 import { googleManifest, WORKSPACE_APIS } from "./google-extension-fixtures.ts";
 
@@ -177,7 +178,7 @@ describe("the setup view: core's Google steps", () => {
 
 describe("install: a third-party google extension is refused", () => {
   const dirs: string[] = [];
-  const stores: SqliteExtensionStore[] = [];
+  const stores: ExtensionStore[] = [];
   afterEach(() => {
     for (const s of stores.splice(0)) s.cleanTemp();
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
@@ -191,7 +192,7 @@ describe("install: a third-party google extension is refused", () => {
     writeFileSync(join(src, "xaq-extension.json"), JSON.stringify(googleManifest({ name: "my-docs", slug: "my-docs" })));
     writeFileSync(join(src, "dist", "server.mjs"), "export {};\n");
     const db = new Db(join(work, "x.db"));
-    const store = new SqliteExtensionStore({
+    const store = new ExtensionStore({
       db,
       dataDir: work,
       fetch: (async () => {

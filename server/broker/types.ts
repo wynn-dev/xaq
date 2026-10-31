@@ -1,11 +1,5 @@
-// Contracts for the MCP broker. Parallel workstreams build against these:
-// - the upstream manager (server/broker/upstream/*) implements ToolSource for remote MCP servers;
-// - native integrations (server/integrations/<id>/*) implement IntegrationPreset (+ ToolSource when native);
-// - the catalog (server/broker/catalog/*) implements ToolRegistry and pinning;
-// - policy and approvals (server/broker/policy/*) implement BrokerPolicy and BrokerCalls;
-// - the credential store (server/broker/credentials/*) implements CredentialStore and TokenRefresher;
-// - /mcp and search mode only consume ToolRegistry and BrokerCalls.
-// Members marked FROZEN are relied on across workstreams: change them only with the lead's agreement.
+// Shared types of the MCP broker: tool sources (remote MCP servers and code extensions), presets,
+// registered tools and stored tokens.
 
 /** One choice per connection (and per agent × connection): Wynn's model. FROZEN. */
 export type AccessLevel = "full" | "ask" | "read";
@@ -142,7 +136,7 @@ export interface PromptSource {
   readResource(uri: string, signal: AbortSignal): Promise<ResourceReadResult>;
 }
 
-/** Why a source couldn't serve a call. `needs_reauth` also flips the connection's status (CredentialStore). FROZEN. */
+/** Why a source couldn't serve a call. `needs_reauth` also flips the connection's status (the credential store). FROZEN. */
 export type SourceErrorCode = "needs_reauth" | "unavailable" | "timeout" | "blocked_target" | "rate_limited" | "protocol";
 
 export class SourceError extends Error {
@@ -342,14 +336,6 @@ export interface RegisteredTool {
   pinHash: string;
 }
 
-/** Per-agent view of every broker tool. Native Gmail/Calendar tools stay in server/mcp and are not in here. FROZEN. */
-export interface ToolRegistry {
-  /** Tools the agent may see now: granted connections, level applied (read level lists read tools only). */
-  forAgent(agentId: string): RegisteredTool[];
-  /** Same filter as forAgent, for one exposed name; null when not visible to this agent. */
-  resolve(agentId: string, exposedName: string): RegisteredTool | null;
-}
-
 /** The policy's verdict on one call. FROZEN. */
 export type CallDecision =
   /** `ruleId`: the "always allow" rule that let a risky call through at the "ask" level (audit). */
@@ -362,14 +348,6 @@ export interface BrokerPolicy {
   decide(agentId: string, tool: RegisteredTool, args: Record<string, unknown>): CallDecision;
 }
 
-/**
- * The single entry point for running a broker tool, used by /mcp and search mode: resolve, decide, then run
- * (with output wrapping, token scrubbing, audit) or queue an approval and return `pending_approval` at once. FROZEN.
- */
-export interface BrokerCalls {
-  call(agentId: string, exposedName: string, args: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult>;
-}
-
 /** OAuth tokens as stored (encrypted at rest). */
 export interface StoredTokens {
   accessToken: string;
@@ -380,36 +358,6 @@ export interface StoredTokens {
   issuer: string | null;
   /** Epoch ms when the access token was issued (for the 10 %-of-lifetime refresh window). Additive. */
   issuedAt?: number | null;
-}
-
-/** Encrypted per-connection credentials. FROZEN. */
-export interface CredentialStore {
-  header(connectionId: string): { name: string; value: string } | null;
-  setHeader(connectionId: string, name: string, value: string): void;
-  tokens(connectionId: string): StoredTokens | null;
-  /** Compare-and-swap on the refresh token: false when another refresh already rotated it. */
-  saveTokens(connectionId: string, tokens: StoredTokens, expectedRefreshToken?: string | null): boolean;
-  /** OAuth client registration / user app (client id, secret, registration response), per issuer. */
-  client(connectionId: string): Record<string, unknown> | null;
-  setClient(connectionId: string, client: Record<string, unknown>): void;
-  /**
-   * Sets status `needs_reauth` (with reason), emits `connection.auth_failed` once, audits. `expired` (additive): the
-   * credential's lifetime is over (no refresh token), so the connection reads as expired.
-   */
-  markNeedsReauth(connectionId: string, reason: string, opts?: { expired?: boolean }): void;
-  /** Deletes every credential of the connection (kill switch, disconnect). */
-  clear(connectionId: string): void;
-}
-
-/**
- * Single-flight access tokens with proactive refresh (expiresAt − max(60 s, 10 % of lifetime)) and a background sweep.
- * The provider-specific exchange is passed in, so MCP OAuth and native user-app OAuth (WHOOP) share it. FROZEN.
- */
-export interface TokenRefresher {
-  accessToken(connectionId: string, refresh: RefreshFn, signal: AbortSignal): Promise<string>;
-  /** Registers a connection for the background sweep (keeps rotating refresh tokens alive while idle). */
-  track(connectionId: string, refresh: RefreshFn): void;
-  untrack(connectionId: string): void;
 }
 
 /** Exchanges the current tokens for new ones; throws `SourceError("needs_reauth")` on invalid_grant/invalid_client. */

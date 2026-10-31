@@ -8,7 +8,7 @@
 
 import type { PresetAuth, SetupContext, SetupStep } from "../broker/types.ts";
 import { apiLibraryUrl, enableApisCommand, GOOGLE_PERMISSIONS_URL } from "../google/api-links.ts";
-import { hasScopes, scopeGrants } from "../google/scopes.ts";
+import { hasScopes, scopeGrants } from "../../shared/google-scopes.ts";
 
 export type GoogleAuth = Extract<PresetAuth, { type: "google" }>;
 

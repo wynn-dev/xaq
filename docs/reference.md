@@ -113,10 +113,7 @@ key; the broker holds every upstream credential and lists only the tools the age
   Below it xaq still runs, and warns (see "Which Node.js the service runs").
 - **Search mode**: the tool list shows only `search_tools`, `call_read_tool`, `call_write_tool` and `get_call_status`;
   the agent finds the rest by searching. Calling a tool by its name still works, with the same access, approvals and
-  audit. A new agent gets search mode if it has more than about 30 tools the first time it connects. After that its
-  mode changes only when you change it (agent page → Tool list), never because a connection added tools. Agents
-  created before search mode keep every tool listed. Any agent can ask for it with `/mcp?mode=search`.
-- **Turn it off**: Settings → Connections (MCP broker).
+  audit. It's automatic: an agent with more than 30 tools gets search mode, one with fewer gets every tool listed.
 
 ## Extensions
 

@@ -1,4 +1,5 @@
 import type { GoogleAppType, GoogleClientView } from "@shared/types";
+import { CALENDAR_SCOPES, GMAIL_SCOPE } from "@shared/google-scopes";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangleIcon, BuildingIcon, GlobeIcon, InfoIcon } from "lucide-react";
 import { ChoiceCards } from "@/components/choice-cards";
@@ -11,12 +12,9 @@ import { api } from "@/lib/api";
 import { useApiMutation } from "@/lib/mutations";
 import { keys, queries } from "@/lib/queries";
 import { STEP_META, updateDraft, useSetupProgress } from "./progress";
-import { SCOPES } from "@/lib/gcp-project";
 import { cloudUrl } from "./step-project";
 import type { StepProps } from "./step-url";
 import { CloudLink, Disclosure, FormValues, GoogleTabNote, Guide, GuideStep, Path, StepCard, StepFooter } from "./wizard-shell";
-
-export { SCOPES } from "@/lib/gcp-project";
 
 export const UNVERIFIED_PATH = ["Google hasn't verified this app", "Advanced", "Go to xaq (unsafe)"];
 
@@ -188,7 +186,7 @@ export function StepConsent({ index, onBack, onNext }: StepProps) {
   );
 }
 
-const DATA_ACCESS_SCOPES = [SCOPES.gmail, ...SCOPES.calendar].join("\n");
+const DATA_ACCESS_SCOPES = [GMAIL_SCOPE, ...CALENDAR_SCOPES].join("\n");
 
 /**
  * The Data access page: optional, since xaq asks for each scope when an account connects. Listing

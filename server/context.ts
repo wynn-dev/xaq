@@ -17,7 +17,7 @@ import { Crypto } from "./crypto.ts";
 import { Db } from "./db/index.ts";
 import type { EventsService } from "./events/types.ts";
 import type { AccountsService, GoogleService } from "./google/types.ts";
-import type { IngestService } from "./ingest/types.ts";
+import type { IngestService } from "./ingest/index.ts";
 import type { MailService } from "./mail/types.ts";
 import type { PolicyService } from "./policy/types.ts";
 import { SettingsStore } from "./settings.ts";
@@ -48,7 +48,7 @@ export interface Services {
   mail: MailService;
   webhooks: WebhooksService;
   calendar: CalendarService;
-  /** The MCP broker (server/broker/service.ts), inert while Settings.brokerUpstreams is off. */
+  /** The MCP broker (server/broker/service.ts). */
   broker: BrokerService;
 }
 

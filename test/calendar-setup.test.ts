@@ -8,7 +8,7 @@ import { now } from "../server/db/index.ts";
 import { getRow } from "../server/google/accounts.ts";
 import { noteCalendarApi, probeCalendar } from "../server/calendar/setup.ts";
 import { GoogleApiError } from "../server/google/types.ts";
-import { CALENDAR_SCOPES } from "../server/google/scopes.ts";
+import { CALENDAR_SCOPES } from "../shared/google-scopes.ts";
 import { HttpError } from "../server/util/errors.ts";
 import type { CalendarSetupState, SetupWarning } from "../shared/types.ts";
 import { ACTIVATION_URL, consent, fakeCalendar, MAIL_ONLY } from "./calendar-setup-fakes.ts";

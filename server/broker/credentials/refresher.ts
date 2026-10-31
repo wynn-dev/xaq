@@ -1,6 +1,7 @@
 import { errorMessage } from "../../util/errors.ts";
 import type { Logger } from "../../util/log.ts";
-import { type CredentialStore, type RefreshFn, SourceError, type StoredTokens, type TokenRefresher } from "../types.ts";
+import { type RefreshFn, SourceError, type StoredTokens } from "../types.ts";
+import type { CredentialStore } from "./store.ts";
 
 /** Refresh at expiresAt − max(60 s, 10 % of the lifetime). */
 export function refreshDueAt(t: Pick<StoredTokens, "expiresAt" | "issuedAt">): number | null {
@@ -35,7 +36,7 @@ export interface AccessTokenOptions {
  *   needs_reauth once, unless a reconnect stored a new refresh token meanwhile;
  * - no refresh token: the access token is used until it expires, then needs_reauth (never a 401 mid-task).
  */
-export class Refresher implements TokenRefresher {
+export class Refresher {
   private readonly inflight = new Map<string, Promise<string>>();
   private readonly tracked = new Map<string, RefreshFn>();
   private timer: NodeJS.Timeout | null = null;

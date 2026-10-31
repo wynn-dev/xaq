@@ -15,12 +15,11 @@ import type {
   EventsListParams,
   WriteOptions,
 } from "../server/google/calendar.ts";
-import { CALENDAR_SCOPES, MAIL_SCOPES } from "../server/google/scopes.ts";
+import { CALENDAR_SCOPES, MAIL_SCOPES } from "../shared/google-scopes.ts";
 import { GoogleApiError, type GoogleService } from "../server/google/types.ts";
-import type { IngestService } from "../server/ingest/types.ts";
+import type { IngestService } from "../server/ingest/index.ts";
 import { AgentMail, ToolError, type ToolTrace } from "../server/mail/agent.ts";
 import { PolicyDenied } from "../server/util/errors.ts";
-import { stubService } from "../server/util/stub.ts";
 import { testContext } from "./helpers.ts";
 import { FakeGoogle } from "./mail-fakes.ts";
 
@@ -190,7 +189,7 @@ export function calendarTestContext() {
         get: (target, prop) => (prop === "calendar" ? (id: string) => fakes.get(id)! : Reflect.get(target, prop)),
       }) as GoogleService;
     },
-    ingest: () => ({ ...stubService<IngestService>("ingest"), kick: () => {} }) as IngestService,
+    ingest: () => ({ kick: () => {} }) as unknown as IngestService,
     calendar: (ctx): CalendarService => ({
       ...createCalendarService(ctx),
       kick: (accountId, calendarId) => void kicks.push([accountId, calendarId]),

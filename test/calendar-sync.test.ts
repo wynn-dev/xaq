@@ -8,7 +8,7 @@ import { summarizeEvent } from "../server/calendar/summary.ts";
 import { createCalendarSync, MAX_POLL_BACKOFF_MS, pollBackoffMs } from "../server/calendar/sync.ts";
 import { endsAt, syncRows } from "../server/calendar/state.ts";
 import type { AppContext } from "../server/context.ts";
-import { CALENDAR_SCOPES, GMAIL_SCOPE } from "../server/google/scopes.ts";
+import { CALENDAR_SCOPES, GMAIL_SCOPE } from "../shared/google-scopes.ts";
 import { runMaintenance } from "../server/maintenance.ts";
 import { connectFakeAccount, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";
 import { testContext } from "./helpers.ts";

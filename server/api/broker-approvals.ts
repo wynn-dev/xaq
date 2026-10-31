@@ -32,8 +32,7 @@ const off = () => new HttpError(404, "not_found", "No such API route");
 
 export function brokerApprovalsApi(ctx: AppContext) {
   const app = router();
-  /** The broker runtime when upstreams are on, else null. */
-  const runtime = () => (ctx.settings.get().brokerUpstreams === true ? brokerPolicyOf(ctx) : null);
+  const runtime = () => brokerPolicyOf(ctx);
   /** The runtime when `:id` is an mcp.call approval; null hands the request to the next handler. */
   const forCall = (c: Context<AppEnv>) => {
     const rt = runtime();

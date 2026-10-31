@@ -17,7 +17,7 @@ import { codeExtensionNodeProblem } from "../server/extensions/host/index.ts";
 import { computeIntegrity } from "../server/extensions/integrity.ts";
 import { extensionStore } from "../server/extensions/store.ts";
 import { grantedScopes } from "../server/google/scoped.ts";
-import { GMAIL_SCOPE, WORKSPACE_SCOPES } from "../server/google/scopes.ts";
+import { GMAIL_SCOPE, WORKSPACE_SCOPES } from "../shared/google-scopes.ts";
 import { presets } from "../server/integrations/index.ts";
 import { entriesFromDir, type FakeGithub, fakeSha, startFakeGithub } from "./extension-fakes.ts";
 import { connectFakeAccount, FAKE_CLIENT, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";
@@ -56,7 +56,6 @@ beforeEach(async () => {
   ctx.google.setClient({ ...FAKE_CLIENT, appType: "external" });
   // The store reaches only the fake GitHub on 127.0.0.1.
   extensionStore(ctx, { urls: gh.urls });
-  ctx.settings.update({ brokerUpstreams: true });
   ctx.broker.start?.();
   const app = createApp(ctx);
   let cookie = "";

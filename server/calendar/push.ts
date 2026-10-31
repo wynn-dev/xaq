@@ -8,7 +8,7 @@ import type { AppContext } from "../context.ts";
 import { sha256 } from "../crypto.ts";
 import { now } from "../db/index.ts";
 import { accountScopes, getRow } from "../google/accounts.ts";
-import { CALENDAR_SCOPES, hasScopes } from "../google/scopes.ts";
+import { CALENDAR_SCOPES, hasScopes } from "../../shared/google-scopes.ts";
 import { GoogleApiError } from "../google/types.ts";
 import { errorMessage } from "../util/errors.ts";
 import { randomToken } from "../util/ids.ts";

@@ -15,7 +15,7 @@ import {
   enableCalendarApiUrl,
 } from "../google/calendar.ts";
 import { googleRuntime } from "../google/runtime.ts";
-import { CALENDAR_SCOPES, describeScopes, hasScopes, missingScopes } from "../google/scopes.ts";
+import { CALENDAR_SCOPES, describeScopes, hasScopes, missingScopes } from "../../shared/google-scopes.ts";
 import { AccountNeedsReauthError, GoogleApiError } from "../google/types.ts";
 import { cleanLine } from "../mail/content.ts";
 import type { InternalState } from "../settings.ts";

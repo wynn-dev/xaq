@@ -6,7 +6,7 @@ import { type LookupFn, resolveTarget } from "../../webhooks/ssrf.ts";
 import { checkExpiries } from "../credentials/expiry.ts";
 import { Refresher } from "../credentials/refresher.ts";
 import { scrubText } from "../credentials/scrub.ts";
-import { type EmitConnectionEvent, type PendingAuth, SqliteCredentialStore } from "../credentials/store.ts";
+import { type EmitConnectionEvent, type PendingAuth, CredentialStore } from "../credentials/store.ts";
 import { type IntegrationPreset, type RefreshFn, SourceError, type StoredTokens, type ToolSource } from "../types.ts";
 import { connectionConsoleUrl, type ConnectionRow, getConnection, requireRemote } from "./connection.ts";
 import { discover, parseWwwAuthenticate } from "./discovery.ts";
@@ -134,11 +134,10 @@ type Ctx = Pick<CoreContext, "db" | "crypto" | "audit" | "log" | "settings" | "c
 
 /**
  * The upstream manager: per-connection guarded fetches and pooled ToolSources, the credential store and
- * refresher, the connect flow (start/finish/probe) and the background sweep. Inert while the
- * `brokerUpstreams` setting is off.
+ * refresher, the connect flow (start/finish/probe) and the background sweep.
  */
 export class UpstreamRuntime {
-  readonly store: SqliteCredentialStore;
+  readonly store: CredentialStore;
   readonly refresher: Refresher;
   private readonly sources = new Map<string, RemoteToolSource>();
   private readonly fetches = new Map<string, { allow: string | null; fetch: GuardedFetch }>();
@@ -156,10 +155,10 @@ export class UpstreamRuntime {
     this.emit =
       opts.emit ??
       ((e) => {
-        // Until the events PR opens EventType to connection.* events: logged, and audited by the caller.
-        log.warn(`Connection event ${e.type} (events outbox not wired yet)`, { connectionId: e.connectionId });
+        // Without an outbox (tests): logged, and audited by the caller.
+        log.warn(`Connection event ${e.type}`, { connectionId: e.connectionId });
       });
-    this.store = new SqliteCredentialStore({
+    this.store = new CredentialStore({
       db: ctx.db,
       crypto: ctx.crypto,
       audit: ctx.audit,
@@ -174,14 +173,6 @@ export class UpstreamRuntime {
   /** The connection's page in the console: where the owner reconnects it (events and agents' errors link here). */
   consoleUrl(connectionId: string): string {
     return connectionConsoleUrl(this.ctx.settings.publicUrl(), connectionId);
-  }
-
-  enabled(): boolean {
-    return this.ctx.settings.get().brokerUpstreams === true;
-  }
-
-  private requireEnabled(): void {
-    if (!this.enabled()) throw new SourceError("unavailable", "Upstream connections are turned off (Settings → brokerUpstreams)");
   }
 
   registerNativeFlow(flow: NativeOAuthFlow): void {
@@ -231,7 +222,6 @@ export class UpstreamRuntime {
 
   /** The pooled ToolSource of a remote_http connection. */
   source(connectionId: string): ToolSource {
-    this.requireEnabled();
     let s = this.sources.get(connectionId);
     if (!s) {
       const conn = getConnection(this.ctx.db, connectionId);
@@ -333,7 +323,6 @@ export class UpstreamRuntime {
    * to open (popup, or paste mode).
    */
   async startConnect(connectionId: string, o: StartConnectOptions = {}): Promise<StartConnectResult> {
-    this.requireEnabled();
     const conn = getConnection(this.ctx.db, connectionId);
     if (!conn) throw new HttpError(404, "not_found", "Connection not found");
     if (conn.status === "disabled") throw new HttpError(409, "connection_disabled", `${conn.name} is disabled`, "Enable it first.");
@@ -428,7 +417,6 @@ export class UpstreamRuntime {
    * connection's status alone (the callback page shows it).
    */
   async finishConnect(q: { code?: string | null; state?: string | null; iss?: string | null; error?: string | null; errorDescription?: string | null }): Promise<FinishConnectResult> {
-    this.requireEnabled();
     // The state comes first, even for an error response: an unknown state gets no upstream text echoed back.
     let taken: { connectionId: string };
     try {
@@ -601,7 +589,6 @@ export class UpstreamRuntime {
 
   /** One background pass: proactive refreshes and the dated expiry warnings. */
   async sweep(): Promise<void> {
-    if (!this.enabled()) return;
     await this.refresher.sweep();
     checkExpiries({
       db: this.ctx.db,

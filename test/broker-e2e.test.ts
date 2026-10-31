@@ -47,7 +47,6 @@ describe("broker end to end (fake upstream, OAuth + DCR)", () => {
     const { ctx } = h;
     const cookie = await h.claim();
     const api = (path: string, init: RequestInit & { json?: unknown } = {}) => h.request(`/api${path}`, { cookie, ...init, headers: { ...CSRF, ...(init.headers as object) } });
-    ctx.settings.update({ brokerUpstreams: true });
     const { agent, apiKey } = ctx.policy.createAgent({ name: "Hermes" });
 
     // Add the connection (the agent at "ask"), allow its loopback host, connect: probe → OAuth (DCR) → authorize URL.

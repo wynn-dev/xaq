@@ -31,7 +31,6 @@ import {
   duplicateOf,
   emptyDraft,
   grantedScopesView,
-  presetServerSlug,
   suggestDraftSlug,
   exactOrigin,
   finishEarlyCreate,
@@ -51,6 +50,7 @@ import {
 import { brokerStatuses, firstRunView, shownWizard } from "../src/components/setup/first-run.ts";
 import { stepStatuses } from "../src/components/setup/steps.ts";
 import { fixtureManifest } from "./extension-fixtures.ts";
+import { presetServerSlug } from "../shared/user-server.ts";
 
 const NOW = Date.parse("2026-10-16T12:00:00.000Z");
 const inDays = (d: number) => new Date(NOW + d * 86_400_000).toISOString();
@@ -451,21 +451,20 @@ describe("First run with Google optional", () => {
   const fresh: Pick<SetupState, "googleClientConfigured" | "accountsConnected" | "gcpProjectId"> = { googleClientConfigured: false, accountsConnected: 0, gcpProjectId: null };
 
   it("asks what to connect on a fresh install, only with the broker on", () => {
-    expect(firstRunView(false, fresh, {})).toBe("google");
-    expect(firstRunView(true, fresh, {})).toBe("choose");
-    expect(firstRunView(true, undefined, {})).toBe("choose");
+    expect(firstRunView(fresh, {})).toBe("choose");
+    expect(firstRunView(undefined, {})).toBe("choose");
   });
 
   it("Gmail & Calendar enters the Google steps; the others take the short path", () => {
-    expect(firstRunView(true, fresh, { firstConnect: "google" })).toBe("google");
-    for (const c of ["notion", "custom"] as const) expect(firstRunView(true, fresh, { firstConnect: c })).toBe("broker");
+    expect(firstRunView(fresh, { firstConnect: "google" })).toBe("google");
+    for (const c of ["notion", "custom"] as const) expect(firstRunView(fresh, { firstConnect: c })).toBe("broker");
   });
 
   it("doesn't ask an install already into the Google steps", () => {
-    expect(firstRunView(true, { ...fresh, googleClientConfigured: true }, {})).toBe("google");
-    expect(firstRunView(true, { ...fresh, accountsConnected: 1 }, {})).toBe("google");
-    expect(firstRunView(true, fresh, { projectConfirmed: true })).toBe("google");
-    expect(firstRunView(true, fresh, { appType: "external" })).toBe("google");
+    expect(firstRunView({ ...fresh, googleClientConfigured: true }, {})).toBe("google");
+    expect(firstRunView({ ...fresh, accountsConnected: 1 }, {})).toBe("google");
+    expect(firstRunView(fresh, { projectConfirmed: true })).toBe("google");
+    expect(firstRunView(fresh, { appType: "external" })).toBe("google");
   });
 
   it("the short path is done with a connection and an agent", () => {

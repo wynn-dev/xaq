@@ -31,8 +31,7 @@ export type FirstRunDraft = Pick<SetupDraft, "firstConnect" | "urlConfirmed" | "
  * Without the broker (setting off) it is always the Google wizard. An install already into the Google steps
  * (anything saved on the server, or answers in this browser) stays on them without being asked.
  */
-export function firstRunView(brokerOn: boolean, state: Pick<SetupState, "googleClientConfigured" | "accountsConnected" | "gcpProjectId"> | undefined, draft: FirstRunDraft): "choose" | "google" | "broker" {
-  if (!brokerOn) return "google";
+export function firstRunView(state: Pick<SetupState, "googleClientConfigured" | "accountsConnected" | "gcpProjectId"> | undefined, draft: FirstRunDraft): "choose" | "google" | "broker" {
   if (draft.firstConnect === "google") return "google";
   if (draft.firstConnect) return "broker";
   const googleStarted =

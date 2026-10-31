@@ -6,7 +6,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { SEARCH_MODE_THRESHOLD, setAgentSearchSettings } from "../server/broker/search/mode.ts";
+import { SEARCH_MODE_THRESHOLD } from "../server/broker/search/mode.ts";
 import { SEARCH_AUDIT_ACTION } from "../server/broker/search/tools.ts";
 import { type FakeMcpUpstream, startFakeMcpUpstream } from "./fake-mcp-upstream.ts";
 import { CSRF, harness, json } from "./platform-helpers.ts";
@@ -49,7 +49,6 @@ describe("search mode end to end (fake upstream)", () => {
     const { ctx } = h;
     const cookie = await h.claim();
     const api = (path: string, init: RequestInit & { json?: unknown } = {}) => h.request(`/api${path}`, { cookie, ...init, headers: { ...CSRF, ...(init.headers as object) } });
-    ctx.settings.update({ brokerUpstreams: true });
     const { agent, apiKey } = ctx.policy.createAgent({ name: "Hermes" });
 
     const con = await json(await api("/connections", { method: "POST", json: { url: up.url, slug: "wiki", name: "Wiki", agentIds: [agent.id], levelDefault: "ask" } }));
@@ -58,7 +57,7 @@ describe("search mode end to end (fake upstream)", () => {
     expect(await ctx.broker.catalog.refresh(con.id)).toMatchObject({ ok: true });
     expect(ctx.broker.view(agent.id)!.tools).toHaveLength(SEARCH_MODE_THRESHOLD + 1);
 
-    // The agent, over HTTP, without ?mode=search: more than 30 tools, so search mode is on by itself.
+    // The agent, over HTTP: more than 30 tools, so search mode is on by itself.
     const client = new Client({ name: "e2e", version: "1" });
     await client.connect(
       new StreamableHTTPClientTransport(new URL("http://xaq.test/mcp"), {
@@ -102,7 +101,6 @@ describe("search mode end to end (fake upstream)", () => {
     expect(JSON.stringify(rows)).not.toContain("wiki page");
 
     // Called by name, unlisted: the same broker path. A read runs; the risky one is pending at once, nothing sent.
-    expect(ctx.db.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", `broker.search:${agent.id}`)?.value).toContain('"search"');
     expect(text(await client.callTool({ name: "wiki__get_record_4", arguments: { id: "r2" } }))).toContain("Record r2");
     const direct = await client.callTool({ name: "wiki__delete_page", arguments: { id: "p3" } });
     expect(text(direct)).toContain("pending_approval");
@@ -114,10 +112,7 @@ describe("search mode end to end (fake upstream)", () => {
       const r = await client.callTool({ name: "wiki__delete_page", arguments: { id: "p4" } }).catch((err: Error) => err.message);
       return typeof r === "string" ? r : text(r);
     };
-    const inSearch = await refusal();
-    expect(inSearch).toMatch(/-32602.*wiki__delete_page not found/);
-    setAgentSearchSettings(ctx.db, agent.id, { mode: "direct" });
-    expect(await refusal()).toBe(inSearch);
+    expect(await refusal()).toMatch(/-32602.*wiki__delete_page not found/);
     expect(deleted).toEqual(["p2"]);
   }, 20_000);
 });

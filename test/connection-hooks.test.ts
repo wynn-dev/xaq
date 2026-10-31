@@ -80,14 +80,10 @@ describe("POST /hooks/connections/:id", () => {
   let dispose: () => Promise<void>;
   let emitted: IntegrationEvent[];
   let host: ReturnType<typeof acmeHost>;
-  let flag: boolean;
 
   beforeEach(() => {
     ({ ctx, dispose } = testContext());
     emitted = [];
-    flag = true;
-    const realGet = ctx.settings.get.bind(ctx.settings);
-    vi.spyOn(ctx.settings, "get").mockImplementation(() => ({ ...realGet(), brokerUpstreams: flag }));
     host = acmeHost(emitted);
   });
   afterEach(async () => {
@@ -129,12 +125,10 @@ describe("POST /hooks/connections/:id", () => {
     expect(emitted).toEqual([]);
   });
 
-  it("404 for an unknown connection, without a host, or with brokerUpstreams off", async () => {
+  it("404 for an unknown connection or without a host", async () => {
     const msg = webhook({ id: "a", trace: "t" });
     expect((await post(createApp(ctx, { connectionHooks: host }), "/hooks/connections/other", msg)).status).toBe(404);
     expect((await post(createApp(ctx), "/hooks/connections/conn1", msg)).status).toBe(404);
-    flag = false;
-    expect((await post(createApp(ctx, { connectionHooks: host }), "/hooks/connections/conn1", msg)).status).toBe(404);
     expect(emitted).toEqual([]);
   });
 
@@ -189,7 +183,7 @@ describe("hook route dedupe memory", () => {
     const now = () => t;
     const emitted: IntegrationEvent[] = [];
     const host = acmeHost(emitted, now);
-    const routes = connectionHookRoutes({ enabled: () => true, host: () => host, log: createLogger("test"), now });
+    const routes = connectionHookRoutes({ host: () => host, log: createLogger("test"), now });
     expect(HOOK_DEDUPE_TTL_MS).toBeGreaterThan(TOLERANCE_MS);
 
     expect((await post(routes, "/hooks/connections/conn1", webhook({ id: "a", trace: "z" }, { timestamp: t }))).status).toBe(204);

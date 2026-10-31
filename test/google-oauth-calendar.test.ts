@@ -5,7 +5,7 @@ import type { AppContext } from "../server/context.ts";
 import { getRow } from "../server/google/accounts.ts";
 import { storedFailure } from "../server/google/oauth.ts";
 import { googleRuntime } from "../server/google/runtime.ts";
-import { CALENDAR_SCOPES, GMAIL_SCOPE, PUBSUB_SCOPE } from "../server/google/scopes.ts";
+import { CALENDAR_SCOPES, GMAIL_SCOPE, PUBSUB_SCOPE } from "../shared/google-scopes.ts";
 import { HttpError } from "../server/util/errors.ts";
 import { consent, fakeCalendar, MAIL_ONLY } from "./calendar-setup-fakes.ts";
 import { connectFakeAccount, FAKE_CLIENT, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";

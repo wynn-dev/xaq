@@ -36,7 +36,6 @@ let w: World;
 beforeEach(() => {
   const h = harness();
   const { ctx } = h;
-  ctx.settings.update({ brokerUpstreams: true });
   const registry = new DbRegistry(ctx);
   const sources = new FakeSources();
   const credentials = new MemoryCredentials();
@@ -118,13 +117,6 @@ describe("levels × risk", () => {
     const r = await w.rt.call(w.agent, "notion__delete_pages", { page_ids: "p1" }, signal());
     expect(r.isError).toBe(true);
     expect(textOf(r)).toContain("Invalid arguments");
-    expect(w.src.calls).toHaveLength(0);
-  });
-
-  it("brokerUpstreams off: nothing runs", async () => {
-    grant(w.h.ctx, w.agent, w.con, "full");
-    w.h.ctx.settings.update({ brokerUpstreams: false });
-    expect((await w.rt.call(w.agent, "notion__search", {}, signal())).isError).toBe(true);
     expect(w.src.calls).toHaveLength(0);
   });
 });

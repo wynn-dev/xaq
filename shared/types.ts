@@ -75,7 +75,7 @@ export type NativeEventType = (typeof EVENT_TYPES)[number];
 /**
  * MCP broker events. They concern a connection, not an
  * account: MailEvent.connectionId is set and accountId/accountEmail are "". Visible to agents with a grant
- * on that connection, while the brokerUpstreams setting is on.
+ * on that connection.
  */
 export const BROKER_EVENT_TYPES = [
   "connection.auth_failed", // the upstream's credential stopped working; the owner must reconnect
@@ -338,10 +338,6 @@ export interface Settings {
   /** Accept device-flow pairing requests from `npx xaq-cli connect` (each still needs approval). */
   pairingEnabled: boolean;
   /**
-   * The MCP broker's upstream connections: the Connections page, connection access on agents,
-   * `mcp.call` approvals and first run with Google optional. On by default since the console shipped (M1 PR 8).
-   */
-  brokerUpstreams: boolean;
 }
 
 export interface GoogleClientConfig {
@@ -664,18 +660,6 @@ export interface AgentTestResult {
   ok: boolean;
   tools: string[];
   message: string;
-}
-
-/** GET /api/agents/:id/tool-mode: how /mcp lists this agent's tools. */
-export interface AgentToolMode {
-  /** The stored choice; "auto" until the agent's first /mcp request decides it. */
-  setting: "auto" | "direct" | "search";
-  /** What /mcp serves it now (without ?mode=search). */
-  mode: "direct" | "search";
-  /** Tools the agent can use (mail, calendar and connections). */
-  tools: number;
-  /** Above this many tools a new agent starts in search mode. */
-  threshold: number;
 }
 
 /** Returned once on create and on key rotation. */
@@ -1194,8 +1178,7 @@ export interface McpCallApproval extends ApprovalCommon {
 export type Approval = GoogleApproval | McpCallApproval;
 
 // ───────────────────────────── MCP broker: connections ─────────────────────────────
-// Stored since migration 8; nothing serves these until the broker PRs land (behind the
-// brokerUpstreams setting). Credentials never cross the API boundary: there's no DTO for them.
+// Credentials never cross the API boundary: there's no DTO for them.
 // AccessLevel and ToolAnnotations mirror server/broker/types.ts: the console can't import that file (it uses
 // Node's Buffer, and tsconfig.app has no Node types). Keep them in step.
 
@@ -1626,7 +1609,7 @@ export interface ApiError {
 //   GET    /api/pairings?status                       → PairingRequest[]
 //   POST   /api/pairings/:id/approve ApprovePairingInput → Agent   (the key goes to the polling CLI, never to the console)
 //   POST   /api/pairings/:id/deny {note?}             → PairingRequest
-//   (MCP broker, 404 unless Settings.brokerUpstreams)
+//   (MCP broker)
 //   GET    /api/connections                           → ConnectionView[]
 //   POST   /api/connections CreateConnectionInput     → ConnectionView
 //   GET    /api/connections/presets                   → PresetView[]

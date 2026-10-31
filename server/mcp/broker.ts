@@ -1,6 +1,5 @@
-// The MCP broker's side of /mcp: upstream tools listed next to the
-// native ones, called through BrokerCalls, plus get_call_status. Only with Settings.brokerUpstreams on
-// (ctx.broker.view is null otherwise); native tools, their names, behaviour and audit are untouched.
+// The MCP broker's side of /mcp: upstream tools listed next to the native ones, called through the broker's calls,
+// plus get_call_status. Native tools, their names, behaviour and audit are untouched.
 //
 // Upstream tools are served with their pinned JSON Schema as is. McpServer.registerTool only takes zod
 // schemas (re-serialising would change the pinned bytes), so the tools/list and tools/call handlers
@@ -175,7 +174,7 @@ export function registerBrokerTools(ctx: AppContext, server: McpServer, principa
   server.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const name = request.params.name;
     if (!state.dynamic.has(name)) return (await callNative(request, extra)) as CallToolResult;
-    // BrokerCalls resolves, decides, runs or queues, and audits under the exposed name.
+    // The broker's calls resolve, decide, runs or queues, and audits under the exposed name.
     state.handled.add(extra.requestId);
     const started = Date.now();
     const signal = state.signal ? AbortSignal.any([extra.signal, state.signal]) : extra.signal;

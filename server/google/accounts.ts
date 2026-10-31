@@ -4,7 +4,7 @@ import { stopAccountChannels } from "../calendar/push.ts";
 import type { AppContext } from "../context.ts";
 import { json } from "../db/index.ts";
 import { errorMessage, notFound } from "../util/errors.ts";
-import { CALENDAR_SCOPES, missingScopes } from "./scopes.ts";
+import { CALENDAR_SCOPES, missingScopes } from "../../shared/google-scopes.ts";
 import type { AccountsService } from "./types.ts";
 
 /** Raw `accounts` row. Token and cursor columns are private to server/google and server/ingest. */

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { IngestMode, Settings, SystemInfo } from "@shared/types";
+import { publicUrlProblem } from "@shared/public-url";
 import { useForm } from "@tanstack/react-form";
 import { useQueryClient } from "@tanstack/react-query";
 import { InfoIcon } from "lucide-react";
@@ -17,7 +18,7 @@ import { CalendarSetupSummary } from "@/components/google/calendar-setup";
 import { RedirectNotice } from "@/components/google/redirect-notice";
 import { UrlVerdict } from "@/components/setup/step-url";
 import { api, toastError } from "@/lib/api";
-import { addressLabel, analyzeUrl, isLoopbackOrigin, publicUrlError } from "@/lib/public-url";
+import { addressLabel, analyzeUrl, isLoopbackOrigin } from "@/lib/public-url";
 import { keys } from "@/lib/queries";
 
 interface FormValues {
@@ -30,7 +31,6 @@ interface FormValues {
   approvalTtlHours: string;
   webhookAllowlist: string[];
   pairingEnabled: boolean;
-  brokerUpstreams: boolean;
 }
 
 const toForm = (s: Settings): FormValues => ({
@@ -43,7 +43,6 @@ const toForm = (s: Settings): FormValues => ({
   approvalTtlHours: String(s.approvalTtlHours),
   webhookAllowlist: s.webhookAllowlist,
   pairingEnabled: s.pairingEnabled,
-  brokerUpstreams: s.brokerUpstreams,
 });
 
 // The patch below only carries changed fields.
@@ -57,7 +56,6 @@ const fromForm = (v: FormValues): Settings => ({
   approvalTtlHours: Number(v.approvalTtlHours),
   webhookAllowlist: v.webhookAllowlist,
   pairingEnabled: v.pairingEnabled,
-  brokerUpstreams: v.brokerUpstreams,
 });
 
 const intError = (label: string, min: number, max: number) => (v: string) => {
@@ -112,7 +110,7 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form.Field name="publicUrl" validators={{ onChange: ({ value }) => publicUrlError(value) }}>
+          <form.Field name="publicUrl" validators={{ onChange: ({ value }) => publicUrlProblem(value) }}>
             {(field) => (
               <Field data-invalid={!field.state.meta.isValid}>
                 <FieldLabel htmlFor={field.name}>Public URL</FieldLabel>
@@ -266,33 +264,6 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
                     {field.state.value
                       ? "Requests wait under Approvals → Agent access. Nothing gets access until you approve the matching code and choose its permissions; the key goes straight to the agent's terminal."
                       : "Off: connect is refused. You can still create agents under Agents and paste their key yourself."}
-                  </FieldDescription>
-                </div>
-              </Field>
-            )}
-          </form.Field>
-        </CardContent>
-      </Card>
-
-      <Card id="mcp-broker" className="scroll-mt-20">
-        <CardHeader>
-          <CardTitle>Connections (MCP broker)</CardTitle>
-          <CardDescription>
-            Lets your agents use other MCP servers and apps, like Notion, through xaq. xaq holds every sign-in and asks you before risky
-            actions.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form.Field name="brokerUpstreams">
-            {(field) => (
-              <Field orientation="horizontal" className="items-start">
-                <Switch id={field.name} checked={field.state.value} onCheckedChange={(v) => field.handleChange(v)} className="mt-0.5" />
-                <div className="space-y-1">
-                  <FieldLabel htmlFor={field.name}>Use connections</FieldLabel>
-                  <FieldDescription>
-                    {field.state.value
-                      ? "On: the Connections page is in the sidebar, and agents see the tools of the connections you give them."
-                      : "Off: no connection's tools reach any agent and the Connections page is hidden. Your connections and their settings are kept."}
                   </FieldDescription>
                 </div>
               </Field>

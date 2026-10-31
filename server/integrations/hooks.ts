@@ -1,11 +1,10 @@
 // Inbound webhooks for native presets: POST /hooks/connections/:id, or /hooks/connections/<preset id> (one URL for
 // the provider's app, known before the connection exists, so the setup can show it). Provider-facing, so it lives outside the admin
 // session and CSRF guard (like CALENDAR_PUSH_PATH); the preset verifies the request itself (WHOOP: HMAC with the
-// connection's client secret). Inert until the broker wiring supplies a ConnectionHookHost and brokerUpstreams is on.
+// connection's client secret). Inert until the broker wiring supplies a ConnectionHookHost.
 
 import { Hono } from "hono";
 import type { IntegrationEvent, IntegrationPreset, NativeSourceDeps } from "../broker/types.ts";
-import type { SettingsStore } from "../settings.ts";
 import type { Logger } from "../util/log.ts";
 
 export const CONNECTION_HOOKS_PREFIX = "/hooks/connections";
@@ -45,10 +44,6 @@ export interface ConnectionHookHost {
   emit(events: IntegrationEvent[]): void;
 }
 
-/** The feature flag; read loosely until the Settings field lands with the console PR. */
-export const brokerUpstreamsOn = (settings: Pick<SettingsStore, "get">): boolean =>
-  (settings.get() as { brokerUpstreams?: unknown }).brokerUpstreams === true;
-
 /** Recently emitted dedupe keys per connection (providers deliver an event more than once). */
 class Seen {
   private readonly byConnection = new Map<string, Map<string, number>>();
@@ -75,12 +70,12 @@ class Seen {
 
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 
-export function connectionHookRoutes(opts: { enabled: () => boolean; host: () => ConnectionHookHost | null; log: Logger; now?: () => number }) {
+export function connectionHookRoutes(opts: { host: () => ConnectionHookHost | null; log: Logger; now?: () => number }) {
   const app = new Hono();
   const seen = new Seen(opts.now ?? Date.now);
   app.post(`${CONNECTION_HOOKS_PREFIX}/:id`, async (c) => {
     const id = c.req.param("id");
-    const host = opts.enabled() ? opts.host() : null;
+    const host = opts.host();
     const one = host && ID.test(id) ? host.webhookTarget(id) : null;
     const candidates = one ? [one] : host && ID.test(id) ? (host.presetWebhookTargets?.(id) ?? []) : [];
     const targets = candidates.filter((t) => t.preset.events?.handleWebhook);

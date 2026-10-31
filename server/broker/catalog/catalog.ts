@@ -1,6 +1,6 @@
-// The catalog: fetches each connection's tool list, cleans, classifies, hashes and stores it. A changed or new tool is simply used: the only trace is one audit entry with the old
-// and new definition hash (the owner removed the hold on 2026-10-16). Behind the `brokerUpstreams` setting: pass
-// `enabled` and attach() is a no-op while it's off.
+// The catalog: fetches each connection's tool list, cleans, classifies, hashes and stores it. A changed
+// or new tool is simply used: the only trace is one audit entry with the old
+// and new definition hash (the owner removed the hold on 2026-10-16).
 
 import type { AuditInput } from "../../audit.ts";
 import type { IntegrationPreset, ToolClass, ToolDef, ToolListing, ToolSource } from "../types.ts";
@@ -47,8 +47,6 @@ export interface CatalogDeps {
   debounceMs?: number;
   /** Abort a listing after this long (default 60 s). */
   timeoutMs?: number;
-  /** The `brokerUpstreams` setting (default off). Absent: on. */
-  enabled?: () => boolean;
 }
 
 export interface RefreshOutcome {
@@ -115,7 +113,6 @@ export class Catalog {
   /** Starts tracking a source: refreshes now, then on TTL expiry / timer. Replaces an earlier source. */
   attach(source: ToolSource): Promise<RefreshOutcome> {
     this.detach(source.connectionId);
-    if (this.deps.enabled && !this.deps.enabled()) return Promise.resolve(failed("disabled"));
     const e: Entry = { source, timer: null, debounce: null, inflight: null, again: false, abort: null, closed: false };
     this.entries.set(source.connectionId, e);
     return this.refresh(source.connectionId);
