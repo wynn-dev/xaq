@@ -40,8 +40,7 @@ function clientInfo(c: Context): ListenerInfo["client"] {
   } catch {
     // Ignore a malformed header: it's informational.
   }
-  // xaq/<version>, or agentinbox/<version> from a listener older than the rename.
-  const ua = /(?:xaq|agentinbox)[\w-]*\/(\S+)/i.exec(c.req.header("user-agent") ?? "")?.[1];
+  const ua = /xaq[\w-]*\/(\S+)/i.exec(c.req.header("user-agent") ?? "")?.[1];
   const info: ListenerInfo["client"] = {
     hostname: short(raw.hostname) ?? short(c.req.query("hostname")),
     platform: short(raw.platform, 50) ?? short(c.req.query("platform"), 50),

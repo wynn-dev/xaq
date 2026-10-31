@@ -7,7 +7,7 @@
 //   GET  /agent/v1/me                        → AgentSelf                                (bearer aib_ key)
 //   GET  /agent/v1/events/stream             → text/event-stream                        (bearer aib_ key)
 //        ?consumer=<name>&after=<seq>&types=a,b&include_body=1&start=now|beginning
-//        Each event:  `id: <seq>` `event: mail` `data: <WebhookPayload JSON>`; `: ping` comments every 15 s;
+//        Each event:  `id: <seq>` `event: mail` `data: <EventPayload JSON>`; `: ping` comments every 15 s;
 //        `event: revoked` `data: {"reason": …}` then close when the key, agent or grant stops being valid.
 //        Resumes after max(after, Last-Event-ID, the consumer's acked cursor). A consumer seen for the
 //        first time starts at the head (newest event the agent can see: only new mail), or at 0 with

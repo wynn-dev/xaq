@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { type CalendarEventSummary, type EventType, isConnectionEventType, type WebhookFilter } from "../../shared/types.ts";
+import { type CalendarEventSummary, type EventType, isConnectionEventType, type EventFilter } from "../../shared/types.ts";
 import type { StoredEvent } from "./types.ts";
 import { matchesAnyGlob } from "../util/glob.ts";
 import { RE2_SYNTAX_HINT, subjectMatches, subjectPatternError } from "./regex.ts";
@@ -22,7 +22,7 @@ const globList = (max: number, label: string) =>
   list(max, label).refine((globs) => !globs?.some((g) => g.split("*").length - 1 > MAX_GLOB_STARS), `${label} patterns may use at most ${MAX_GLOB_STARS} "*"`);
 
 /** Strict, so a misspelled criterion is an error rather than a filter that silently matches everything. */
-export const webhookFilterSchema = z
+export const eventFilterSchema = z
   .object({
     accountIds: list(100, "account"),
     labelIds: list(100, "label"),
@@ -42,8 +42,8 @@ export const webhookFilterSchema = z
   .strict();
 
 /** Drops empty lists and blank values so stored filters stay minimal. */
-export function normalizeFilter(f: WebhookFilter): WebhookFilter {
-  const out: WebhookFilter = {};
+export function normalizeFilter(f: EventFilter): EventFilter {
+  const out: EventFilter = {};
   const lists = ["accountIds", "labelIds", "from", "to", "calendarIds"] as const;
   for (const key of lists) {
     const v = f[key]?.map((s) => s.trim()).filter(Boolean);
@@ -55,7 +55,7 @@ export function normalizeFilter(f: WebhookFilter): WebhookFilter {
 }
 
 /** Whether an event passes a filter. Every set criterion must pass. */
-export function matchesFilter(f: WebhookFilter, ev: StoredEvent): boolean {
+export function matchesFilter(f: EventFilter, ev: StoredEvent): boolean {
   if (f.accountIds?.length && !f.accountIds.includes(ev.accountId)) return false;
   if (ACCOUNT_EVENT_TYPES.includes(ev.type)) return true;
   // Connection events have no account (an accountIds filter excludes them, above) and no message.
@@ -80,7 +80,7 @@ export function matchesFilter(f: WebhookFilter, ev: StoredEvent): boolean {
  * calendar.* events: `calendarIds` picks calendars ("primary" is the account's own), `from` matches the
  * organizer, `to` any attendee and `subject` the summary. labelIds and hasAttachments don't apply.
  */
-function matchesCalendar(f: WebhookFilter, e: CalendarEventSummary, accountEmail: string): boolean {
+function matchesCalendar(f: EventFilter, e: CalendarEventSummary, accountEmail: string): boolean {
   if (f.calendarIds?.length) {
     const cal = e.calendarId.toLowerCase();
     if (!f.calendarIds.some((id) => (id === "primary" ? accountEmail : id).toLowerCase() === cal)) return false;

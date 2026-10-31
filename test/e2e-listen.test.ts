@@ -6,7 +6,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import type { Account, AuditEntry, MailEvent, Page, WebhookPayload } from "../shared/types.ts";
+import type { Account, AuditEntry, MailEvent, Page, EventPayload } from "../shared/types.ts";
 import { HAS_AGENT_API, HAS_LISTEN_CLIENT } from "./e2e/features.ts";
 import { grant, mailbox, type Stack, startStack } from "./e2e/harness.ts";
 import {
@@ -338,7 +338,7 @@ describe.runIf(HAS_AGENT_API && HAS_LISTEN_CLIENT)("xaq connect + listen (CLI en
     const ev = await eventFor(msg.id);
     const call1 = await waitFor(() => rec.calls().find((c) => c.stdin.includes(ev.id)), { what: "command run", timeout: 10_000 });
 
-    const input = JSON.parse(call1.stdin) as { notice: string; event: WebhookPayload };
+    const input = JSON.parse(call1.stdin) as { notice: string; event: EventPayload };
     expect(input.notice).toMatch(/untrusted/i);
     const { content, ...data } = input.event.data;
     expect(data).toEqual(ev); // byte-exact fields: same event as the console API
@@ -370,7 +370,7 @@ describe.runIf(HAS_AGENT_API && HAS_LISTEN_CLIENT)("xaq connect + listen (CLI en
     try {
       await waitFor(() => rec.calls().length >= 3, { what: "missed events run after restart", timeout: 10_000 });
       await stays(() => rec.calls().length > 3, 500, "a re-run after the listener restart");
-      const ids = () => rec.calls().map((c) => (JSON.parse(c.stdin) as { event: WebhookPayload }).event.data.id);
+      const ids = () => rec.calls().map((c) => (JSON.parse(c.stdin) as { event: EventPayload }).event.data.id);
       expect(ids().sort()).toEqual([ev.id, evDown1.id, evDown2.id].sort());
       expect(existsSync(canary)).toBe(false);
 

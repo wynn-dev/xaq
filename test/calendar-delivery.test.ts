@@ -2,7 +2,7 @@
 // listener streams for calendar.read-only agents, and what a listener hands its command.
 
 import { afterEach, describe, expect, it } from "vitest";
-import type { CalendarEventSummary, MessageContent, WebhookPayload } from "../shared/types.ts";
+import type { CalendarEventSummary, MessageContent, EventPayload } from "../shared/types.ts";
 import { accessProblem, newestGrantedSeq, newestVisibleSeq } from "../server/agentapi/listeners.ts";
 import { summarizeEvent } from "../server/calendar/summary.ts";
 import type { CalendarService } from "../server/calendar/types.ts";
@@ -10,7 +10,7 @@ import type { StoredEvent } from "../server/events/types.ts";
 import { commandInput, eventEnv, skipReason } from "../server/listen/event.ts";
 import { parseTypes, resolveListen } from "../server/listen/options.ts";
 import { STDIN_PROMPT } from "../server/listen/recipes.ts";
-import { matchesFilter, normalizeFilter, webhookFilterSchema } from "../server/events/filter.ts";
+import { matchesFilter, normalizeFilter, eventFilterSchema } from "../server/events/filter.ts";
 import { buildPayload, scopeBodyCheck } from "../server/events/payload.ts";
 import { testContext } from "./helpers.ts";
 import { makeEvent } from "./listen-client-fake.ts";
@@ -56,7 +56,7 @@ const stored = (patch: Partial<StoredEvent> = {}): StoredEvent => ({
   ...patch,
 });
 
-const payload = (e: CalendarEventSummary = calEvent(), patch: Partial<WebhookPayload["data"]> = {}): WebhookPayload => ({
+const payload = (e: CalendarEventSummary = calEvent(), patch: Partial<EventPayload["data"]> = {}): EventPayload => ({
   type: "calendar.invitation_received",
   timestamp: "2026-10-16T09:00:00.000Z",
   data: { ...stored({ calendarEvent: e }), threadLabelIds: undefined, ...patch },
@@ -71,8 +71,8 @@ const description = (body: string): MessageContent => ({
 
 describe("event filters on calendar events", () => {
   it("accepts calendarIds (the console sends them) and keeps them normalized", () => {
-    expect(webhookFilterSchema.safeParse({ calendarIds: [ME, TEAM] }).success).toBe(true);
-    expect(webhookFilterSchema.safeParse({ calendarIds: [""] }).success).toBe(false);
+    expect(eventFilterSchema.safeParse({ calendarIds: [ME, TEAM] }).success).toBe(true);
+    expect(eventFilterSchema.safeParse({ calendarIds: [""] }).success).toBe(false);
     expect(normalizeFilter({ calendarIds: [` ${TEAM} `, TEAM, ""] })).toEqual({ calendarIds: [TEAM] });
     expect(normalizeFilter({ calendarIds: [] })).toEqual({});
   });

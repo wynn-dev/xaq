@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { hostname } from "node:os";
 import pc from "picocolors";
-import type { WebhookPayload } from "../../shared/types.ts";
+import type { EventPayload } from "../../shared/types.ts";
 import { underService } from "../brand.ts";
 import { ackEvents, ApiError, getSelf } from "./api.ts";
 import { Dispatcher, type Job } from "./dispatcher.ts";
@@ -102,7 +102,7 @@ class Acker {
   }
 }
 
-const describeEvent = (p: WebhookPayload) => {
+const describeEvent = (p: EventPayload) => {
   const m = p.data.message;
   const e = p.data.calendarEvent;
   const sender = m?.from?.email ?? (e && !e.organizerSelf ? e.organizer?.email : undefined);
@@ -354,7 +354,7 @@ export async function runListener(opts: RunListenerOptions): Promise<number> {
           log.debug(`ignoring unknown stream event "${m.event}"`);
           return;
         }
-        let payload: WebhookPayload;
+        let payload: EventPayload;
         try {
           payload = parsePayload(m.data);
         } catch (err) {

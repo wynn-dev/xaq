@@ -1,8 +1,8 @@
-import type { WebhookPayload } from "../../shared/types.ts";
+import type { EventPayload } from "../../shared/types.ts";
 
 export interface Job {
   seq: number;
-  payload: WebhookPayload;
+  payload: EventPayload;
   attempts: number;
   lastError: string | null;
   state: "queued" | "running" | "waiting" | "done";
@@ -63,7 +63,7 @@ export class Dispatcher {
   }
 
   /** Adds an event. Returns false when it is a duplicate of one already seen this session. */
-  push(payload: WebhookPayload, opts: { skip?: boolean } = {}): boolean {
+  push(payload: EventPayload, opts: { skip?: boolean } = {}): boolean {
     const seq = payload.data.seq;
     if (this.stopped || seq <= this.highestSeen) return false;
     this.highestSeen = seq;

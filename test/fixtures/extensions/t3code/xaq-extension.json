@@ -51,7 +51,7 @@
     {
       "id": "reconnect",
       "title": "Reconnect every 30 days",
-      "body": "A T3 sign-in lasts 30 days and T3 can't renew it. xaq reminds you 7 days and 1 day before, in the console and through your webhooks and listener. Reconnect takes a new pairing code and keeps this connection's name, agents and access. If it does expire, agents get a message asking you to reconnect, not a failure in the middle of a task."
+      "body": "A T3 sign-in lasts 30 days and T3 can't renew it. xaq reminds you 7 days and 1 day before, in the console and through your listener. Reconnect takes a new pairing code and keeps this connection's name, agents and access. If it does expire, agents get a message asking you to reconnect, not a failure in the middle of a task."
     }
   ],
   "risk": {

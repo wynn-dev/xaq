@@ -5,7 +5,7 @@ import type { AddressInfo, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentSelf, PairingPoll, PairingStart, PairingStartInput } from "../shared/agent-api.ts";
-import type { EventType, MessageSummary, WebhookPayload } from "../shared/types.ts";
+import type { EventType, MessageSummary, EventPayload } from "../shared/types.ts";
 
 export const FAKE_KEY = "aib_FAKEKEY_super_secret_0123456789";
 
@@ -23,7 +23,7 @@ export interface StreamRequest {
   secFetchSite: string | null;
 }
 
-export function makeEvent(seq: number, patch: { type?: EventType; message?: Partial<MessageSummary> | null; content?: WebhookPayload["data"]["content"] } = {}): WebhookPayload {
+export function makeEvent(seq: number, patch: { type?: EventType; message?: Partial<MessageSummary> | null; content?: EventPayload["data"]["content"] } = {}): EventPayload {
   const type = patch.type ?? "message.received";
   const message: MessageSummary | null =
     patch.message === null
@@ -67,7 +67,7 @@ export class FakeAgentApi {
   pollTimes: number[] = [];
   interval = 1;
   // Stream
-  events: WebhookPayload[] = [];
+  events: EventPayload[] = [];
   acked = 0;
   acks: number[] = [];
   streamRequests: StreamRequest[] = [];
@@ -136,7 +136,7 @@ export class FakeAgentApi {
   }
 
   /** Adds an event and pushes it to live streams. */
-  publish(e: WebhookPayload): void {
+  publish(e: EventPayload): void {
     this.events.push(e);
     if (this.hidden.has(e.data.seq)) return;
     for (const res of this.live) this.write(res, e);
@@ -151,7 +151,7 @@ export class FakeAgentApi {
     this.live.clear();
   }
 
-  private write(res: ServerResponse, e: WebhookPayload): void {
+  private write(res: ServerResponse, e: EventPayload): void {
     res.write(`id: ${e.data.seq}\nevent: mail\ndata: ${JSON.stringify(e)}\n\n`);
   }
 

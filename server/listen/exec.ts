@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { WebhookPayload } from "../../shared/types.ts";
+import type { EventPayload } from "../../shared/types.ts";
 import { commandInput, eventEnv } from "./event.ts";
 
 export interface CommandResult {
@@ -33,14 +33,14 @@ class Tail {
  * The child's environment: ours minus anything xaq-specific (XAQ_*: service flags, a master key that happened
  * to be exported…), plus the safe event ids and the event file path.
  */
-export function childEnv(payload: WebhookPayload, eventFile: string): NodeJS.ProcessEnv {
+export function childEnv(payload: EventPayload, eventFile: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("XAQ_")) env[k] = v;
   return { ...env, ...eventEnv(payload), XAQ_EVENT_FILE: eventFile };
 }
 
 /** stdin for one event: { notice, event }. */
-export const commandStdin = (payload: WebhookPayload): string => JSON.stringify(commandInput(payload), null, 2) + "\n";
+export const commandStdin = (payload: EventPayload): string => JSON.stringify(commandInput(payload), null, 2) + "\n";
 
 /** Running commands, so a forced exit (second Ctrl-C) can still kill their process groups and remove temp files. */
 const active = new Map<number, string>();
@@ -80,7 +80,7 @@ function killGroup(pid: number | undefined, signal: NodeJS.Signals): void {
  * the command only as JSON on stdin, as a 0600 file named by XAQ_EVENT_FILE, and as a few
  * validated ids in env. On timeout the whole process group gets SIGTERM, then SIGKILL after a grace period.
  */
-export function runCommand(command: string, payload: WebhookPayload, opts: { timeoutMs: number; cwd?: string; signal?: AbortSignal }): Promise<CommandResult> {
+export function runCommand(command: string, payload: EventPayload, opts: { timeoutMs: number; cwd?: string; signal?: AbortSignal }): Promise<CommandResult> {
   const started = performance.now();
   const input = commandStdin(payload);
   // mkdtemp creates the directory 0700; the file inside is 0600 on top.

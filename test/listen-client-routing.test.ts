@@ -9,7 +9,7 @@ import { logPath } from "../server/listen/paths.ts";
 import { saveProfile } from "../server/listen/profile.ts";
 import { recipe } from "../server/listen/recipes.ts";
 import { readStatus } from "../server/listen/state.ts";
-import type { WebhookPayload } from "../shared/types.ts";
+import type { EventPayload } from "../shared/types.ts";
 import { FAKE_KEY, FakeAgentApi, isolateXdg, makeEvent, waitFor } from "./listen-client-fake.ts";
 
 const base = { url: "https://x", apiKey: FAKE_KEY, agentId: "a", agentName: "n", consumer: "c", exec: "run" };
@@ -41,7 +41,7 @@ describe("noise filters", () => {
     expect(skipReason(labelled(2, ["INBOX"], "noreply@stripe.com"), c)).toMatch(/--not-from/);
     expect(skipReason(labelled(4, ["INBOX"], "boss@acme.dev"), c)).toBeNull();
     expect(skipReason(makeEvent(6, { type: "account.auth_failed", message: null }), { ...c, types: ["account.auth_failed"] })).toBeNull();
-    const calendar = { ...makeEvent(7, { message: null }), type: "calendar.event_created" } as unknown as WebhookPayload;
+    const calendar = { ...makeEvent(7, { message: null }), type: "calendar.event_created" } as unknown as EventPayload;
     expect(skipReason(calendar, { notFrom: c.notFrom, skipCategories: c.skipCategories })).toBeNull();
     expect(describeFilter(c)).toBe("types message.received · not from *@github.com | noreply@* · skipping Gmail promotions, social, forums");
   });

@@ -7,7 +7,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { GrantInput, WebhookPayload } from "../../shared/types.ts";
+import type { GrantInput, EventPayload } from "../../shared/types.ts";
 import { REPO_ROOT } from "./features.ts";
 import { resilientFetch } from "./fetch.ts";
 import type { AdminClient, Stack } from "./harness.ts";
@@ -138,7 +138,7 @@ export interface AgentStream {
   error: { error?: { code?: string } } | null;
   events: SseEvent[];
   /** `event: mail` frames parsed. */
-  mail(): (WebhookPayload & { seq: number })[];
+  mail(): (EventPayload & { seq: number })[];
   comments: string[];
   /** Resolves when the server closes the stream (or close() is called). */
   closed: Promise<void>;
@@ -174,7 +174,7 @@ export async function openAgentStream(base: string, apiKey: string, q: StreamQue
     error: null,
     events: [],
     comments: [],
-    mail: () => stream.events.filter((e) => e.event === "mail").map((e) => ({ ...(JSON.parse(e.data) as WebhookPayload), seq: Number(e.id) })),
+    mail: () => stream.events.filter((e) => e.event === "mail").map((e) => ({ ...(JSON.parse(e.data) as EventPayload), seq: Number(e.id) })),
     closed: new Promise<void>((r) => (resolveClosed = () => ((closedFlag = true), r()))),
     isClosed: () => closedFlag,
     next: (pred, timeout = 8000) => waitFor(() => stream.events.find(pred), { timeout, what: "agent stream frame" }),

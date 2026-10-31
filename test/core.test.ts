@@ -116,6 +116,32 @@ describe("migration 6", () => {
   });
 });
 
+describe("migration 14", () => {
+  it("drops the settings of removed features and keeps the rest", () => {
+    const dir = mkdtempSync(join(tmpdir(), "xaq-mig-"));
+    try {
+      const path = join(dir, "db.sqlite");
+      const raw = new DatabaseSync(path);
+      raw.exec("CREATE TABLE _migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
+      MIGRATIONS.slice(0, 13).forEach((sql, i) => {
+        raw.exec(sql);
+        raw.prepare("INSERT INTO _migrations (version, applied_at) VALUES (?, ?)").run(i + 1, "2026-01-01T00:00:00.000Z");
+      });
+      const put = raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)");
+      put.run("settings", JSON.stringify({ pollIntervalSeconds: 45, attachmentDirs: ["/tmp"], attachmentSaveDir: "/x", brokerUpstreams: true }));
+      for (const key of ["broker.search:agt_1", "broker.defaultOnApplied", "broker.searchDirectPinned", "setup.verifiedAt"]) put.run(key, '"2026-01-01"');
+      raw.close();
+
+      const db = new Db(path);
+      expect(JSON.parse(db.get<{ value: string }>("SELECT value FROM settings WHERE key = 'settings'")!.value)).toEqual({ pollIntervalSeconds: 45 });
+      expect(db.all<{ key: string }>("SELECT key FROM settings WHERE key != 'settings'").map((r) => r.key)).toEqual(["setup.verifiedAt"]);
+      db.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("glob", () => {
   it("matches address globs case-insensitively", () => {
     expect(matchesGlob("Bob@Example.com", "*@example.com")).toBe(true);

@@ -516,4 +516,8 @@ export const MIGRATIONS: string[] = [
   DELETE FROM settings WHERE key = 'pubsub';
   UPDATE settings SET value = json_remove(value, '$.ingestMode', '$.webhookAllowlist') WHERE key = 'settings';
   `,
+  /* 14: settings of removed features: attachments by path and saved to disk, the broker switch, per-agent search mode. */ `
+  UPDATE settings SET value = json_remove(value, '$.attachmentDirs', '$.attachmentSaveDir', '$.brokerUpstreams') WHERE key = 'settings';
+  DELETE FROM settings WHERE key LIKE 'broker.search:%' OR key IN ('broker.defaultOnApplied', 'broker.searchDirectPinned', 'brokerUpstreams');
+  `,
 ];

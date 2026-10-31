@@ -828,7 +828,7 @@ export interface MailEvent {
 // ───────────────────────────── Event filters and payloads ─────────────────────────────
 
 /** Filter on events (`xaq listen` profiles). */
-export interface WebhookFilter {
+export interface EventFilter {
   accountIds?: string[];
   /** Match if the message has any of these label ids. */
   labelIds?: string[];
@@ -846,8 +846,8 @@ export interface WebhookFilter {
   calendarIds?: string[];
 }
 
-/** An event as `xaq listen` streams and forwards it (Standard Webhooks body when forwarded). */
-export interface WebhookPayload {
+/** An event as `xaq listen` streams it. */
+export interface EventPayload {
   type: EventType;
   timestamp: string;
   data: MailEvent & {

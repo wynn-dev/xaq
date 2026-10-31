@@ -1,4 +1,4 @@
-import type { CalendarEventSummary, EventType, WebhookPayload } from "../../shared/types.ts";
+import type { CalendarEventSummary, EventType, EventPayload } from "../../shared/types.ts";
 import { escapeDelimiters, stripInvisible, wrapUntrusted } from "../mail/content.ts";
 import { matchesAnyGlob } from "../util/glob.ts";
 
@@ -19,7 +19,7 @@ export interface LocalFilter {
  * Why the listener skips this event, or null to run it. --not-from and the category skip apply only to
  * events that carry a message, so account and calendar events pass them.
  */
-export function skipReason(payload: WebhookPayload, f: LocalFilter): string | null {
+export function skipReason(payload: EventPayload, f: LocalFilter): string | null {
   if (f.types?.length && !f.types.includes(payload.type)) return `type ${payload.type}`;
   const m = payload.data.message;
   if (!m) return null;
@@ -56,7 +56,7 @@ function cleanCalendarEvent(e: CalendarEventSummary): CalendarEventSummary {
  * get the same cleaning (invisible characters removed, delimiter tags escaped) so nothing can forge or
  * hide the delimiter. Everything else (ids, seq, dates) is passed through unchanged.
  */
-export function commandInput(payload: WebhookPayload): { notice: string; event: WebhookPayload } {
+export function commandInput(payload: EventPayload): { notice: string; event: EventPayload } {
   const d = payload.data;
   const m = d.message;
   const cal = d.calendarEvent;
@@ -97,7 +97,7 @@ const SAFE_ENV = /^(?!-)[A-Za-z0-9._@+:=-]{1,256}$/;
  * The only event data placed in the environment. Subjects, senders' names and bodies never are, so a
  * command that interpolates `$VAR` carelessly can't be steered by an email.
  */
-export function eventEnv(payload: WebhookPayload): Record<string, string> {
+export function eventEnv(payload: EventPayload): Record<string, string> {
   const d = payload.data;
   const candidates: Record<string, string | number | undefined> = {
     XAQ_EVENT_ID: d.id,
@@ -119,8 +119,8 @@ export function eventEnv(payload: WebhookPayload): Record<string, string> {
 }
 
 /** Validates the shape we rely on before handing a stream frame to the dispatcher. */
-export function parsePayload(data: string): WebhookPayload {
-  const p = JSON.parse(data) as WebhookPayload;
+export function parsePayload(data: string): EventPayload {
+  const p = JSON.parse(data) as EventPayload;
   if (!p || typeof p !== "object" || typeof p.type !== "string" || !p.data || typeof p.data.id !== "string" || typeof p.data.seq !== "number") {
     throw new Error("event payload is missing type, data.id or data.seq");
   }

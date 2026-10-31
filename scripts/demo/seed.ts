@@ -101,7 +101,7 @@ let cookie = "";
 async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(base + path, {
     method,
-    headers: { cookie, "x-agentinbox-csrf": "1", ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+    headers: { cookie, "x-xaq-csrf": "1", ...(body !== undefined ? { "content-type": "application/json" } : {}) },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const setCookie = res.headers.get("set-cookie");

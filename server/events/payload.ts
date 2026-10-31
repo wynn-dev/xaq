@@ -1,4 +1,4 @@
-import type { MessageContent, WebhookPayload } from "../../shared/types.ts";
+import type { MessageContent, EventPayload } from "../../shared/types.ts";
 import type { AppContext } from "../context.ts";
 import { toMailEvent } from "./repo.ts";
 import type { StoredEvent } from "./types.ts";
@@ -7,7 +7,7 @@ import { inScope, threadLabels } from "../policy/enforce.ts";
 import { errorMessage } from "../util/errors.ts";
 
 /** Event payload data; `contentError` explains a missing `content` when the body was requested. */
-export type PayloadData = WebhookPayload["data"] & { contentError?: string };
+export type PayloadData = EventPayload["data"] & { contentError?: string };
 
 const CONTENT_TIMEOUT_MS = 20_000;
 
@@ -23,7 +23,7 @@ export interface PayloadOptions {
  * The payload of an event in `xaq listen` streams. With `includeBody`, message events get cleaned content (or `contentError`), and calendar
  * events other than cancellations get the cleaned description (no `content` when there is none).
  */
-export async function buildPayload(ctx: AppContext, event: StoredEvent, includeBody: boolean, opts: PayloadOptions = {}): Promise<WebhookPayload> {
+export async function buildPayload(ctx: AppContext, event: StoredEvent, includeBody: boolean, opts: PayloadOptions = {}): Promise<EventPayload> {
   const data: PayloadData = toMailEvent(event);
   const m = event.message;
   const e = event.calendarEvent;

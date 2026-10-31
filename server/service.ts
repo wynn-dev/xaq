@@ -15,8 +15,6 @@ import { consoleUrls, loopbackUrl } from "./urls.ts";
 
 export const SERVICE_NAME = "xaq";
 export const LAUNCHD_LABEL = "sh.xaq.daemon";
-/** The package a pre-rename listener install put into its app directory (server/listen/service.ts). */
-export const LEGACY_PACKAGE = "agentinbox-cli";
 
 /** A service's names: the launchd label and the systemd unit (without `.service`). */
 export interface UnitId {
@@ -337,8 +335,8 @@ export function swapIn(staging: string, app: string): { restore(): void; commit(
   };
 }
 
-/** Whether `path` is one of our installs (xaq-cli, or the listener's agentinbox-cli from before the rename). */
-export const isOwnInstall = (path: string) => [PACKAGE, LEGACY_PACKAGE].some((p) => existsSync(join(path, "node_modules", p)));
+/** Whether `path` is one of our installs. */
+export const isOwnInstall = (path: string) => existsSync(join(path, "node_modules", PACKAGE));
 
 /** Deletes `<dir>/app`, `app.new` and `app.old`, but only where they really are our own installs. */
 export function removeOwnInstall(dir: string): void {
@@ -509,65 +507,6 @@ export async function bootstrapLaunchd(
 /** Polls `launchctl print` until launchd no longer lists the label, or the deadline passes. */
 async function waitUnloaded(ops: Pick<ServiceOps, "capture" | "uid">, label: string, deadline: number, pollMs: number): Promise<void> {
   while (launchdLoaded(ops, label) && Date.now() < deadline) await sleep(pollMs);
-}
-
-/** What a service was doing before it was stopped, so a rollback can put it back exactly so. */
-export interface UnitState {
-  /** launchd: the job was loaded; systemd: the unit was active. */
-  running: boolean;
-  /** systemd only: the unit was enabled (started at boot). */
-  enabled: boolean;
-}
-
-export function unitState(ops: Pick<ServiceOps, "platform" | "root" | "capture" | "uid">, id: UnitId): UnitState {
-  if (ops.platform === "darwin") return { running: launchdLoaded(ops, id.launchd), enabled: false };
-  const ask = (verb: string) => {
-    try {
-      return ops.capture("systemctl", [...(ops.root ? [] : ["--user"]), verb, id.systemd]).trim();
-    } catch (err) {
-      // is-active / is-enabled exit non-zero for "inactive" / "disabled"; the word is still on stdout.
-      return String((err as { stdout?: unknown })?.stdout ?? "").trim();
-    }
-  };
-  const active = ask("is-active");
-  return { running: active === "active" || active === "activating" || active === "reloading", enabled: ask("is-enabled") === "enabled" };
-}
-
-/**
- * Stops a service and waits until it is really gone, so a replacement never runs next to it (they would
- * fight over the port and the data directory). systemd's stop waits by itself; launchd's bootout returns
- * at once and tears the job down asynchronously. Throws when it is still running afterwards.
- */
-export async function stopAndWait(ops: ServiceOps, id: UnitId, opts: { pollMs?: number; unloadTimeoutMs?: number } = {}): Promise<void> {
-  const { pollMs = 250, unloadTimeoutMs = 30_000 } = opts;
-  if (ops.platform === "darwin") {
-    try {
-      ops.exec("launchctl", ["bootout", `${launchdTarget(ops)}/${id.launchd}`], { quiet: true });
-    } catch {
-      // Not loaded.
-    }
-    await waitUnloaded(ops, id.launchd, Date.now() + unloadTimeoutMs, pollMs);
-    if (launchdLoaded(ops, id.launchd)) throw new Error(`launchd still has ${id.launchd} loaded after booting it out`);
-    return;
-  }
-  try {
-    systemctl(ops, "disable", "--now", id.systemd);
-  } catch {
-    // Not loaded or already stopped: checked below.
-  }
-  if (unitState(ops, id).running) throw new Error(`systemd still reports ${id.systemd} running after stopping it`);
-}
-
-/** Puts a stopped service's unit file back and returns it to the state it was in (see unitState). */
-export async function restoreUnit(ops: ServiceOps, id: UnitId, file: string, text: string, state: UnitState, pollMs?: number): Promise<void> {
-  writeFileSync(file, text, { mode: ops.platform === "darwin" ? 0o600 : 0o644 });
-  if (ops.platform === "linux") {
-    systemctl(ops, "daemon-reload");
-    if (state.enabled) systemctl(ops, "enable", id.systemd);
-    if (state.running) systemctl(ops, "start", id.systemd);
-  } else if (state.running) {
-    await bootstrapLaunchd(ops, id.launchd, file, { pollMs });
-  }
 }
 
 /** Fails before anything is touched when systemd can't be reached (e.g. no user bus over su). */
