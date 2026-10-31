@@ -7,8 +7,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { pinHash } from "../server/broker/catalog/index.ts";
-import type { ToolDef } from "../server/broker/types.ts";
 import { type FakeMcpUpstream, type FakeTool, startFakeMcpUpstream } from "./fake-mcp-upstream.ts";
 import { CSRF, type Harness, harness, json } from "./platform-helpers.ts";
 
@@ -221,46 +219,5 @@ describe("a changed upstream tool keeps working", () => {
       ["connection.tool_changed", "fake__delete_page"],
       ["connection.tool_changed", "fake__get_page"],
     ]);
-  }, 20_000);
-
-  it("a tool held by an older version works after the upgrade (released at startup, audited)", async () => {
-    const s = await setup();
-    const { ctx } = s.h;
-    const a = await s.agent("Hermes", "full");
-    // The rows as the older version left them: get_page held as changed (the waiting definition is the new one),
-    // delete_page held as new (nothing stored in use).
-    const before = s.storedHash("get_page");
-    const candidate: ToolDef = { name: "get_page", description: "Read a page by its id.", inputSchema: ID_SCHEMA, annotations: { readOnlyHint: true } };
-    const { name: _n, ...stored } = candidate;
-    ctx.db.run(
-      "UPDATE upstream_tools SET state = 'held', held_reason = 'changed', candidate_definition = ?, candidate_hash = ? WHERE connection_id = ? AND name = 'get_page'",
-      JSON.stringify(stored),
-      pinHash(candidate),
-      s.conId,
-    );
-    ctx.db.run(
-      "UPDATE upstream_tools SET state = 'held', held_reason = 'new', candidate_definition = definition, candidate_hash = pin_hash, definition = NULL, pin_hash = NULL WHERE connection_id = ? AND name = 'delete_page'",
-      s.conId,
-    );
-    // The upstream serves the definition that was waiting (that's why it was held).
-    s.up.setTool(getPage({ description: "Read a page by its id." }));
-    ctx.broker.invalidate("all");
-    expect(ctx.broker.view(a.id)!.tools.map((t) => t.exposedName)).toEqual(["fake__get_page"]);
-
-    // Startup releases them (and the listing it starts finds nothing more to change).
-    await ctx.broker.start?.();
-    expect(ctx.db.get<{ n: number }>("SELECT count(*) AS n FROM upstream_tools WHERE state = 'held'")!.n).toBe(0);
-    const client = await s.mcp(a.apiKey);
-    const names = (await client.listTools()).tools.map((t) => t.name);
-    expect(names).toEqual(expect.arrayContaining(["fake__get_page", "fake__delete_page"]));
-    expect(text(await client.callTool({ name: "fake__get_page", arguments: { id: "p1" } }))).toContain("Page p1");
-    expect(text(await client.callTool({ name: "fake__delete_page", arguments: { id: "p2" } }))).toContain("Deleted p2");
-    expect(s.storedHash("get_page")).toBe(pinHash(candidate));
-    const audits = s.toolAudits().filter((e) => e.detail.releasedHold === true);
-    expect(audits.map((e) => [e.target, e.detail.previousHash])).toEqual([
-      ["fake__delete_page", null],
-      ["fake__get_page", before],
-    ]);
-    expect(s.connectionEvents()).toEqual([]);
   }, 20_000);
 });

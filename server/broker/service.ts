@@ -518,13 +518,6 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
     }),
 
     start() {
-      // Tools an older version left on hold (the hold was removed on 2026-10-16) become usable now.
-      try {
-        const released = catalog.releaseLegacyHolds();
-        if (released) log.info("Released tools held for a change by an older version", { tools: released });
-      } catch (err) {
-        log.error("Couldn't release tools held by an older version", { error: errorMessage(err) });
-      }
       // Extensions: presets() reads the installed ones; the store asks us which connections use one,
       // disables them on a forced removal, and reloads presets() after every change.
       try {

@@ -116,8 +116,8 @@ describe("migration 6", () => {
   });
 });
 
-describe("migration 14", () => {
-  it("drops the settings of removed features and keeps the rest", () => {
+describe("migrations 14 and 15", () => {
+  it("drop the settings of removed features and tools left on hold, and keep the rest", () => {
     const dir = mkdtempSync(join(tmpdir(), "xaq-mig-"));
     try {
       const path = join(dir, "db.sqlite");
@@ -129,12 +129,20 @@ describe("migration 14", () => {
       });
       const put = raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)");
       put.run("settings", JSON.stringify({ pollIntervalSeconds: 45, attachmentDirs: ["/tmp"], attachmentSaveDir: "/x", brokerUpstreams: true }));
+      raw.exec("INSERT INTO connections (id, owner_id, kind, slug, name, url, auth_type, created_at, updated_at) VALUES ('con_a', 'owner', 'remote_http', 'a', 'A', 'https://a.example', 'none', 'T', 'T')");
+      const tool = raw.prepare(
+        "INSERT INTO upstream_tools (connection_id, name, exposed_name, definition, pin_hash, risky, read, class_source, state, held_reason, candidate_definition, candidate_hash, first_seen_at, updated_at) VALUES ('con_a', ?, ?, ?, ?, 0, 0, 'annotation', ?, ?, ?, ?, 'T', 'T')",
+      );
+      tool.run("kept", "a__kept", "{}", "h1", "active", null, null, null);
+      tool.run("changed", "a__changed", "{}", "h2", "held", "changed", "{}", "h3");
+      tool.run("new", "a__new", null, null, "held", "new", "{}", "h4");
       for (const key of ["broker.search:agt_1", "broker.defaultOnApplied", "broker.searchDirectPinned", "setup.verifiedAt"]) put.run(key, '"2026-01-01"');
       raw.close();
 
       const db = new Db(path);
       expect(JSON.parse(db.get<{ value: string }>("SELECT value FROM settings WHERE key = 'settings'")!.value)).toEqual({ pollIntervalSeconds: 45 });
       expect(db.all<{ key: string }>("SELECT key FROM settings WHERE key != 'settings'").map((r) => r.key)).toEqual(["setup.verifiedAt"]);
+      expect(db.all<{ name: string }>("SELECT name FROM upstream_tools").map((r) => r.name)).toEqual(["kept"]);
       db.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

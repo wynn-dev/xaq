@@ -346,8 +346,8 @@ export class Catalog {
           continue;
         }
 
-        // Changed (or a row without a definition, left by a version that held new tools): the new definition is
-        // used under the same name, re-classified, so the normal risky and read rules apply to what it is now.
+        // Changed: the new definition is used under the same name, re-classified, so the normal risky and read
+        // rules apply to what it is now.
         changed = true;
         store.upsert({ ...row, exposedName: exposed, def, pinHash: hash, cls: storedClass(def, conn.preset), updatedAt: now });
         out.changed.push(name);
@@ -402,37 +402,6 @@ export class Catalog {
   /** The server instructions served for a connection (from the last listing). */
   instructions(connectionId: string): string | null {
     return this.deps.store.state(connectionId)?.instructions ?? null;
-  }
-
-  /**
-   * Upgrade from a version with the tool-change hold: every tool still held is released, its waiting definition
-   * (if any) becomes the one used, re-classified, with one audit entry per tool. Idempotent; returns how many.
-   */
-  releaseLegacyHolds(): number {
-    const held = this.deps.store.legacyHeld();
-    if (!held.length) return 0;
-    const released: { tool: PinnedTool; previousHash: string | null; fields: string[] }[] = [];
-    const now = (this.deps.now?.() ?? new Date()).toISOString();
-    this.deps.store.tx(() => {
-      for (const h of held) {
-        const def = h.candidateDef ?? h.tool.def;
-        const hash = h.candidateDef ? h.candidateHash : h.tool.pinHash;
-        if (!def || !hash) {
-          // Nothing usable stored: drop the row; the next listing adds the tool again.
-          this.deps.store.remove(h.tool.connectionId, h.tool.name);
-          continue;
-        }
-        const conn = this.deps.connection(h.tool.connectionId);
-        const tool: PinnedTool = { ...h.tool, def, pinHash: hash, cls: storedClass(def, conn?.preset ?? null), updatedAt: now };
-        this.deps.store.upsert(tool);
-        released.push({ tool, previousHash: h.tool.pinHash, fields: changedFields(h.tool.def, def) });
-      }
-    });
-    for (const { tool, previousHash, fields } of released) {
-      this.audit("connection.tool_changed", tool.connectionId, tool.exposedName, { tool: tool.name, previousHash, hash: tool.pinHash, fields, releasedHold: true });
-    }
-    for (const id of new Set(held.map((h) => h.tool.connectionId))) this.changed(id);
-    return held.length;
   }
 
   /** Drops a connection's pins and state (its URL changed or it was deleted): the next listing is a first connect. */

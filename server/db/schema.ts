@@ -520,4 +520,7 @@ export const MIGRATIONS: string[] = [
   UPDATE settings SET value = json_remove(value, '$.attachmentDirs', '$.attachmentSaveDir', '$.brokerUpstreams') WHERE key = 'settings';
   DELETE FROM settings WHERE key LIKE 'broker.search:%' OR key IN ('broker.defaultOnApplied', 'broker.searchDirectPinned', 'brokerUpstreams');
   `,
+  /* 15: tools an older version held for a change: gone; the next listing adds them again, classified afresh. */ `
+  DELETE FROM upstream_tools WHERE state = 'held';
+  `,
 ];

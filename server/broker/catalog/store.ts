@@ -1,9 +1,8 @@
 // Persistence of the catalog: `upstream_tools` (migration 8) plus the catalog columns of `connections`
 // (tools_cached_at, instructions_hash).
 //
-// upstream_tools' hold columns (state, held_reason, candidate_definition, candidate_hash) are no longer used: the
-// owner removed the tool-change hold on 2026-10-16. Every write stores an active row; rows an older version left
-// held are read once through legacyHeld() and released by Catalog.releaseLegacyHolds() at startup.
+// upstream_tools' hold columns (state, held_reason, candidate_definition, candidate_hash) are unused since the
+// tool-change hold was removed: every write stores an active row (migration 15 deleted the held ones).
 
 import { type Db, json } from "../../db/index.ts";
 import type { ClassSource, ToolAnnotations, ToolClass, ToolDef } from "../types.ts";
@@ -23,13 +22,6 @@ export interface PinnedTool {
   cls: ToolClass;
   firstSeenAt: string;
   updatedAt: string;
-}
-
-/** A row an older version left on hold, with the definition that was waiting (null if none was stored). */
-export interface LegacyHeldTool {
-  tool: PinnedTool;
-  candidateDef: ToolDef | null;
-  candidateHash: string | null;
 }
 
 /** Per-connection catalog state. Only `refreshedAt` and `instructionsHash` are persisted (columns of `connections`). */
@@ -135,11 +127,6 @@ export class CatalogStore {
   }
   remove(connectionId: string, name: string): void {
     this.db.run("DELETE FROM upstream_tools WHERE connection_id = ? AND name = ?", connectionId, name);
-  }
-  legacyHeld(): LegacyHeldTool[] {
-    return this.db
-      .all<ToolRow>("SELECT * FROM upstream_tools WHERE state = 'held' ORDER BY connection_id, name")
-      .map((r) => ({ tool: toTool(r), candidateDef: fromStored(r.name, r.candidate_definition), candidateHash: r.candidate_hash }));
   }
   state(connectionId: string): CatalogState | null {
     const c = this.db.get<{ tools_cached_at: string | null; instructions_hash: string | null }>(
