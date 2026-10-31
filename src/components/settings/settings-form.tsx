@@ -390,7 +390,6 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
                   <span>
                     Absolute paths, one per entry; files in subdirectories count. Symlinks are followed only when they stay inside an allowed directory.
                     xaq's own data and configuration and files named like keys, databases or <code className="font-mono">.env</code> are always refused.
-                    Also: <code className="font-mono">npx xaq-cli settings attachment-dirs add &lt;dir&gt;</code>.
                   </span>
                 </FieldDescription>
               </Field>

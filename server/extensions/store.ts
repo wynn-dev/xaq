@@ -522,7 +522,7 @@ export class SqliteExtensionStore implements ExtensionStore {
     if (official.has(name)) {
       throw new ExtensionError(
         "official_name",
-        `"${name}" is the name of an official extension; a third-party extension can't use it. Install the official one with: xaq ext add ${name}`,
+        `"${name}" is the name of an official extension; a third-party extension can't use it. Install the official one from Extensions in the console.`,
       );
     }
   }

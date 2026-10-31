@@ -31,7 +31,6 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 const { AttachmentError } = await import("../server/mail/attachments.ts");
 const { isSecretName, openLocalFile, readCapped } = await import("../server/mail/local-files.ts");
-const { addAttachmentDir, listAttachmentDirs, removeAttachmentDir } = await import("../server/settings-cli.ts");
 const { testContext } = await import("./helpers.ts");
 
 type Policy = Parameters<typeof openLocalFile>[1];
@@ -91,7 +90,6 @@ describe("path attachments: the boundary", () => {
     expect(err.code).toBe("path_attachments_off");
     expect(err.message).toMatch(/Attaching files from a path is off/);
     expect(err.message).toMatch(/Settings → Attachments from files/);
-    expect(err.message).toContain("npx xaq-cli settings attachment-dirs add <dir>");
   });
 
   it("read a regular file inside an allowed directory, subdirectories included", async () => {
@@ -373,34 +371,6 @@ describe("the attachmentDirs setting", () => {
       // A narrower folder is fine.
       mkdirSync(join(HOME, "Documents", "xaq-outbox"), { recursive: true });
       expect(settings.update({ attachmentDirs: [join(HOME, "Documents", "xaq-outbox")] }).attachmentDirs).toEqual([join(HOME, "Documents", "xaq-outbox")]);
-    } finally {
-      await t.dispose();
-    }
-  });
-
-  it("is managed by `xaq settings attachment-dirs` through the admin settings API", async () => {
-    const t = testContext();
-    try {
-      const calls: string[] = [];
-      const channel = {
-        request: async <T,>(method: string, path: string, body?: unknown): Promise<T> => {
-          calls.push(`${method} ${path}`);
-          return (method === "GET" ? t.ctx.settings.get() : t.ctx.settings.update(body as object)) as T;
-        },
-      };
-      const out: string[] = [];
-      const deps = { channel, print: (l = "") => out.push(l), cwd: root };
-      expect(await listAttachmentDirs(deps)).toBe(0);
-      expect(out.join("\n")).toMatch(/No directories are allowed/);
-      expect(await addAttachmentDir("docs", deps)).toBe(0);
-      expect(t.ctx.settings.get().attachmentDirs).toEqual([docs]);
-      expect(await addAttachmentDir(docs, deps)).toBe(0);
-      expect(out.join("\n")).toContain(`${docs} is already allowed`);
-      await expect(addAttachmentDir(join(root, "missing"), deps)).rejects.toThrow(/doesn't exist/);
-      expect(await removeAttachmentDir(docs, deps)).toBe(0);
-      expect(t.ctx.settings.get().attachmentDirs).toEqual([]);
-      expect(await removeAttachmentDir(docs, deps)).toBe(1);
-      expect(calls).toContain("PATCH /api/settings");
     } finally {
       await t.dispose();
     }

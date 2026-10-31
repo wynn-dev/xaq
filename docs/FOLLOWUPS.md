@@ -351,7 +351,6 @@ Known non-blocking issues from the onboarding sweep (fresh-persona walks p9–p1
 - Console UX: on a phone the pinned button area covers about half the screen; the sidebar shows "Get started 0/8" before a path is chosen; closing the OAuth pop-up leaves "Waiting for Notion…" spinning; the expiry badge rounds up; the sidebar tagline still says "Gmail for your agents".
 
 ### CLI (#66)
-- Add a session kind or max-expiry column to `admin_sessions` so the CLI's one-time row doesn't rely on a `created_at` trick.
 - `/kill` deletes credentials and there's no enable route; turning a connection back on is console-only.
 - OAuth servers needing a pasted client ID: the connect input has no field, so the CLI points to the console.
 - The preset view doesn't expose a header preset's header name or prefix (the CLI defaults to `Authorization` or takes `--header`).
@@ -377,16 +376,13 @@ Known non-blocking issues from the onboarding sweep (fresh-persona walks p9–p1
 - The script renamed "Wynn's config" fixtures to xaq names; keep one fixture with the old names (`agentinbox` entry, `${AGENTINBOX_API_KEY}`, `mcp-agentinbox`) via `rename-xaq: keep`.
 - `import.ts` `SELF_NAME` skips any third-party server named `xaq-*` or `agentinbox-*` as if it were ours.
 - The listener's user-agent is now `xaq-cli/<v>`; an unmigrated daemon shows its version as unknown.
-- The connections CLI targets `~/.xaq` if it appears, instead of `~/.agentinbox` (fails clearly with "No xaq data").
 
 ### New-user broker walk (Oct 2026)
 - Gmail wording remains for non-Gmail users: the "Gmail for your agents" tagline, "Gmail accounts" in the sidebar, the password page, "the AI tool that will read your mail", an Overview full of mail counts; the agent's tool list includes Gmail tools with no Gmail account connected.
 - The Notion dialog example says `notion__search`; the real name is `notion__notion-search`.
-- The CLI's default name for a loopback server is `127-0-0-1-38081`; the console's rule gives `local-38081`. After naming a connection, the console can still show its host as the name.
-- Aborting `connections add` at the header prompt leaves a keyless connection listed as active with 0 tools.
+- After naming a connection, the console can still show its host as the name.
 - The approve page says "This action can't be undone" for `notion-delete-pages` (moves pages to Trash).
 - "The next step checks that it works" after creating the agent, but Finish setup goes straight to Overview; an abandoned pairing request stays as a banner until it expires.
-- Disable deletes the stored bearer key; the CLI help ("turn it back on in the console") doesn't say so.
 
 ### Walk fixes (#71) and re-walk
 - Approve page says "This action cannot be undone" for tools that move to Trash (notion-delete-pages); make the copy depend on the tool, or say "may not be reversible".
@@ -429,14 +425,11 @@ Known non-blocking issues from the onboarding sweep (fresh-persona walks p9–p1
 - `connectionStatusView` shows "Error", not "Expired", for an `error` connection past its date.
 - The non-expired reconnect message renders "…work again: <url> . Nothing was sent…".
 - `presetServerUrl` throws `SourceError` in the create handler: a URL with userinfo probably returns 500, not 400.
-- For up to 60 s (until the sweep), `connections list` shows `active` for a connection past its date.
 - `registry.ts:24`/`catalog.ts:43` type the preset as `Pick<…,"classify">`; add `nameCheckExempt` to the Pick.
 - The list card shows neither the scopes, the expiry date, nor that it's T3 Code; the detail page says "in N days", never the date.
 - A fresh connection reads "Needs a reconnect in 30 days" while `expiresInDays` is 29.
 - The generic "Ask before risky actions" copy says sending waits for approval; T3 thread sends don't. Add a T3 line.
 - Setup step 4 says "not a failure in the middle of a task", but the call does fail (cleanly). Reword.
-- The CLI prints "Enter your T3 Code server's address" even after `--url`.
-- A CLI t3code add interrupted during sign-in leaves a "not signed in" connection; re-running gives a 409. Point to `connections reconnect`.
 - T3 default connection name is `host:port`; "T3 Code (host:port)" would read clearer (one line server + console).
 
 ## Extensions round (Oct 2026: #79–#82, xaq-extensions #1–#4)
@@ -448,13 +441,11 @@ Known non-blocking issues from the onboarding sweep (fresh-persona walks p9–p1
 - Registry index and GitHub API bodies are read in full before the size check.
 - `fetchLocal`: a file swapped for a symlink/FIFO between `lstat` and read; directories aren't counted toward a cap.
 - Refused install attempts (`changed`, `third_party_unconfirmed`, `integrity_mismatch`) aren't audited; an identical reinstall is audited as an install.
-- The CLI admin channel times out at 120 s while a slow git install continues on the daemon.
 - `COMMIT_RE` is 40-hex only (SHA-256 git repos fail unclearly); GitHub ref splitting picks the shortest prefix (tag `x` over branch `x/y`).
-- `connections rename --slug " x"` compares before trimming.
 - Read-only install dirs make a plain `rm -rf ~/.xaq` fail; document it.
 - xaq-extensions CI runs the PR's own `build-index.mjs`: put `scripts/` and `.github/` under CODEOWNERS or run the check from the base. A push-to-main base check only catches a bad pin after merge.
 - `text`/`eol=crlf`/`ident` attributes also change tarball bytes (fails closed); `validate.mjs` could refuse them.
-- `ext update` doesn't print the source/ref it follows; the local-dir update diff shows a meaningless commit row; a third-party GitHub add fetches twice (2 of 60 API calls/hour).
+- The local-dir update diff shows a meaningless commit row; a third-party GitHub add fetches twice (2 of 60 API calls/hour).
 - The console "Add from URL" placeholder could mention registry names.
 
 ### Manifests and migration (#80)
@@ -473,7 +464,7 @@ Known non-blocking issues from the onboarding sweep (fresh-persona walks p9–p1
 - Code connections marked `error` aren't in `runtime.start()`'s refresh tracking.
 - `void reloadExtension(name)`-style calls should `.catch`.
 - `/connect` right after creating a code connection kills the child mid-listing (heals on callback); a new code connection is `active` and spawns before sign-in.
-- After an integrity failure, `ext add`/`ext update` say "installed"/"up to date" (DB integrity, not files): the only way out is a forced remove + add. The agent is told "may or may not have run" though the child never started.
+- After an integrity failure, install and update say "installed"/"up to date" (DB integrity, not files): the only way out is a forced remove + add. The agent is told "may or may not have run" though the child never started.
 - Unreachable WHOOP-era webhook code remains in core (`server/integrations/hooks.ts`, `server/broker/reachability.ts`, `server/app.ts`); the `https_localhost` redirect mode is never wired.
 - Registry-unreachable message only shows from Get started → Notion, not from Connections → Add; it uses the id ("notion"), not the display name.
 

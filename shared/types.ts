@@ -349,7 +349,7 @@ export interface Settings {
    * Absolute directories on xaq's machine whose files agents may attach to mail by path (attachments
    * `{ path }`). Empty (the default): path attachments are off. xaq's own directories and secret-looking
    * files (master.key, *.db, .env, id_*, *.pem, *.key) are refused even inside them. Admin only (console
-   * Settings, `npx xaq-cli settings attachment-dirs`); no agent tool changes it.
+   * Settings); no agent tool changes it.
    */
   attachmentDirs: string[];
   /**

@@ -33,7 +33,7 @@ import { AttachmentError } from "./attachments.ts";
 
 /** Where the owner turns path attachments on. */
 export const ENABLE_HINT =
-  "The owner can allow directories in the xaq console (Settings → Attachments from files) or with `npx xaq-cli settings attachment-dirs add <dir>`.";
+  "The owner can allow directories in the xaq console (Settings → Attachments from files).";
 
 /** File names that are secrets wherever they are (compared lower-cased). */
 const SECRET_NAMES: RegExp[] = [

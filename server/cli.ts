@@ -6,7 +6,7 @@ import type { Command as CommandType } from "commander";
 import { envVar, underService } from "./brand.ts";
 
 // Loaded after the Node check (static imports are hoisted above it in the bundle).
-const { Command, InvalidArgumentError } = await import("commander");
+const { Command, InvalidArgumentError, Option } = await import("commander");
 const { default: pc } = await import("picocolors");
 
 process.title = "xaq";
@@ -41,7 +41,6 @@ const version = packageVersion();
 interface ServerFlags {
   port?: number;
   host?: string;
-  data?: string;
 }
 
 const validPort = (value: string) => /^\d+$/.test(value) && Number(value) <= 65535;
@@ -63,10 +62,12 @@ function portOption(flag: number | undefined): number | undefined {
 const withServerOptions = (cmd: CommandType) =>
   cmd
     .option("-p, --port <port>", "port to listen on (default 8425, env PORT)", parsePort)
-    .option("--host <host>", "bind address (default 0.0.0.0, env HOST)")
-    .option("-d, --data <dir>", "data directory (default ~/.xaq, or an existing ~/.agentinbox; env XAQ_DATA)");
+    .option("--host <host>", "bind address (default 0.0.0.0, env HOST)");
 
-const configInput = (o: ServerFlags) => ({ port: portOption(o.port), host: o.host, dataDir: o.data });
+/** The global --data, given before or after the command. */
+const dataFlag = () => program.opts<{ data?: string }>().data;
+
+const configInput = (o: ServerFlags) => ({ port: portOption(o.port), host: o.host, dataDir: dataFlag() });
 
 const program = new Command("xaq")
   .description(
@@ -75,6 +76,7 @@ const program = new Command("xaq")
   )
   .version(version, "-v, --version", "print the version")
   .helpOption("-h, --help", "show help")
+  .option("-d, --data <dir>", "data directory (default ~/.xaq, or an existing ~/.agentinbox; env XAQ_DATA)")
   .addHelpText(
     "after",
     `
@@ -104,7 +106,7 @@ withServerOptions(
     .helpGroup(SERVER_GROUP),
 )
   .option("--no-open", "don't open a browser on first run")
-  .option("--dev", "development: API only, the console runs on Vite (:5173)")
+  .addOption(new Option("--dev", "development: API only, the console runs on Vite (:5173)").hideHelp())
   // `xaq typo` lands here as an extra argument: report it as the unknown command it is.
   .allowExcessArguments()
   .action(async (o: ServerFlags & { open: boolean; dev?: boolean }, cmd: CommandType) => {
@@ -133,25 +135,25 @@ withServerOptions(
 service
   .command("uninstall")
   .description("stop and remove the service (keeps your data)")
-  .option("-d, --data <dir>", "data directory, if the installed service doesn't say (default ~/.xaq, or an existing ~/.agentinbox; env XAQ_DATA)")
-  .action(async (o: ServerFlags) => {
+  .action(async () => {
     const { uninstallService } = await import("./service.ts");
     const { resolveDataDir } = await import("./config.ts");
     // No loadConfig: uninstalling must not create a data directory.
-    uninstallService({ dataDir: resolveDataDir(o.data, { quiet: true }) });
+    uninstallService({ dataDir: resolveDataDir(dataFlag(), { quiet: true }) });
   });
 
 // The console's update job (server/update.ts), started by the service as its own systemd unit or launchd job.
 service
   .command("update-run", { hidden: true })
-  .requiredOption("-d, --data <dir>", "the service's data directory")
   .requiredOption("--id <id>", "the update's id (the status file and audit entries carry it)")
   .option("--to <version>", "the version to install")
   .option("--back", "go back to the previous install (app.old)")
-  .action(async (o: { data: string; id: string; to?: string; back?: boolean }) => {
+  .action(async (o: { id: string; to?: string; back?: boolean }) => {
+    const dataDir = dataFlag();
+    if (!dataDir) throw new Error("Give --data.");
     if (!o.back === !o.to) throw new Error("Give either --to or --back.");
     const { runUpdateJob } = await import("./update.ts");
-    const status = await runUpdateJob({ dataDir: o.data, id: o.id, kind: o.back ? "rollback" : "update", version: o.to });
+    const status = await runUpdateJob({ dataDir, id: o.id, kind: o.back ? "rollback" : "update", version: o.to });
     if (status.state !== "succeeded") process.exitCode = 1;
   });
 
@@ -168,15 +170,6 @@ const skill = program
   .description("the xaq agent skill (SKILL.md): teaches an agent how to use xaq's tools")
   .summary("install the agent skill (SKILL.md)")
   .helpGroup(AGENT_GROUP);
-
-skill
-  .command("print")
-  .description("print SKILL.md to stdout")
-  .option("--url <url>", "xaq server URL to fill in (env XAQ_URL)")
-  .action(async (o: { url?: string }) => {
-    const { renderSkill } = await import("./skill/index.ts");
-    process.stdout.write(renderSkill(await serverUrl(o.url)));
-  });
 
 skill
   .command("install")
@@ -202,15 +195,12 @@ program
   .description("forgot the console password? Removes it and prints a new setup link (or the first-run link)")
   .summary("print a new setup link (forgot the password?)")
   .helpGroup(SERVER_GROUP)
-  .option("-d, --data <dir>", "data directory (default ~/.xaq, or an existing ~/.agentinbox; env XAQ_DATA)")
-  .option("-p, --port <port>", "port of the running instance, used for the printed link", parsePort)
-  .option("--host <host>", "host of the running instance, used for the printed link")
   .action(
-  async (o: ServerFlags) => {
+  async () => {
     // Never create a data directory or master key here: a wrong --data (or a service running as
     // another user) must not silently produce a fresh instance.
     const { dataFiles, resolveDataDir } = await import("./config.ts");
-    const dataDir = resolveDataDir(o.data);
+    const dataDir = resolveDataDir(dataFlag());
     const dbPath = dataFiles(dataDir).db;
     if (!existsSync(dbPath)) {
       throw new Error(
@@ -228,10 +218,7 @@ program
     const { consoleUrls } = await import("./urls.ts");
 
     const running = runningInstance(dataDir);
-    const config = loadConfig(
-      { dataDir, port: portOption(o.port) ?? running?.port, host: o.host ?? (process.env.HOST || running?.host) },
-      version,
-    );
+    const config = loadConfig({ dataDir, port: running?.port, host: running?.host }, version);
     const db = new Db(dbPath);
     try {
       const bus = createBus();
@@ -258,18 +245,6 @@ program
 // docs/listen.md). Imported after the Node check, like everything else.
 const { registerListenCommands } = await import("./listen/commands.ts");
 registerListenCommands(program);
-// Daemon side, behind the brokerUpstreams setting: `connections …` and `import --from …` (server/connections-cli).
-const { registerConnectionsCommands } = await import("./connections-cli/commands.ts");
-registerConnectionsCommands(program);
-// `ext add | list | update | remove` (docs/EXTENSIONS.md), through the daemon's /api/extensions.
-const { registerExtensionCommands } = await import("./extensions/cli.ts");
-registerExtensionCommands(program);
-// `smoke google-workspace --scratch`: the live end-to-end check (server/smoke), through the daemon's admin API and /mcp.
-const { registerSmokeCommands } = await import("./smoke/cli.ts");
-registerSmokeCommands(program);
-// `settings attachment-dirs list | add | remove`, through the daemon's /api/settings.
-const { registerSettingsCommands } = await import("./settings-cli.ts");
-registerSettingsCommands(program);
 // Short one-liners for the command list; each command's own --help keeps its full description.
 const AGENT_SUMMARIES: Record<string, string> = {
   connect: "pair an agent; you approve it in the console",

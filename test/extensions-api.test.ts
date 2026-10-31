@@ -2,9 +2,6 @@ import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, statSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { openAdminChannel } from "../server/connections-cli/admin.ts";
-import { ScriptedPrompter } from "../server/connections-cli/prompt.ts";
-import { addExtension, ExtensionsApi, listExtensions, registerExtensionCommands, removeExtension, updateExtension } from "../server/extensions/cli.ts";
 import { computeIntegrity } from "../server/extensions/integrity.ts";
 import { extensionStore } from "../server/extensions/store.ts";
 import { entriesFromDir, type FakeGithub, fakeSha, manifest, startFakeGithub, writeTree } from "./extension-fakes.ts";
@@ -132,108 +129,5 @@ describe("/api/extensions", () => {
     const res = await req("/api/extensions/resolve", { method: "POST", json: { source: dir } });
     expect(res.status).toBe(409);
     expect((await json(res)).error.code).toBe("official_name");
-  });
-});
-
-describe("xaq ext (CLI)", () => {
-  const channels: { close(): void }[] = [];
-  afterEach(() => {
-    while (channels.length) channels.pop()!.close();
-  });
-
-  function cli(answers: string[] = [], yes = false) {
-    const channel = openAdminChannel({
-      dataDir: h.ctx.config.dataDir,
-      instance: { pid: 1, host: "127.0.0.1", port: 8425, startedAt: "" },
-      fetch: ((url: string, init: RequestInit) => {
-        const u = new URL(url);
-        return h.request(u.pathname + u.search, init);
-      }) as typeof fetch,
-    });
-    channels.push(channel);
-    const prompter = new ScriptedPrompter(answers, yes);
-    return { deps: { api: new ExtensionsApi(channel), prompter }, prompter };
-  }
-
-  it("add (official), list, update (shows old and new, needs confirmation), remove", async () => {
-    const v1 = publish("demo");
-    const { deps, prompter } = cli(["n", "y", "y"]);
-    expect(await addExtension("demo", deps)).toBe(0);
-    expect(prompter.text).toMatch(/Installed demo 1\.0\.0/);
-    expect(prompter.asked).toEqual([]); // official: no question
-
-    expect(await listExtensions(deps)).toBe(0);
-    expect(prompter.text).toMatch(new RegExp(`demo\\s+1\\.0\\.0\\s+${v1.sha.slice(0, 12)}\\s+official\\s+-\\s+demo`));
-
-    const v2 = publish("demo", "2", "1.2.0");
-    // Declined: nothing changes.
-    expect(await updateExtension("demo", deps)).toBe(0);
-    expect(prompter.text).toMatch(/version\s+1\.0\.0\s+→\s+1\.2\.0/);
-    expect(prompter.text).toContain(`${v1.sha.slice(0, 12)}  →  ${v2.sha.slice(0, 12)}`);
-    expect(prompter.text).toContain(`${v1.integrity}  →  ${v2.integrity}`);
-    expect(prompter.text).toMatch(/Nothing was changed/);
-    expect(extensionStore(h.ctx).get("demo")?.version).toBe("1.0.0");
-    // Confirmed.
-    expect(await updateExtension("demo", deps)).toBe(0);
-    expect(extensionStore(h.ctx).get("demo")?.version).toBe("1.2.0");
-
-    usedBy.demo = ["notion-work"];
-    expect(await removeExtension("demo", {}, deps)).toBe(1);
-    expect(prompter.text).toMatch(/used by notion-work/);
-    expect(extensionStore(h.ctx).get("demo")).not.toBeNull();
-    expect(await removeExtension("demo", { force: true }, deps)).toBe(0);
-    expect(prompter.asked.at(-1)).toMatch(/Remove the extension demo and disable notion-work\?/);
-    expect(extensionStore(h.ctx).get("demo")).toBeNull();
-  });
-
-  it("add (third-party) prints the warning and needs a yes; --yes installs", async () => {
-    const url = thirdParty("tpcli");
-    const declined = cli(["n"]);
-    expect(await addExtension(url, declined.deps)).toBe(0);
-    expect(declined.prompter.text).toMatch(/third-party/);
-    expect(declined.prompter.text).toMatch(/This code runs on your machine with network access/);
-    expect(declined.prompter.text).toMatch(/Declared network hosts: api\.tp\.example/);
-    expect(declined.prompter.asked.join("\n")).toMatch(/Install the third-party extension tpcli\?/);
-    expect(declined.prompter.text).toMatch(/Nothing was installed/);
-    expect(extensionStore(h.ctx).get("tpcli")).toBeNull();
-
-    const yes = cli([], true);
-    expect(await addExtension(url, yes.deps)).toBe(0);
-    expect(yes.prompter.text).toMatch(/This code runs on your machine/);
-    expect(extensionStore(h.ctx).get("tpcli")).toMatchObject({ official: false });
-  });
-
-  it("registers xaq ext add | list | update | remove, with --yes and --force", async () => {
-    const { Command } = await import("commander");
-    const program = new Command("xaq");
-    registerExtensionCommands(program);
-    const ext = program.commands.find((c) => c.name() === "ext")!;
-    const sub = Object.fromEntries(ext.commands.map((c) => [c.name(), c.options.map((o) => o.long)]));
-    expect(Object.keys(sub)).toEqual(["add", "list", "update", "remove"]);
-    expect(sub.add).toContain("--yes");
-    expect(sub.update).toContain("--yes");
-    expect(sub.remove).toEqual(expect.arrayContaining(["--force", "--yes", "--data"]));
-  });
-
-  it("add ./dir resolves the path in the CLI's cwd, not the daemon's", async () => {
-    const cliCwd = join(work, "elsewhere");
-    writeTree(join(cliCwd, "mine"), { "xaq-extension.json": manifest("mine") });
-    expect(process.cwd()).not.toBe(cliCwd); // the "daemon" (this process) runs somewhere else
-    const { deps, prompter } = cli([], true);
-    expect(await addExtension("./mine", { ...deps, cwd: cliCwd })).toBe(0);
-    expect(prompter.text).toContain(`Fetching ${join(cliCwd, "mine")}`);
-    expect(extensionStore(h.ctx).get("mine")).toMatchObject({ source: join(cliCwd, "mine"), official: false });
-  });
-
-  it("update says when it's up to date; list says when there's nothing", async () => {
-    publish("demo");
-    const { deps, prompter } = cli();
-    expect(await listExtensions(deps)).toBe(0);
-    expect(prompter.text).toMatch(/No extensions installed/);
-    await addExtension("demo", deps);
-    expect(await updateExtension("demo", deps)).toBe(0);
-    expect(prompter.text).toMatch(/demo is up to date/);
-    await expect(updateExtension("nope", deps)).rejects.toThrow(/isn't installed/);
-    await expect(removeExtension("nope", {}, deps)).rejects.toThrow(/isn't installed/);
   });
 });

@@ -147,7 +147,7 @@ repo's `scripts/validate.mjs`) checks the shape; a few rules below are only the 
   `{ "schema": 1, "extensions": [{ "name", "displayName", "description", "kind", "version", "path": "extensions/<name>", "commit": "<40-hex sha>", "integrity": "sha256-<base64>" }] }`.
   It's fetched from `https://raw.githubusercontent.com/wynn-dev/xaq-extensions/main/index.json`. The index is only a
   catalog: what gets installed is pinned by `commit` and `integrity`.
-- **Sources for `xaq ext add <name|url|path>`:**
+- **Sources** (the console's Extensions page):
   - a registry name;
   - a GitHub URL `https://github.com/<owner>/<repo>[/tree/<ref>/<path>]`, fetched as the codeload tarball of the
     resolved commit;
@@ -155,8 +155,8 @@ repo's `scripts/validate.mjs`) checks the shape; a few rules below are only the 
   - a local directory, for development and tests.
   Anything that isn't the official registry (wynn-dev/xaq-extensions at the indexed commit) is **third-party**. It
   gets a clear warning before install: the declared network hosts, kind `code` or not, "this code runs on your
-  machine with network access", and that its risk map can make tools stricter but never looser. The CLI needs
-  `--yes` or an interactive confirmation.
+  machine with network access", and that its risk map can make tools stricter but never looser. It needs a
+  confirmation.
 - **Integrity:** sha256 over a canonical listing of the extension directory. For each regular file, sorted by POSIX
   path relative to the extension root, the line is `<path>\0<mode 644|755>\0<hex sha256 of content>\n`. Symlinks,
   devices and paths outside the root are refused. It's encoded as `sha256-<base64>`. Core
@@ -164,10 +164,10 @@ repo's `scripts/validate.mjs`) checks the shape; a few rules below are only the 
 - **Pinned installs:** an install records the source, the resolved commit (or, for a local path, none), the integrity,
   the version and the manifest. Files land in `<dataDir>/extensions/<name>/<integrity-hex-prefix>/`, made read-only.
   The integrity is checked again before every child start. A mismatch refuses to start and says why.
-- **Updates:** `xaq ext update <name>` shows the old and new version, commit and integrity, and installs only on
+- **Updates:** an update shows the old and new version, commit and integrity, and installs only on
   confirmation. Nothing ever updates on its own: an update never swaps code silently. An update can't change the
   extension's `name` or its `kind` (remote or code): that's a remove and a new install.
-- **Removal:** `xaq ext remove <name>` is refused while connections use the extension, unless `--force`, which
+- **Removal:** refused while connections use the extension, unless forced, which
   disables those connections. A third-party name also unbinds them (`connections.preset` is cleared), so a later
   extension of that name can't take them over. An official name keeps them bound: no third party can install under
   it, and re-adding the extension brings its rules back. Credentials are deleted only by removing the connections.
@@ -301,8 +301,7 @@ in. Core side: `server/extensions/google-auth.ts` (binding, connect, tokens, sta
 - **Core's own use** (`server/google/scoped.ts`): `accountHasScopes(ctx, accountId, scopes)` and
   `googleAccessToken(ctx, accountId, scopes)` (a downscoped token for any granted subset; `ScopesNotGrantedError` when
   not granted). Scope constants, including `DRIVE_READONLY_SCOPE` and `WORKSPACE_SCOPES`, are in `server/google/scopes.ts`.
-- **Setup, in the product** (console and `xaq connections add google-workspace`, the same steps from
-  `PresetView.setupSteps`): core's four steps come first, then the manifest's own.
+- **Setup, in the product** (the console, from `PresetView.setupSteps`): core's four steps come first, then the manifest's own.
   1. **Pick the Google account** from xaq's connected ones (`input.choices`; one needing a reconnect is disabled), with
      a link to add one.
   2. **Turn on the APIs** in the user's own Cloud project: a link per API
@@ -367,7 +366,7 @@ in. Core side: `server/extensions/google-auth.ts` (binding, connect, tokens, sta
   - the snapshot serves only connections already bound to that name. It isn't offered in Add connection, since new
     connections need the installed extension, and an installed extension always wins over it;
   - any other bound remote connection runs on the generic rules, and a code one reads "Needs the <name> extension.
-    Install it with `xaq ext add <name>`, or from Extensions in the console." (shown as status `error`, not
+    Install it from Extensions in the console." (shown as status `error`, not
     stored), with its tools unavailable;
   - *Clarified (B3):* a forced removal disables the connections. When an official extension is installed again,
     its connections (still bound) return to `active` if their credentials are still there, or to `needs_reauth`;

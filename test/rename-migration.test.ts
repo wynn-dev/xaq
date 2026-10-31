@@ -33,10 +33,6 @@ import {
   unitDataDir,
 } from "../server/service.ts";
 import { isOurSkill, removeLegacySkill, renderSkill, SKILL_MARKER, skillPath, writeSkill } from "../server/skill/index.ts";
-import { readClientConfig } from "../server/connections-cli/clients.ts";
-import { planImport } from "../server/connections-cli/import.ts";
-import { confinedRoutes } from "../server/connections-cli/routes.ts";
-import { publicLookup } from "./connections-cli-fake.ts";
 import { testConfig } from "./helpers.ts";
 import { FAKE_KEY, isolateXdg, makeEvent } from "./listen-client-fake.ts";
 
@@ -397,26 +393,6 @@ describe("agent-side names: new profiles are xaq, profiles from before the renam
     expect(yaml).toContain("  agentinbox:");
     expect(yaml).not.toContain("xaq");
     expect(readFileSync(join(hermes, ".env"), "utf8")).toBe(`AGENTINBOX_API_KEY=${FAKE_KEY}\n`);
-  });
-
-  it("import --from hermes: an old agentinbox entry is ours (never imported), and routes confined to it are found", async () => {
-    writeOldProfile("default");
-    const hermes = join(env.root, "hermes");
-    mkdirSync(join(hermes, "cron"), { recursive: true });
-    writeFileSync(
-      join(hermes, "config.yaml"),
-      'mcp_servers:\n  agentinbox:\n    url: "https://mail.example.com/mcp"\n    headers:\n      Authorization: "Bearer ${AGENTINBOX_API_KEY}"\n  notion:\n    url: "https://mcp.notion.com/mcp"\n',
-    );
-    writeFileSync(join(hermes, ".env"), `AGENTINBOX_API_KEY=${FAKE_KEY}\n`);
-    writeFileSync(join(hermes, "webhook_subscriptions.json"), JSON.stringify({ "agentinbox-mail": { toolsets: ["mcp-agentinbox"] } }));
-    writeFileSync(join(hermes, "cron", "jobs.json"), JSON.stringify({ jobs: [{ id: "j1", name: "email-watch", enabled_toolsets: ["agentinbox"] }] }));
-    withEnv({ HERMES_HOME: hermes });
-    const items = await planImport(readClientConfig("hermes", { env: process.env }), { lookup: publicLookup });
-    expect(items.map((i) => [i.entry.name, i.action])).toEqual([
-      ["agentinbox", "self"],
-      ["notion", expect.not.stringMatching(/^self$/)],
-    ]);
-    expect(confinedRoutes("hermes", mcpServerName("default"), process.env)).toEqual(["webhook route agentinbox-mail", "cron job email-watch"]);
   });
 
   it("re-running Codex setup drops the old marker comment too", () => {

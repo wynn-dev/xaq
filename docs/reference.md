@@ -44,14 +44,12 @@ key; the broker holds every upstream credential and lists only the tools the age
 [MCP-BROKER.md](MCP-BROKER.md).
 
 - **Add one**: in the console, Connections → Add connection (it offers the official extensions that aren't installed
-  yet, with an Install button); or on the daemon's machine, `npx xaq-cli ext add notion` first, then
-  `npx xaq-cli connections add notion` (or `connections add <url>` for any MCP server). Pre-made connections are
-  **extensions** from
+  yet, with an Install button). Pre-made connections are **extensions** from
   [wynn-dev/xaq-extensions](https://github.com/wynn-dev/xaq-extensions) ([EXTENSIONS.md](EXTENSIONS.md)): Notion
   (its hosted MCP, two clicks), T3 Code (below), Brightspace (your own
   [Brightspace MCP server](https://github.com/wynn-dev/brightspace-mcp-server): its address and its bearer token;
-  every tool reads) and WHOOP (a code extension: install it with `npx xaq-cli ext add whoop` or from Extensions in
-  the console, then add it the same way; the console walks you through your own WHOOP developer app, no public URL
+  every tool reads) and WHOOP (a code extension: install it from Extensions in the console, then add it the
+  same way; the console walks you through your own WHOOP developer app, no public URL
   is needed, and agents read live from the WHOOP API). Connections made before extensions keep working as they are:
   xaq binds them to their extension at startup and installs a missing one in the background, with no new sign-in.
   Until it's installed, Notion and T3 Code connections keep the same rules and can still reconnect (core keeps a
@@ -94,8 +92,7 @@ key; the broker holds every upstream credential and lists only the tools the age
   change that makes a tool risky makes it ask). The audit log records each change (`connection.tool_changed`, with
   the old and new definition hash).
 - **Tool names**: `<connection>__<tool>`, e.g. `notion__notion-search`. To change a connection's short name: the
-  connection's page → Change short name, or `npx xaq-cli connections rename <name> --slug <new> [--name <display
-  name>]`. The exposed tool names follow at once and approval rules carry over, but anything that calls the old
+  connection's page → Change short name. The exposed tool names follow at once and approval rules carry over, but anything that calls the old
   `<old>__<tool>` names stops working until it uses the new ones.
 - **Prompts and resources**: `/mcp` also passes each connection's prompts and resources through, in both tool-list
   modes. Prompts are `<connection>__<prompt>`. Resources are `xaq://<connection>/<the original URI, percent-encoded>`,
@@ -120,9 +117,6 @@ key; the broker holds every upstream credential and lists only the tools the age
   audit. A new agent gets search mode if it has more than about 30 tools the first time it connects. After that its
   mode changes only when you change it (agent page → Tool list), never because a connection added tools. Agents
   created before search mode keep every tool listed. Any agent can ask for it with `/mcp?mode=search`.
-- **Import**: `npx xaq-cli import --from hermes|claude-code|cursor|codex [--dry-run]` moves a client's remote
-  MCP servers into connections and replaces them with the single xaq entry, after a backup. Entries that don't
-  work yet (an OAuth sign-in to finish, a rejected key) stay in the client until they do.
 - **Turn it off**: Settings → Connections (MCP broker).
 
 ## Extensions
@@ -130,38 +124,29 @@ key; the broker holds every upstream credential and lists only the tools the age
 Integrations come as extensions ([EXTENSIONS.md](EXTENSIONS.md)): a manifest-only `remote` one (Notion, T3 Code) or
 a `code` one with a bundled MCP server that xaq runs out of process (WHOOP). Official extensions come from
 [wynn-dev/xaq-extensions](https://github.com/wynn-dev/xaq-extensions); its `index.json` pins each to a commit and an
-integrity hash, and xaq installs exactly that.
-
-```
-xaq ext add <name | github-url | git-url[#ref[:path]] | ./dir> [--yes] [--data …]
-xaq ext list [--data …]
-xaq ext update <name> [--yes] [--data …]
-xaq ext remove <name> [--force] [--yes] [--data …]
-```
+integrity hash, and xaq installs exactly that. The console's Extensions page manages them.
 
 - **Sources**: a registry name (`notion`); a GitHub URL (`https://github.com/<owner>/<repo>[/tree/<ref>/<path>]`,
   fetched as the tarball of the resolved commit); any other `https://` or ssh git URL, through the `git` CLI (`#<ref>`,
   `#<ref>:<path>`; `http://`, `git://` and URLs with credentials in them are refused); or a directory on xaq's
-  machine, for development (the CLI resolves `./dir` and `~/dir` where you run it; the console and the API take an
-  absolute path). git runs without your git config or environment, and without hooks. GitHub refs are resolved through its
+  machine, for development (an absolute path). git runs without your git config or environment, and without hooks. GitHub refs are resolved through its
   API without signing in (60 requests an hour per address; xaq says when that's used up).
 - **Third-party**: anything that isn't the official registry at the indexed commit. Before it's installed you see
   its source, its kind, its declared network hosts and, for a `code` one, that it runs on your machine with network
-  access; the CLI needs a yes (or `--yes`), the console a click on "I trust it: install". A third-party extension
+  access, and it needs a click on "I trust it: install". A third-party extension
   can't use an official extension's name (`notion`, `t3code`, `whoop`, `brightspace`, or any in the registry).
 - **Pinned and read-only**: files go to `<data>/extensions/<name>/<first 16 hex of the integrity>/` (fetched into a
   temp directory, checked, then renamed into place) and are made read-only. Integrity is sha256 over the sorted
   listing of `<path>\0<644|755>\0<sha256>\n` lines; symlinks, `..` paths and anything over 20 MB or 5,000 files are
   refused.
-- **Updates**: never automatic. `ext update` shows the old and new version, commit and integrity and installs only
+- **Updates**: never automatic. An update shows the old and new version, commit and integrity and installs only
   on confirmation; an update that changed after you saw it is refused.
-- **Removal**: refused while connections use the extension; `--force` disables them first (their credentials stay
+- **Removal**: refused while connections use the extension; forcing it disables them first (their credentials stay
   until you remove the connections).
 - **Console**: Extensions lists what's installed (version, commit, source, official or third-party, used by),
   browses the registry, updates with the diff shown, and adds from a URL with the same warning.
 
-Admin API (console session and the CSRF header, like every `/api` route; the CLI uses it through its local admin
-session):
+Admin API (console session and the CSRF header, like every `/api` route):
 
 | Route | |
 |---|---|
@@ -174,154 +159,18 @@ session):
 | `POST /api/extensions/:name/verify` | Re-checks the installed files' integrity: `{ok}` |
 | `DELETE /api/extensions/:name[?force=true]` | Remove. 409 `in_use` (with `usedBy`) unless forced |
 
-## Live check: `smoke google-workspace`
-
-An end-to-end check of Gmail attachments and the `google-workspace` extension on the real, connected account. You
-run it on xaq's machine while xaq is running. It is safe by construction: it reads anything, writes only into a new
-scratch folder plus ONE draft to the account itself, and removes both again.
-
-```
-xaq smoke google-workspace --scratch [--account <email>] [--connection <slug>] [--json] [--yes] [--data …]
-```
-
-- **`--scratch` is required.** Without it the command refuses and creates nothing. It prints the plan, then asks
-  (or takes `--yes`).
-- **`--account`, `--connection`**: the Gmail account and the google-workspace connection. Each defaults to the only
-  one (the account defaults to the one the connection is signed in as). If Workspace isn't connected, isn't
-  working or lacks one of its Google permissions, the command says so and prints the console page that fixes it.
-  Connections must be on (Settings), and xaq must have the `attachmentDirs` setting.
-- **A temporary agent** `xaq-smoke-<UTC timestamp>` runs it, through `/mcp` like any agent; its key is held in
-  memory only. The agent gets the account with `read` and `draft` only (draft-only send mode, no send, organize or
-  trash) and the Workspace connection at "ask", so risky calls really wait for approval. It inherits nothing else and
-  lists every tool directly. It is deleted when the run ends, also after a failure, Ctrl-C, SIGTERM or SIGHUP.
-
-What it does, in order (tool names as the extension lists them; agents see `<slug>__<name>`):
-
-0. **Earlier runs.** First the daemon sweeps what earlier runs left:
-   - their agents are deleted: only agents `POST /api/smoke/agents` created, according to the audit log. An owner's
-     own agent named like a run is never touched;
-   - their temp dirs are taken out of `attachmentDirs`, only entries shaped exactly like
-     `…/xaq-smoke/xaq-smoke-<ts>-XXXXXX` (an owner's `~/Documents/xaq-smoke-notes` stays). Their leftover dirs in
-     the private smoke directory are
-     removed.
-
-   Their drafts that still exist (found in the audit log), and `xaq-smoke-*` folders in Drive that aren't in the
-   trash, are listed under **From earlier runs (check these)**. They are never deleted for you, and they don't fail
-   this run.
-1. **Reads.** These print names, the subject, kinds and sizes, never content.
-   - Drive: `drive_search` for the newest Doc, Sheet and Slides file, then `drive_list_folder` on the top of My
-     Drive. For each file: `drive_get`, then `docs_read`, `sheets_read` or `slides_read`, then `drive_export` (as
-     markdown, csv or text).
-   - Gmail: `search_threads` (`has:attachment`) and `get_thread`/`get_message` pick ONE email with attachments.
-     Then `list_attachments`, and `get_attachment` extracts each attachment it can show inline, with
-     `format: "inline"`, which never saves a copy. The run decides what to ask for from the listed type and size:
-     - PDF, DOCX, XLSX, PPTX and CSV under 25 MB;
-     - images (PNG, JPEG, GIF, WebP) under 5 MB;
-     - text and HTML.
-
-     Anything else is never requested (it would only be downloaded to be told it can't be shown); the table says
-     "skipped (can't be shown inline)". A password-protected or encrypted file (`parseFailure` `password` or
-     `encrypted`, the file's own doing) passes as "couldn't read (<reason>)": xaq answered correctly and saved
-     nothing. Every other parse failure fails the step with the reason: a corrupt file, a file over a parser limit, or
-     a parser that's missing, crashed, timed out or busy. Corrupt files are included because a parser regression would
-     look the same, and this run is the only check that would catch one. If an answer still carries a saved path, the
-     step fails and the path is listed under Left behind.
-2. **Scratch folder.** `drive_create_folder` creates `xaq-smoke-<ts>` at the top of My Drive. If that fails, nothing
-   is written.
-3. **Docs.** `docs_create` from markdown, in the folder. Then `docs_append`, `docs_replace_text` (exactly 2 matches),
-   `docs_comment_add`, and `docs_read` and `docs_comments_list` to check the markers and the comment.
-4. **Sheets.** `sheets_create` in the folder, `sheets_write` A1:C2, `sheets_append_rows` (2 rows), then
-   `sheets_read`, which must give back exactly those cells.
-5. **Slides.**
-   - `slides_create` from an outline, in the folder. Then `slides_add_slide` and `slides_replace_text` (exactly 2
-     matches).
-   - `drive_upload` puts a PNG the command makes itself into the folder. `slides_insert_image` with that
-     `driveFileId` must be refused. Slides fetches images without credentials, the PNG is private, and nothing is
-     ever shared. The deck must stay unchanged, and the table says "Drive image (private): refused as expected".
-     An insert fails the step.
-   - `slides_insert_image` from a fixed public https image must insert it. `slides_read` then checks the text and
-     the image.
-   - `slides_delete_slide` must come back pending. The command approves it and checks that the slide is gone.
-6. **Draft.**
-   - The command writes a file into a new temp dir and adds that dir to `attachmentDirs`. The temp dir sits in a
-     private directory, `$XDG_CACHE_HOME/xaq-smoke` (default `~/.cache/xaq-smoke`), mode 0700, never the shared
-     `/tmp`.
-   - `create_draft` makes ONE draft addressed to the account's own address. It has two attachments: the temp file
-     (`{ path }`) and the scratch doc as PDF (`{ drive_file_id, export_as: "pdf" }`).
-   - The daemon checks the draft: the recipient, 2 attachments, names and sizes. Then it deletes the draft.
-7. **Cleanup, always.**
-   - The draft is deleted, if a step before didn't delete it.
-   - `drive_trash` on the scratch folder comes back pending; the command approves it, and `drive_get` confirms the
-     folder is in the trash. Drive keeps it there for 30 days.
-   - The agent is deleted, `attachmentDirs` is restored and the temp dir is removed.
-
-**Guards, in code:**
-- Before every write, the target must be the scratch folder itself, or a file this run created whose parents
-  (`drive_get`) include the folder. This covers files passed as arguments too, such as `driveFileId` and the
-  draft's `drive_file_id`.
-- Every file argument is required. The one exception is `slides_insert_image`'s `driveFileId`, which can be
-  replaced by `imageUrl`.
-- A create call whose new file isn't in the folder is never written to again. It's reported by its real name, with a
-  warning to check it before removing anything, since it may be an existing file.
-- Tools outside the run's list are refused, `docs_overwrite` for one.
-- The draft must be addressed to exactly the account's own address, with no Cc, no Bcc and no thread. Each
-  attachment must have exactly one source, and only a temp-dir file or a scratch-folder file is allowed.
-- The command approves a pending call only after checking that it is its own: the agent, the connection, the tool
-  and the exact arguments.
-- A ledger of everything created drives the cleanup and the leftover check.
-
-**Report:** a PASS/FAIL table per tool and step, then **Left behind**, which should say "nothing". The leftover check
-looks for:
-- the folder or any of its files not in the trash;
-- anything in Drive named after the run and not in the trash. This catches a file whose create answer was lost;
-- the draft still in Gmail, plus any other draft the agent made according to the audit log;
-- a saved copy of an email attachment;
-- the agent or its settings still stored;
-- `attachmentDirs` not as before;
-- the temp dir still on disk;
-- any other agent a smoke run created, also when this run's agent was never created.
-
-`--json` prints the same as JSON on stdout (the progress goes to stderr). The exit code is 0 only when every step
-passed and nothing was left behind. It is 130 after Ctrl-C, 1 otherwise. A step skipped because the account has no
-such file or email also makes the exit code non-zero.
-
-**Ctrl-C, SIGTERM, SIGHUP:**
-- The first Ctrl-C lets the current call finish, starts no new step, then runs the full cleanup and reports.
-- SIGTERM and SIGHUP always do the same, however often they arrive.
-- A second Ctrl-C quits early. First it deletes the agent, restores `attachmentDirs` and removes the temp dir, each
-  for at most a few seconds. Then it lists what may be left; the next run's sweep picks up the rest.
-- Printing can't stop the cleanup: when the terminal goes away (EIO, EPIPE), further output is dropped.
-
-Admin API used only by this command (console session and CSRF header, like every `/api` route). Each draft route
-acts only on a draft that the run's agent created (per the audit log), that is in the ledger the command sends,
-and whose subject starts with `[xaq-smoke-<ts>]`. A delete also requires the draft to be addressed only to the
-account itself.
-
-| Route | |
-|---|---|
-| `POST /api/smoke/agents` `{name, accountId, connectionId}` | The temporary agent (`name` must be `xaq-smoke-<UTC timestamp>`) → `AgentWithKey` |
-| `POST /api/smoke/drafts/inspect` `{agentId, accountId, draftId, ledger}` | The draft's subject, recipients and attachments (names, types, sizes) |
-| `POST /api/smoke/drafts/delete` `{agentId, accountId, draftId, ledger}` | Deletes it (Gmail `drafts.delete`) |
-| `POST /api/smoke/leftovers` `{agentId \| null, accountId, draftIds}` | Whether the agent or its settings still exist, which drafts still exist (the given ones plus those the agent made, from the audit log), and any other agents a smoke run created |
-| `POST /api/smoke/sweep` `{}` | Earlier runs: deletes the agents smoke runs created (audit log), removes run temp dirs (`…/xaq-smoke/xaq-smoke-<ts>-XXXXXX`) from `attachmentDirs`, and lists their drafts that still exist → `{deletedAgents, removedDirs, drafts}` |
-
 ## Commands and configuration
 
 The npm package is `xaq-cli`; the command it provides is `xaq`. Use `npx xaq-cli …` for one-off
 runs, or `npm i -g xaq-cli` and then `xaq …`. Every command has `--help`.
 
 ```
-xaq [start] [--port 8425] [--host 0.0.0.0] [--data ~/.xaq] [--no-open] [--dev]
-xaq service install [--port …] [--host …] [--data …] [--node <path>]
-xaq service uninstall [--data …]
+xaq [start] [--port 8425] [--host 0.0.0.0] [--no-open]
+xaq service install [--port …] [--host …] [--node <path>]
+xaq service uninstall
 xaq service status
-xaq reset-password [--data …] [--port …] [--host …]
+xaq reset-password
 xaq skill install [--target claude|codex|agents|<dir>] [--url <public url>]
-xaq skill print [--url <public url>]
-xaq connections add|list|reconnect|rename|disable|remove …   # see Connections
-xaq ext add|list|update|remove …                             # see Extensions
-xaq smoke google-workspace --scratch [--account …] [--connection …] [--json] [--yes]   # see Live check
-xaq settings attachment-dirs list|add <dir>|remove <dir>     # see Attachments
 xaq connect <url> … / setup-mcp / listen …   # on agent machines, see listen.md
 ```
 
@@ -329,7 +178,7 @@ xaq connect <url> … / setup-mcp / listen …   # on agent machines, see listen
 |---|---|---|---|
 | `--port` | `PORT` | `8425` | Port to listen on |
 | `--host` | `HOST` | `0.0.0.0` | Bind address. Use `127.0.0.1` behind a reverse proxy or SSH tunnel |
-| `--data` | `XAQ_DATA` | `~/.xaq` | Data directory |
+| `--data` | `XAQ_DATA` | `~/.xaq` | Data directory, for any command |
 | | `XAQ_MASTER_KEY` | | Base64 32-byte key for encrypting secrets, instead of `<data>/master.key` |
 | | `TRUST_PROXY` | | `1` behind a reverse proxy: client IPs from `X-Forwarded-For`, https from `X-Forwarded-Proto` |
 | | `TRUST_PROXY_HOPS` | `1` | Number of proxies in front of xaq (which `X-Forwarded-For` entry, from the right, is the client) |
@@ -353,7 +202,7 @@ beside its own (nothing of it is changed, renamed or deleted, not even its permi
 
 **Forgot the admin password?** Run `npx xaq-cli reset-password` on the server, as the user xaq runs as
 (`sudo` for a system service) and with the same `--data`. It signs out all sessions and prints a new setup link (for the
-running instance's address; pass `--port`/`--host` if it isn't running); a running instance picks it up without a
+running instance's address, from its lock file); a running instance picks it up without a
 restart. On an instance that hasn't been claimed yet, it prints the first-run
 link instead.
 
@@ -675,8 +524,7 @@ before anything is sent, and the agent gets a plain-words error otherwise:
 **Files from a path** are a security boundary: an agent must never be able to mail xaq's own secrets or arbitrary
 files.
 
-- Off until the owner lists directories under **Settings → Attachments from files**, or with
-  `npx xaq-cli settings attachment-dirs add <dir>` (`list`, `remove`) on xaq's machine. Only the admin can change the
+- Off until the owner lists directories under **Settings → Attachments from files**. Only the admin can change the
   list (it's the `attachmentDirs` setting of `PATCH /api/settings`); no agent tool can. A directory must exist when it's
   added. It can't be or contain your home directory or `/`. It also can't be, contain or sit inside any of the
   refused places below. Pick a narrow folder such as `~/Documents/xaq-outbox`.
