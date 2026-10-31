@@ -276,6 +276,8 @@ describe.runIf(HAS_AGENTS)("MCP agent journey", () => {
 
   it("organizes mail (labels, archive, read state)", async () => {
     const inScope = deliverOrder("Organize me");
+    // Ingested before the changes below, so they become label events (not part of message.received).
+    await s.waitForEvent((e) => e.message?.id === inScope.id);
     const vip = s.fake.addLabel(email, "VIP"); // created in beforeAll
     const { mcp } = await agentWith("organizer", { level: "full" });
 
