@@ -64,10 +64,11 @@ function preBrokerDb(path: string): void {
   const agent = "INSERT INTO agents (id, name, key_prefix, key_hash, created_at, origin, last_mcp_at) VALUES (?, ?, 'aib_x', ?, ?, ?, ?)";
   run(agent, "agt_hermes", "Hermes", "h1", T, "paired", T);
   run(agent, "agt_codex", "Codex", "h2", T, "key", null);
-  const grant = `INSERT INTO grants (id, agent_id, account_id, capabilities, send_mode, created_at, calendar_write_mode) VALUES (?, ?, ?, ?, 'approval', ?, 'approval')`;
-  run(grant, "grt_1", "agt_hermes", "acc_1", '["read","send","calendar.read","calendar.write"]', T);
-  run(grant, "grt_2", "agt_hermes", "acc_2", '["read","send"]', T);
-  run(grant, "grt_3", "agt_codex", "acc_1", '["read"]', T);
+  const grant = `INSERT INTO grants (id, agent_id, account_id, capabilities, send_mode, created_at, calendar_write_mode) VALUES (?, ?, ?, ?, ?, ?, ?)`;
+  run(grant, "grt_1", "agt_hermes", "acc_1", '["read","send","calendar.read","calendar.write"]', "approval", T, "direct");
+  run(grant, "grt_2", "agt_hermes", "acc_2", '["read","send"]', "direct", T, "approval");
+  run(grant, "grt_3", "agt_codex", "acc_1", '["read","send","calendar.write"]', "approval", T, "approval");
+  run(grant, "grt_4", "agt_codex", "acc_2", '["read","draft","organize","trash"]', "draft_only", T, "approval");
   // Ids deliberately out of rowid order, and created_at ties: the list orders by (created_at, rowid).
   const approval = `INSERT INTO approvals (id, agent_id, account_id, kind, status, draft_id, payload, decided_at, decision_note, sent_message_id, error, created_at, expires_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
@@ -152,9 +153,11 @@ describe("migration 8 on an install at migration 7", () => {
       }
       expect(now.get("_migrations")!.slice(0, 7)).toEqual(was.get("_migrations"));
       expect(now.get("grants")!.map((g) => [g.id, g.level, g.allow_to])).toEqual([
+        // Full only where it already sent or wrote calendars directly; drafts only and approvals become read.
         ["grt_1", "full", "[]"],
         ["grt_2", "full", "[]"],
         ["grt_3", "read", "[]"],
+        ["grt_4", "read", "[]"],
       ]);
       expect(now.has("approvals")).toBe(false);
       expect(now.has("approval_rules")).toBe(false);

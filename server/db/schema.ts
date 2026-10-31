@@ -524,11 +524,14 @@ export const MIGRATIONS: string[] = [
   DELETE FROM upstream_tools WHERE state = 'held';
   `,
   /* 16: one permission model (full or read, plus the recipient allowlist); no approvals. */ `
-  -- Grants: any write capability (draft, send, organize, trash, calendar.write) becomes full, the rest read.
-  -- The recipient allowlist (allow_to) stays; label and calendar scopes, send modes, reply-only and send caps go.
+  -- Grants: full only where the agent already sent mail or changed calendars without a person (send with send_mode
+  -- direct, calendar.write with calendar_write_mode direct); everything else (drafts only, approvals, read, organize)
+  -- becomes read. The recipient allowlist (allow_to) stays; label and calendar scopes, send modes, reply-only and
+  -- send caps go.
   ALTER TABLE grants ADD COLUMN level TEXT NOT NULL DEFAULT 'read' CHECK (level IN ('full', 'read'));
   UPDATE grants SET level = 'full'
-    WHERE EXISTS (SELECT 1 FROM json_each(grants.capabilities) WHERE value IN ('draft', 'send', 'organize', 'trash', 'calendar.write'));
+    WHERE (send_mode = 'direct' AND EXISTS (SELECT 1 FROM json_each(grants.capabilities) WHERE value = 'send'))
+       OR (calendar_write_mode = 'direct' AND EXISTS (SELECT 1 FROM json_each(grants.capabilities) WHERE value = 'calendar.write'));
   ALTER TABLE grants DROP COLUMN capabilities;
   ALTER TABLE grants DROP COLUMN label_scope;
   ALTER TABLE grants DROP COLUMN send_mode;
@@ -538,14 +541,15 @@ export const MIGRATIONS: string[] = [
   ALTER TABLE grants DROP COLUMN calendar_scope;
   ALTER TABLE grants DROP COLUMN calendar_write_mode;
 
-  -- Connection levels: ask becomes full. A column's own CHECK goes with it, so swap the columns.
+  -- Connection levels: full stays full; ask (risky calls waited for a person) and read become read. A column's own
+  -- CHECK goes with it, so swap the columns.
   ALTER TABLE connection_grants RENAME COLUMN level TO level_old;
   ALTER TABLE connection_grants ADD COLUMN level TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('full', 'read'));
-  UPDATE connection_grants SET level = CASE level_old WHEN 'read' THEN 'read' ELSE 'full' END;
+  UPDATE connection_grants SET level = CASE level_old WHEN 'full' THEN 'full' ELSE 'read' END;
   ALTER TABLE connection_grants DROP COLUMN level_old;
   ALTER TABLE connections RENAME COLUMN level_default TO level_default_old;
   ALTER TABLE connections ADD COLUMN level_default TEXT NOT NULL DEFAULT 'full' CHECK (level_default IN ('full', 'read'));
-  UPDATE connections SET level_default = CASE level_default_old WHEN 'read' THEN 'read' ELSE 'full' END;
+  UPDATE connections SET level_default = CASE level_default_old WHEN 'full' THEN 'full' ELSE 'read' END;
   ALTER TABLE connections DROP COLUMN level_default_old;
 
   DROP TABLE approvals;

@@ -116,8 +116,8 @@ describe("migration 6", () => {
   });
 });
 
-describe("migrations 14 and 15", () => {
-  it("drop the settings of removed features and tools left on hold, and keep the rest", () => {
+describe("migrations 14 to 16", () => {
+  it("drop the settings of removed features and tools left on hold, keep the rest, and never widen a connection grant", () => {
     const dir = mkdtempSync(join(tmpdir(), "xaq-mig-"));
     try {
       const path = join(dir, "db.sqlite");
@@ -130,6 +130,13 @@ describe("migrations 14 and 15", () => {
       const put = raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)");
       put.run("settings", JSON.stringify({ pollIntervalSeconds: 45, attachmentDirs: ["/tmp"], attachmentSaveDir: "/x", brokerUpstreams: true }));
       raw.exec("INSERT INTO connections (id, owner_id, kind, slug, name, url, auth_type, created_at, updated_at) VALUES ('con_a', 'owner', 'remote_http', 'a', 'A', 'https://a.example', 'none', 'T', 'T')");
+      raw.exec("INSERT INTO connections (id, owner_id, kind, slug, name, url, auth_type, level_default, created_at, updated_at) VALUES ('con_b', 'owner', 'remote_http', 'b', 'B', 'https://b.example', 'none', 'full', 'T', 'T')");
+      const agent = raw.prepare("INSERT INTO agents (id, name, key_prefix, key_hash, created_at) VALUES (?, ?, 'aib_x', ?, 'T')");
+      const access = raw.prepare("INSERT INTO connection_grants (agent_id, connection_id, level, created_at, updated_at) VALUES (?, ?, ?, 'T', 'T')");
+      for (const [id, level] of [["agt_ask", "ask"], ["agt_full", "full"], ["agt_read", "read"]] as const) {
+        agent.run(id, id, `h_${id}`);
+        access.run(id, "con_a", level);
+      }
       const tool = raw.prepare(
         "INSERT INTO upstream_tools (connection_id, name, exposed_name, definition, pin_hash, risky, read, class_source, state, held_reason, candidate_definition, candidate_hash, first_seen_at, updated_at) VALUES ('con_a', ?, ?, ?, ?, 0, 0, 'annotation', ?, ?, ?, ?, 'T', 'T')",
       );
@@ -143,6 +150,16 @@ describe("migrations 14 and 15", () => {
       expect(JSON.parse(db.get<{ value: string }>("SELECT value FROM settings WHERE key = 'settings'")!.value)).toEqual({ pollIntervalSeconds: 45 });
       expect(db.all<{ key: string }>("SELECT key FROM settings WHERE key != 'settings'").map((r) => r.key)).toEqual(["setup.verifiedAt"]);
       expect(db.all<{ name: string }>("SELECT name FROM upstream_tools").map((r) => r.name)).toEqual(["kept"]);
+      // Ask before risky calls becomes read only, not full access.
+      expect(db.all("SELECT agent_id AS a, level FROM connection_grants ORDER BY agent_id")).toEqual([
+        { a: "agt_ask", level: "read" },
+        { a: "agt_full", level: "full" },
+        { a: "agt_read", level: "read" },
+      ]);
+      expect(db.all("SELECT id, level_default AS d FROM connections ORDER BY id")).toEqual([
+        { id: "con_a", d: "read" },
+        { id: "con_b", d: "full" },
+      ]);
       db.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
