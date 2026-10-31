@@ -194,7 +194,6 @@ describe("prepareAttachments", () => {
     expect(attachmentMeta(files)).toEqual([
       { filename: "a.txt", mimeType: "text/plain", size: 5, source: { kind: "upload" }, sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" },
     ]);
-    expect(attachmentMeta(files, false)).toEqual([{ filename: "a.txt", mimeType: "text/plain", size: 5, source: { kind: "upload" } }]);
   });
 });
 

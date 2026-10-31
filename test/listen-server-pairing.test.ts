@@ -80,7 +80,7 @@ describe("pairing start and console listing", () => {
   it("needs no CSRF header or session, validates input and never falls back to the console", async () => {
     const s = await setup();
     expect((await s.start("10.0.0.1", { name: "" })).status).toBe(400);
-    expect((await s.start("10.0.0.1", { name: "x", requested: { capabilities: ["root"] } })).status).toBe(400);
+    expect((await s.start("10.0.0.1", { name: "x", requested: { accounts: [""] } })).status).toBe(400);
     const missing = await s.h.request("/agent/v1/nope");
     expect(missing.status).toBe(404);
     expect((await json(missing)).error.code).toBe("not_found");
@@ -119,7 +119,7 @@ describe("pairing poll", () => {
     expect(approved.status).toBe(200);
     const agentText = await approved.text();
     const agent = JSON.parse(agentText);
-    expect(agent).toMatchObject({ name: "Hermes", origin: "paired", grants: [{ accountId: "acc_a", sendMode: "draft_only" }], listeners: [] });
+    expect(agent).toMatchObject({ name: "Hermes", origin: "paired", grants: [{ accountId: "acc_a" }], listeners: [] });
     expect(agentText).not.toMatch(/aib_[0-9a-z]{32}/);
     const row = s.h.ctx.db.get<{ api_key_enc: string | null; status: string }>("SELECT api_key_enc, status FROM pairings WHERE id = ?", p.id)!;
     expect(row.status).toBe("approved");
@@ -155,7 +155,7 @@ describe("pairing poll", () => {
     const p = await started(s);
     // No mailbox grant is fine (installs with only connections), but an unknown connection isn't.
     expect((await s.approve(p.id, { grants: [], connections: [{ connectionId: "con_nope", level: "read" }] })).status).toBe(400);
-    expect((await s.approve(p.id, { grants: [{ ...readGrant("acc_a"), capabilities: ["fly"] }] })).status).toBe(400);
+    expect((await s.approve(p.id, { grants: [{ ...readGrant("acc_a"), level: "ask" as never }] })).status).toBe(400);
     expect((await s.approve(p.id, { grants: [readGrant("acc_missing")] })).status).toBe(404);
     expect((await s.approve(p.id, { grants: [readGrant("acc_a"), readGrant("acc_a")] })).status).toBe(400);
     expect(s.h.ctx.policy.listAgents()).toHaveLength(0);
@@ -268,7 +268,7 @@ describe("approval checks", () => {
     const res = await s.start("10.0.0.1", {
       name: "Claude Code on wynn-mbp\u202e\u200b\n[verified]",
       description: "\u001b[31mred\u0007",
-      requested: { sendMode: "direct", reason: "needs\u2028mail\u{E0041}" },
+      requested: { reason: "needs\u2028mail\u{E0041}" },
       client: { hostname: "wynn-mbp\u0007\u001b[31m", tool: "anything-not-in-AgentTool" },
     });
     expect(res.status).toBe(200);
@@ -276,13 +276,13 @@ describe("approval checks", () => {
     expect(p).toMatchObject({
       name: "Claude Code on wynn-mbp[verified]",
       description: "[31mred",
-      requested: { sendMode: "direct", reason: "needsmail" },
+      requested: { reason: "needsmail" },
       client: { hostname: "wynn-mbp[31m", tool: "other" },
     });
     expect((await s.start("10.0.0.2", { name: "\u200b\u0007" })).status).toBe(400);
     // `requested` is informational: approval takes only the grants the human chose.
     const agent = await json(await s.approve(p!.id));
-    expect(agent.grants.map((g: { sendMode: string }) => g.sendMode)).toEqual(["draft_only"]);
+    expect(agent.grants.map((g: { level: string }) => g.level)).toEqual(["read"]);
   });
 });
 

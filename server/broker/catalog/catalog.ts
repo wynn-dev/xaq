@@ -18,7 +18,7 @@ export function pinHash(def: ToolDef): string {
   return sha256Hex(canonicalize({ name, title, description, inputSchema, outputSchema, annotations }));
 }
 
-/** A tool that disappeared from the upstream: policy fails its pending approvals closed and drops its allow rules. */
+/** A tool that disappeared from the upstream (audited as connection.tool_removed). */
 export interface ToolRemovedEvent {
   connectionId: string;
   name: string;
@@ -85,7 +85,6 @@ const DEF_FIELDS: (keyof ToolDef)[] = ["name", "title", "description", "inputSch
 export class Catalog {
   private readonly entries = new Map<string, Entry>();
   private readonly signalsByTool = new Map<string, ToolSignal[]>();
-  private readonly removedListeners: ((e: ToolRemovedEvent) => void)[] = [];
   private readonly changeListeners: ((connectionId: string) => void)[] = [];
   private readonly defaultTtl: number;
   private readonly minTtl: number;
@@ -97,15 +96,6 @@ export class Catalog {
     this.minTtl = Math.min(deps.minTtlMs ?? 30_000, this.defaultTtl);
     this.debounceMs = deps.debounceMs ?? 1000;
     this.timeoutMs = deps.timeoutMs ?? 60_000;
-  }
-
-  /**
-   * Policy hook: a tool left the upstream (or the connection's pins were forgotten). Policy fails the tool's pending
-   * approvals closed and deletes its approval_rules, so a tool that comes back inherits nothing.
-   * Called after the commit, once per tool.
-   */
-  onToolRemoved(fn: (e: ToolRemovedEvent) => void): void {
-    this.removedListeners.push(fn);
   }
 
   /** Any change to a connection's pinned tools (the registry invalidates its cache). */
@@ -386,7 +376,6 @@ export class Catalog {
     for (const a of audits) this.audit(a.action, connectionId, a.target, a.detail);
     for (const r of removed) {
       this.audit("connection.tool_removed", connectionId, r.exposedName, { connectionId, tool: r.name });
-      for (const fn of this.removedListeners) this.safe(() => fn(r));
     }
     const prefix = `${connectionId}\u0000`;
     for (const k of [...this.signalsByTool.keys()]) if (k.startsWith(prefix)) this.signalsByTool.delete(k);
@@ -442,12 +431,7 @@ export class Catalog {
   /** Drops a connection's pins and state (its URL changed or it was deleted): the next listing is a first connect. */
   forget(connectionId: string): void {
     this.detach(connectionId);
-    const tools = this.deps.store.tools(connectionId);
     this.deps.store.forget(connectionId);
-    for (const t of tools) {
-      const r = { connectionId, name: t.name, exposedName: t.exposedName, pinHash: t.pinHash };
-      for (const fn of this.removedListeners) this.safe(() => fn(r));
-    }
     this.changed(connectionId);
   }
 

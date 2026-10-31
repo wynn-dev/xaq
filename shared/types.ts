@@ -9,40 +9,6 @@ export const CLI_NAME = "xaq";
 
 // ───────────────────────────── Domain enums ─────────────────────────────
 
-/** What an agent may do with a mailbox. `read` also grants search, labels, attachments and the event feed. */
-export const MAIL_CAPABILITIES = ["read", "draft", "send", "organize", "trash"] as const;
-/**
- * What an agent may do with the account's Google Calendar (see docs/calendar.md). Independent of the mail
- * capabilities: existing grants have none of these (mail-only).
- * - calendar.read: list calendars, list/search/get events, free/busy, and calendar.* events in the feed.
- * - calendar.write: create, update and delete events and respond to invitations. How a write executes is
- *   Grant.calendarWriteMode. The console shows "no calendar.write" as write mode "None".
- */
-export const CALENDAR_CAPABILITIES = ["calendar.read", "calendar.write"] as const;
-export const CAPABILITIES = [...MAIL_CAPABILITIES, ...CALENDAR_CAPABILITIES] as const;
-export type Capability = (typeof CAPABILITIES)[number];
-export type CalendarCapability = (typeof CALENDAR_CAPABILITIES)[number];
-export const isCalendarCapability = (c: string): c is CalendarCapability => (CALENDAR_CAPABILITIES as readonly string[]).includes(c);
-
-/**
- * How `send`/`reply`/`forward` behave for a grant.
- * - direct: sent immediately (still subject to allowlist + rate limits)
- * - draft_only: a Gmail draft is created instead; a human sends it from Gmail
- * - approval: a draft is created and an approval request is queued in the console;
- *   approving sends the draft, rejecting deletes it
- */
-export const SEND_MODES = ["direct", "draft_only", "approval"] as const;
-export type SendMode = (typeof SEND_MODES)[number];
-
-/**
- * How calendar writes (create/update/delete event, RSVP) execute for a grant that has `calendar.write`.
- * - direct: applied to Google Calendar at once (attendee allowlist and send caps still apply)
- * - approval: nothing touches Google until a human approves it in the console; approving applies the
- *   stored change, rejecting discards it. Default for new grants.
- */
-export const CALENDAR_WRITE_MODES = ["direct", "approval"] as const;
-export type CalendarWriteMode = (typeof CALENDAR_WRITE_MODES)[number];
-
 /** Prefix of Account.lastError when the account's Gmail watch (Pub/Sub push) couldn't be started or renewed. */
 export const GMAIL_WATCH_ERROR = "Gmail watch failed";
 
@@ -63,7 +29,7 @@ export const EVENT_TYPES = [
   "label.removed",
   "account.auth_failed", // refresh token revoked/expired; account needs re-auth
   "sync.gap", // history was too old; a bounded resync ran and events may be missing
-  // Google Calendar (MailEvent.calendarEvent is set, message is null). Visible with calendar.read + calendar scope.
+  // Google Calendar (MailEvent.calendarEvent is set, message is null). Visible to agents with a grant on the account.
   "calendar.event_created", // a new event appeared on a synced calendar (not an invitation)
   "calendar.event_updated", // a material change (detail.changes) to a known event
   "calendar.event_cancelled", // the event was cancelled or deleted
@@ -83,7 +49,6 @@ export const BROKER_EVENT_TYPES = [
   // accepted type so saved listener `--types` and webhook filters naming it stay valid.
   "connection.tool_changed",
   "connection.expiring", // the credential stops working on a known date (no refresh, or a cap): reconnect before it
-  "approval.requested", // a risky upstream tool call waits for a human (detail.approvalUrl: the one-tap page)
 ] as const;
 export type BrokerEventType = (typeof BROKER_EVENT_TYPES)[number];
 /**
@@ -96,7 +61,7 @@ export type EventType = NativeEventType | BrokerEventType | PresetEventType;
 
 const PRESET_EVENT_RE = /^([a-z0-9-]{1,24})\.[a-z0-9_]{1,64}$/;
 /** Prefixes of xaq's own events: a preset can't be named like one. */
-const RESERVED_EVENT_PREFIXES = new Set(["message", "thread", "label", "account", "sync", "calendar", "connection", "approval"]);
+const RESERVED_EVENT_PREFIXES = new Set(["message", "thread", "label", "account", "sync", "calendar", "connection"]);
 export const isPresetEventType = (t: string): t is PresetEventType => {
   const m = PRESET_EVENT_RE.exec(t);
   return !!m && !RESERVED_EVENT_PREFIXES.has(m[1]!);
@@ -119,7 +84,6 @@ export const isCalendarEventType = (t: string): t is CalendarEventType => (CALEN
 export type AccountStatus = "active" | "needs_reauth" | "paused" | "error";
 export type IngestMode = "pubsub" | "poll";
 export type DeliveryStatus = "pending" | "succeeded" | "failed" | "dead";
-export type ApprovalStatus = "pending" | "approved" | "rejected" | "sent" | "failed" | "expired";
 export type AuditOutcome = "ok" | "denied" | "error";
 export type ActorType = "agent" | "admin" | "system";
 
@@ -335,15 +299,13 @@ export interface Settings {
   maxBodyChars: number;
   /** Days to keep events, deliveries and audit entries. */
   retentionDays: number;
-  /** Approval requests auto-expire after this many hours. */
-  approvalTtlHours: number;
   /**
    * SSRF guard: webhook targets that resolve to private, loopback or link-local addresses are refused
    * unless their host matches one of these entries (hostnames, IPs or CIDRs, e.g. "127.0.0.0/8",
    * "10.0.0.0/8", "n8n.internal"). Defaults to loopback only.
    */
   webhookAllowlist: string[];
-  /** Accept device-flow pairing requests from `npx xaq-cli connect` (each still needs approval). */
+  /** Accept device-flow pairing requests from `npx xaq-cli connect` (each still needs the owner to approve it). */
   pairingEnabled: boolean;
   /**
    * Absolute directories on xaq's machine whose files agents may attach to mail by path (attachments
@@ -353,8 +315,8 @@ export interface Settings {
    */
   attachmentDirs: string[];
   /**
-   * The MCP broker's upstream connections (docs/MCP-BROKER.md): the Connections page, connection access on agents,
-   * `mcp.call` approvals and first run with Google optional. On by default since the console shipped (M1 PR 8).
+   * The MCP broker's upstream connections (docs/MCP-BROKER.md): the Connections page, connection access on agents
+   * and first run with Google optional. On by default since the console shipped (M1 PR 8).
    */
   brokerUpstreams: boolean;
   /**
@@ -500,7 +462,7 @@ export interface AccountCalendar {
   status: AccountCalendarStatus;
   /** CALENDAR_SCOPES (full URLs) the account hasn't granted; empty when all are granted. */
   missingScopes: string[];
-  /** Last successful incremental sync of any of its calendars. null = never (no grant has calendar.read yet, or not granted). */
+  /** Last successful incremental sync of any of its calendars. null = never (no agent has a grant on it yet, or not granted). */
   lastSyncAt: string | null;
   /** Human-readable reason for api_disabled / error, null otherwise. */
   error: string | null;
@@ -607,14 +569,14 @@ export interface ListenerInfo {
 
 export type PairingStatus = "pending" | "approved" | "denied" | "expired";
 
-/** A device-flow pairing request from `npx xaq-cli connect`, shown in the approvals inbox. */
+/** A device-flow pairing request from `npx xaq-cli connect`, shown on the console's Approvals page. */
 export interface PairingRequest {
   id: string; // par_…
   /** The code the agent's terminal shows; the human must match it before approving. */
   userCode: string;
   name: string;
   description: string | null;
-  requested: { accounts?: string[]; capabilities?: Capability[]; sendMode?: SendMode; calendarWriteMode?: CalendarWriteMode; reason?: string };
+  requested: { accounts?: string[]; reason?: string };
   client: { hostname?: string; platform?: string; tool?: string; version?: string };
   /** Requester IP as seen by the daemon. */
   ip: string | null;
@@ -627,7 +589,7 @@ export interface PairingRequest {
   decisionNote: string | null;
 }
 
-/** POST /api/pairings/:id/approve. Grants default to sendMode draft_only in the console. */
+/** POST /api/pairings/:id/approve. */
 export interface ApprovePairingInput {
   /** Typed by the human from the agent's terminal (not pre-filled); case and dashes are ignored. 409 on mismatch. */
   userCode: string;
@@ -642,35 +604,14 @@ export interface Grant {
   id: string; // grt_…
   agentId: string;
   accountId: string;
-  capabilities: Capability[];
-  /** Gmail label ids the agent is confined to (thread-level: a thread is visible if any message carries one). null = whole mailbox. */
-  labelScope: string[] | null;
-  sendMode: SendMode;
-  /** Recipient allowlist: exact addresses or "*@domain.com" globs. Empty = any recipient. */
+  /** Mail and calendar of the account. */
+  level: AccessLevel;
+  /** Recipient allowlist for sends and calendar attendees: exact addresses or "*@domain.com" globs. Empty = any recipient. */
   allowTo: string[];
-  /** Only allow sending replies inside threads the agent can already see. */
-  replyOnly: boolean;
-  /** Counts mail sends and calendar writes that email people (see docs/calendar.md, "Send caps"). */
-  maxSendsPerHour: number | null;
-  maxSendsPerDay: number | null;
-  /**
-   * Calendar ids (CalendarInfo.id) the agent's calendar capabilities are confined to. The primary calendar is
-   * stored by its real id (the account email), never the alias "primary". null = every calendar in the
-   * account's list.
-   * Ignored without a calendar capability. Default null.
-   */
-  calendarScope: string[] | null;
-  /** How calendar.write executes. Ignored without calendar.write. Default "approval". */
-  calendarWriteMode: CalendarWriteMode;
   createdAt: string;
 }
 
-/**
- * The calendar fields are optional for older callers: omitted means "unchanged" on an existing grant and
- * the default (calendarScope null, calendarWriteMode "approval") on a new one. Never widened by omission.
- */
-export type GrantInput = Omit<Grant, "id" | "agentId" | "createdAt" | "calendarScope" | "calendarWriteMode"> &
-  Partial<Pick<Grant, "calendarScope" | "calendarWriteMode">>;
+export type GrantInput = Pick<Grant, "accountId" | "level" | "allowTo">;
 
 export interface CreateAgentInput {
   name: string;
@@ -808,8 +749,7 @@ export interface CalendarEventSummary {
 }
 
 /**
- * What an agent asked to write (create, or the changed fields of an update). Kept on calendar approvals so
- * the human sees exactly what will be applied. Times as in CalendarEventSummary.
+ * What an agent asked to write (create, or the changed fields of an update). Times as in CalendarEventSummary.
  */
 export interface CalendarEventInput {
   summary?: string;
@@ -909,7 +849,7 @@ export interface MailEvent {
   createdAt: string;
   /**
    * Console only (GET /api/events and the console stream): the thread's labels when the event was
-   * recorded, which agents' label scopes are matched against. Never sent to agents or webhooks.
+   * recorded, which label filters are matched against. Never sent to agents or webhooks.
    */
   threadLabelIds?: string[];
 }
@@ -1021,124 +961,10 @@ export interface MessageContent {
   signals: ContentSignals;
 }
 
-// ───────────────────────────── Approvals ─────────────────────────────
-
-export const MAIL_APPROVAL_KINDS = ["send", "reply", "forward"] as const;
-/** Calendar writes queued by calendarWriteMode "approval". Approving applies the stored change; rejecting discards it. */
-export const CALENDAR_APPROVAL_KINDS = ["calendar.create", "calendar.update", "calendar.delete", "calendar.rsvp"] as const;
-export type MailApprovalKind = (typeof MAIL_APPROVAL_KINDS)[number];
-export type CalendarApprovalKind = (typeof CALENDAR_APPROVAL_KINDS)[number];
-/** A risky upstream tool call at the "ask" level (docs/MCP-BROKER.md). Goes through a connection, not an account. */
-export const MCP_APPROVAL_KINDS = ["mcp.call"] as const;
-export type McpApprovalKind = (typeof MCP_APPROVAL_KINDS)[number];
-/** The kinds that act on a Google account (an Approval with accountId set). */
-export type GoogleApprovalKind = MailApprovalKind | CalendarApprovalKind;
-export type ApprovalKind = GoogleApprovalKind | McpApprovalKind;
-export const isCalendarApprovalKind = (k: string): k is CalendarApprovalKind => (CALENDAR_APPROVAL_KINDS as readonly string[]).includes(k);
-export const isMcpApprovalKind = (k: string): k is McpApprovalKind => (MCP_APPROVAL_KINDS as readonly string[]).includes(k);
-
-/** The calendar change a calendar.* approval applies. */
-export interface CalendarApprovalDetail {
-  calendarId: string;
-  calendarName: string | null;
-  /**
-   * Target event (update/delete/rsvp). For create, the id xaq chose when queuing (Google accepts
-   * client ids), so a retried apply can't create a second event.
-   */
-  eventId: string | null;
-  /** create: the new event; update: only the changed fields; delete/rsvp: {}. */
-  change: CalendarEventInput;
-  /** The event when the change was queued (update/delete/rsvp), to show a before/after. null for create. */
-  before: CalendarEventSummary | null;
-  /** Google etag of `before`: applying sends If-Match, so an event changed since fails instead of being overwritten. */
-  etag: string | null;
-  /** rsvp only. */
-  response: CalendarResponseStatus | null;
-  /** rsvp only: the note sent to the organizer with the answer. */
-  comment?: string | null;
-  /** Google emails attendees (sendUpdates "all"); false = "none". */
-  notifyAttendees: boolean;
-  /** Addresses Google will email when applied. */
-  notified: string[];
-  /**
-   * Addresses the grant's allowTo had to cover when queued (attendees after the change, another organizer,
-   * everyone emailed; see attendeeImpact), checked again at approval. Absent on approvals from before it
-   * existed: then recomputed from the change.
-   */
-  checked?: string[];
-  /**
-   * When xaq last started sending this change to Google (set before each attempt). Once set, a later
-   * attempt can't assume the earlier one didn't land: it checks the event first.
-   */
-  attemptedAt?: string | null;
-}
-
-/** The exact call an mcp.call approval forwards once approved (approvals.tool_call). */
-export interface McpCallApprovalDetail {
-  /** The upstream's own tool name (UpstreamTool.name). */
-  tool: string;
-  /** The name the agent called (UpstreamTool.exposedName, `<slug>__<tool>`). */
-  exposedName: string;
-  /** The validated, canonicalised arguments: exactly the bytes shown on the card and forwarded on approve. */
-  args: string;
-  /** sha256 (hex) of `args`, re-checked on approve. */
-  argsSha256: string;
-  /** The tool's definition hash when the call was queued; a different one on approve means the tool changed since. */
-  pinHash: string;
-  /** The upstream's result once the approved call ran (what get_call_status returns). */
-  result?: McpCallResult | null;
-  /** When the approved call was last forwarded upstream (set right before it is). */
-  attemptedAt?: string | null;
-  /**
-   * The approved call was interrupted (crash, timeout, lost answer): it may or may not have run upstream.
-   * Status is "failed"; it is never retried automatically.
-   */
-  outcomeUnknown?: boolean;
-}
+// ───────────────────────────── Outgoing files ─────────────────────────────
 
 /**
- * GET /api/approvals/:id for an mcp.call: the card. `approval.call.args` holds the exact bytes that run on approve.
- * `tool` is the tool as the agent can reach it now (null when it no longer can: access removed, or the tool was removed).
- */
-export interface McpCallApprovalView {
-  approval: McpCallApproval;
-  connection: { id: string; slug: string; name: string; status: ConnectionStatus } | null;
-  tool: { exposedName: string; name: string; title: string | null; risky: boolean; read: boolean; targetPath: string | null; level: AccessLevel; pinMatches: boolean } | null;
-  /** The exact argument bytes with invisible and control characters shown as \u escapes. */
-  argsDisplay: string;
-  /** The same arguments indented (escaped the same way). */
-  pretty: string;
-  /** Email addresses and URLs found anywhere in the arguments: shown first on the card. */
-  recipients: string[];
-  urls: string[];
-  /** The tool's target argument (ToolClass.targetPath, a JSON Pointer) and its value in this call, if any. */
-  target: { path: string; value: unknown } | null;
-  /** JSON Pointers a generic tool's "always allow for this argument" may pick from. */
-  argumentPaths: string[];
-  /** sha256 of the stored bytes still matches the fingerprint taken when the call was queued. */
-  argsIntact: boolean;
-}
-
-/** POST /api/approvals/:id/approve for an mcp.call. */
-export interface McpCallApproveInput {
-  note?: string | null;
-  /**
-   * "Always allow this": a rule for this agent and tool, created when the call is approved. `target` limits it
-   * to this call's target value (one rule per id when the target is an array); `targetPath` picks the argument
-   * for generic tools (defaults to the tool's own targetPath).
-   */
-  alwaysAllow?: { target?: boolean; targetPath?: string };
-}
-
-/** An upstream CallToolResult as stored for get_call_status. */
-export interface McpCallResult {
-  content: unknown[];
-  structuredContent?: unknown;
-  isError?: boolean;
-}
-
-/**
- * Where a file attached to an outgoing message came from (approval cards and the audit log show it):
+ * Where a file attached to an outgoing message came from (the audit log shows it):
  * - upload: the bytes were in the tool call (content_base64);
  * - path: a file on xaq's machine, inside an allowed attachment directory (Settings.attachmentDirs). `path` is the
  *   resolved real path that was read; `requested` the path the agent gave, when it differs (a symlink, "..");
@@ -1153,71 +979,14 @@ export type AttachmentSource =
   | { kind: "drive"; fileId: string; name: string; exportedAs?: string }
   | { kind: "forward"; messageId: string };
 
-/** An outgoing file as approval cards and the audit log describe it (never the content). */
+/** An outgoing file as the audit log describes it (never the content). */
 export interface OutgoingFileMeta {
   filename: string;
   size: number;
   mimeType?: string;
-  /** Absent on approvals from before attachment sources were recorded. */
+  /** Absent on entries from before attachment sources were recorded. */
   source?: AttachmentSource;
 }
-
-interface ApprovalCommon {
-  id: string; // apr_…
-  agentId: string;
-  agentName: string;
-  status: ApprovalStatus;
-  to: Address[];
-  cc: Address[];
-  bcc: Address[];
-  subject: string;
-  /** Full body as the agent wrote it (markdown/plain). */
-  body: string;
-  threadId: string | null;
-  /** Files on the message: name, MIME type, decoded size and where each came from (never the content). */
-  attachments: OutgoingFileMeta[];
-  /** Why the agent says it is sending (optional `reason` tool arg). */
-  reason: string | null;
-  decidedAt: string | null;
-  decisionNote: string | null;
-  sentMessageId: string | null;
-  error: string | null;
-  createdAt: string;
-  expiresAt: string;
-}
-
-/**
- * A send or calendar change waiting for (or decided by) a human. For calendar kinds the mail fields are
- * filled so generic lists read well: to = `calendar.notified`, cc/bcc empty, subject = event summary,
- * body = description, draftId "" and threadId null; status "sent" means "applied" and sentMessageId holds
- * the Google event id.
- */
-export interface GoogleApproval extends ApprovalCommon {
-  kind: GoogleApprovalKind;
-  accountId: string;
-  accountEmail: string;
-  draftId: string;
-  /** Calendar kinds only. */
-  calendar?: CalendarApprovalDetail;
-  connectionId?: null;
-  call?: undefined;
-}
-
-/**
- * A risky upstream tool call waiting for (or decided by) a human. No Google account and no draft; the
- * mail fields stay empty unless the server fills them for generic lists.
- */
-export interface McpCallApproval extends ApprovalCommon {
-  kind: McpApprovalKind;
-  accountId: null;
-  accountEmail: null;
-  draftId: null;
-  connectionId: string;
-  call: McpCallApprovalDetail;
-  calendar?: undefined;
-}
-
-export type Approval = GoogleApproval | McpCallApproval;
 
 // ───────────────────────────── MCP broker: connections ─────────────────────────────
 // docs/MCP-BROKER.md. Stored since migration 8; nothing serves these until the broker PRs land (behind the
@@ -1236,12 +1005,11 @@ export const CONNECTION_STATUSES = ["active", "needs_reauth", "error", "disabled
 export type ConnectionStatus = (typeof CONNECTION_STATUSES)[number];
 
 /**
- * What an agent may do with a connection (Wynn's model). No grant row = no access.
- * - full: every tool listed and called without asking
- * - ask: every tool listed; risky (irreversible) tools wait for an mcp.call approval. The default.
- * - read: only read tools are listed or callable
+ * What an agent may do with a Google account or a connection. No grant row = no access.
+ * - full: everything (mail sends and calendar invites still only reach Grant.allowTo)
+ * - read: only reading (mail, calendars, a connection's read tools)
  */
-export const ACCESS_LEVELS = ["full", "ask", "read"] as const;
+export const ACCESS_LEVELS = ["full", "read"] as const;
 export type AccessLevel = (typeof ACCESS_LEVELS)[number];
 
 /** Connection slugs, chosen by the operator: tools are exposed as `<slug>__<tool>`. Same rule as the schema CHECK. */
@@ -1310,7 +1078,7 @@ export interface UpstreamTool {
   definition: UpstreamToolDefinition;
   /** The definition's hash; a different one on a later listing is audited as connection.tool_changed. */
   pinHash: string;
-  /** Irreversible: waits for approval at the "ask" level. */
+  /** Irreversible (delete, send, publish, pay): never listed at the "read" level. */
   risky: boolean;
   /** Listed at the "read" level. Never both risky and read. */
   read: boolean;
@@ -1326,19 +1094,6 @@ export interface ConnectionGrant {
   level: AccessLevel;
   createdAt: string;
   updatedAt: string;
-}
-
-/** "Always allow this": matching calls by this agent to this tool never ask again. */
-export interface ApprovalRule {
-  id: string; // rul_…
-  agentId: string;
-  connectionId: string;
-  /** The upstream tool name (UpstreamTool.name). */
-  tool: string;
-  /** Only for one target: a JSON Pointer into the call's arguments, and that argument's canonical JSON. */
-  targetPath: string | null;
-  targetValue: string | null;
-  createdAt: string;
 }
 
 // ───────────────────── MCP broker: connections admin API (/api/connections) ─────────────────────
@@ -1530,7 +1285,7 @@ export interface AuditEntry {
   accountId: string | null;
   target: string | null; // message/thread/draft id
   outcome: AuditOutcome;
-  /** For denials: the guardrail that blocked it, e.g. "allow_to", "label_scope", "rate_limit". */
+  /** For denials: the guardrail that blocked it, e.g. "allow_to", "read_only". */
   reason: string | null;
   durationMs: number | null;
   detail: Record<string, unknown> | null;
@@ -1543,7 +1298,6 @@ export interface OverviewStats {
   agents: { total: number; activeLast24h: number };
   events24h: number;
   deliveries24h: { succeeded: number; failed: number };
-  pendingApprovals: number;
   toolCalls24h: number;
   denied24h: number;
   /** Hourly buckets for the last 24h, oldest first. */
@@ -1621,7 +1375,7 @@ export interface ApiError {
 //   POST   /api/accounts/:id/pause | /resume          → Account
 //   DELETE /api/accounts/:id                          → 204 (stops watch, revokes token, deletes grants)
 //   GET    /api/accounts/:id/labels                   → GmailLabel[]
-//   GET    /api/accounts/:id/calendars                → CalendarInfo[]   (live calendarList, for the grant editor's calendar scope)
+//   GET    /api/accounts/:id/calendars                → CalendarInfo[]   (live calendarList)
 //          409 calendar_not_granted (missing scopes; hint: run the per-account consent) | 409 calendar_api_disabled | 409 needs_reauth
 //   GET    /api/google/calendar                       → CalendarSetupState
 //   PATCH  /api/google/calendar CalendarSetupInput    → CalendarSetupState   (enable = start "Add Google Calendar"; dismiss the notice)
@@ -1661,16 +1415,13 @@ export interface ApiError {
 //   GET    /api/connections/:id                       → ConnectionView
 //   PATCH  /api/connections/:id UpdateConnectionInput → ConnectionView
 //   DELETE /api/connections/:id                       → 204 (kill switch, then removal)
-//   POST   /api/connections/:id/kill                  → 204 (disabled; onKill hooks, then credentials deleted and pending calls cancelled)
+//   POST   /api/connections/:id/kill                  → 204 (disabled; onKill hooks, then credentials deleted)
 //   POST   /api/connections/:id/connect StartConnectInput → StartConnectResult
 //   POST   /api/connections/finish {url}               → StartConnectResult (paste mode: the copied landing URL)
 //   GET    /api/connections/:id/grants                → ConnectionGrant[]
 //   PUT    /api/connections/:id/grants ConnectionGrantsInput → ConnectionGrant[]
 //   PUT    /api/connections/:id/private-target PrivateTargetInput → ConnectionView
 //   POST   /api/connections/:id/refresh               → { ok, error, connection: ConnectionView } (list the tools again now)
-//   GET    /api/approvals?status                      → Approval[]
-//   POST   /api/approvals/:id/approve {note?}         → Approval
-//   POST   /api/approvals/:id/reject {note?}          → Approval
 //   GET    /api/audit?agentId&outcome&cursor          → Page<AuditEntry>
 //   GET    /api/overview                              → OverviewStats
 //
@@ -1686,7 +1437,6 @@ export interface ApiError {
 export type ConsoleStreamMessage =
   | { kind: "event"; data: MailEvent }
   | { kind: "delivery"; data: Delivery }
-  | { kind: "approval"; data: Approval }
   | { kind: "audit"; data: AuditEntry }
   | { kind: "account"; data: Account }
   | { kind: "pairing"; data: PairingRequest }

@@ -14,7 +14,6 @@ const MAX_PENDING_WRITES = 1000;
 const CHANNELS = {
   event: "event",
   delivery: "delivery",
-  approval: "approval",
   audit: "audit",
   account: "account",
   pairing: "pairing",

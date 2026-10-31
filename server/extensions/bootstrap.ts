@@ -2,7 +2,7 @@
 //
 // A connection is bound to an extension by `connections.preset`, which holds the extension's name: the Notion,
 // T3 Code and WHOOP presets' ids are those extensions' names, so their connections are bound as they are. Nothing in
-// the row changes, nor anything else of the connection: tokens, client records, grants, levels, always-allow rules,
+// the row changes, nor anything else of the connection: tokens, client records, grants, levels,
 // slug and exposed tool names stay as they were, so nobody signs in again.
 //
 // At startup every bound extension that isn't installed is installed in the background from its bootstrap pin

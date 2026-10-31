@@ -458,14 +458,9 @@ async function seededShots() {
       await s.page.getByRole("button", { name: "Review and approve" }).first().click();
       await s.page.waitForTimeout(400);
       await s.page.locator(`#pairing-code-${pending.id}`).pressSequentially(pending.userCode.replace("-", ""), { delay: 20 });
-      await s.page.getByRole("radio", { name: /Read and draft/ }).first().click();
+      await s.page.getByRole("radio", { name: /Full access/ }).first().click();
       await s.page.locator("[role=dialog]").evaluate((d) => (d.scrollTop = 0));
       await settle(s.page);
-      return s;
-    },
-    async approvals() {
-      const s = await session(APP, demoState.cookie, { height: 820 });
-      await s.go("/approvals");
       return s;
     },
     async "webhook-deliveries"() {
@@ -531,7 +526,6 @@ const SEEDED_NAMES = [
   "agent-listeners",
   "pairing-request",
   "pairing-approve",
-  "approvals",
   "webhook-deliveries",
   "events",
   "audit",

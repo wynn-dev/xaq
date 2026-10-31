@@ -1,8 +1,9 @@
 # Google Calendar: design and work split
 
-Status: **shipped.** Calendar sync, the MCP calendar tools, grants (`calendar.read`/`calendar.write`),
-approvals for calendar writes, calendar events for webhooks and the listener, and the console's "Add Google
-Calendar" setup are all on `main` (#37–#46). The rest of this document is the design they implement; the
+Status: **shipped.** Calendar sync, the MCP calendar tools, calendar access through the account's grant, calendar
+events for webhooks and the listener, and the console's "Add Google Calendar" setup are all on `main` (#37–#46).
+Approvals, calendar scopes, write modes, reply-only and send caps were removed later (one permission model:
+full or read, plus the recipient allowlist); the sections below say what remains. The rest of this document is the design they implement; the
 "Review amendments" section at the end overrides earlier sections where they differ. "Contract map" and "Work split"
 record how it was built (as of the contract PR), not what is stubbed now.
 
@@ -94,37 +95,18 @@ reference doesn't document a default. `sendNotifications` is deprecated.
 
 ## Decisions
 
-### Grants and policy
+### Access
 
-- **Capabilities.** `calendar.read` and `calendar.write` join `CAPABILITIES` (`CALENDAR_CAPABILITIES` in
-  shared/types.ts). They are independent of the mail capabilities and of each other. Existing grants have
-  neither, so they stay mail-only.
-  - `calendar.read`: list_calendars, list_calendar_events, get_calendar_event, get_free_busy and calendar.*
-    events in the feed, webhooks and listeners.
-  - `calendar.write`: create, update and delete events, and respond_to_invitation.
-- **`Grant.calendarScope: string[] | null`.** A list of calendar ids, with `null` meaning every calendar in
-  the account's list.
-  - The primary calendar is stored as its real id (the account email). Tools accept `"primary"` as an alias
-    (`resolveCalendarId`); grants reject `"primary"`, and email-shaped ids are stored lower-cased
-    (`normalizeCalendarId`).
-  - `null` covers only the calendars in the account's calendar list (`ctx.calendar.calendars`), not every id
-    `calendar.events` could reach (someone else's calendar the user can open). Any other id is denied like an
-    out-of-scope one, and approving a change re-checks the list.
-  - Omitting `calendar_id` means the primary calendar when it's in scope, else the only calendar in scope,
-    else ToolError `calendar_required`.
-  - Out-of-scope calendars are denied with reason `calendar_scope`, and the message never reveals whether
-    they exist.
-  - free/busy follows the scope: a scoped grant may query only its own calendars. A null scope may query any
-    id or address, and Google decides what is visible. Without `calendars` it queries the scope (the primary
-    calendar under a null scope).
-- **`Grant.calendarWriteMode: "direct" | "approval"`.** The default is `"approval"`. `calendar.write` gates
-  the tools; the mode decides how a write executes. The console shows "None" as "no calendar.write".
-  - We considered the lead's alternative, a three-valued mode with `"none"`, and kept two values: a write
-    mode without the capability is meaningless, and capabilities are already what registers tools.
-  - There is no draft mode: Calendar has no drafts.
-- **GrantInput back-compat.** The calendar fields are optional. Omitted means "unchanged" on an existing
-  grant and the default on a new one, so an older client can never widen calendar access by omission.
-  Tested.
+- **The account's grant covers its calendars.** Read only: list_calendars, list_calendar_events,
+  get_calendar_event, get_free_busy and calendar.* events in the feed, webhooks and listeners. Full access: also
+  create, update and delete events, and respond_to_invitation. Writes apply at once. Calendar tools are listed only
+  for agents with a grant on an account that has Google Calendar.
+- **Calendar ids.** The primary calendar is the account email; tools accept `"primary"` as an alias
+  (`resolveCalendarId`), and omitting `calendar_id` means the primary calendar. Any other id must be in the account's
+  calendar list (`ctx.calendar.calendars`), not just reachable through `calendar.events` (someone else's calendar the
+  user can open); otherwise it's denied with reason `calendar_not_found`, and the message never reveals whether it
+  exists. free/busy may query any id or address (Google decides what is visible); without `calendars` it queries the
+  primary calendar.
 - **Attendees and `allowTo`.** Inviting someone emails them and shares the event, so attendees count as
   recipients (`attendeeImpact` in server/policy/calendar.ts). What must pass allowTo (`checked`) doesn't
   depend on notify: an event stays readable by its attendees (and editable with guestsCanModify), so a quiet
@@ -133,7 +115,7 @@ reference doesn't document a default. `sendNotifications` is deprecated.
     `emailed`. On delete, only `emailed`: a quiet delete writes nothing to anyone else.
   - `emailed` (only with `notify_attendees` true, the default, `sendUpdates: "all"`): every attendee after the
     change plus removed ones and another organizer; on delete, all attendees of an event the account
-    organizes, else the organizer. notify only drives `emailed` and the send caps.
+    organizes, else the organizer.
   - Rooms (`@resource.calendar.google.com`) and the account itself are exempt. An update's attendee list
     keeps the account and existing rooms unless the list names rooms itself (then it is the full room list).
   - RSVP: a bare answer isn't checked (the organizer invited the account, much like replying). With a
@@ -141,78 +123,22 @@ reference doesn't document a default. `sendNotifications` is deprecated.
   - Hidden guest lists: when the grant has an allowlist, the account doesn't organize the event and Google
     hides its guests from the account (`guestsCanSeeOtherGuests: false` or `attendeesOmitted`), updates and
     commented RSVPs are denied (`allow_to`): there's no way to check who would see them.
-  - Updating, deleting or answering an existing event also needs `calendar.read`: the write reads the event,
-    and its results and denials describe it.
-- **`replyOnly`.** A reply-only grant can't add attendees (create or update, notify on or off): denied with
-  reason `reply_only`. Editing an event, removing attendees and RSVP stay allowed. `sendMode` doesn't apply
-  to calendar writes; `calendarWriteMode` is its calendar counterpart.
-- **`sendUpdates` defaults.** Create, update and delete use `all` when `notify_attendees` isn't false.
-  - Agents creating events usually mean to invite people. The allowTo check and send caps are the brake;
-    approval mode is the stronger one.
-  - RSVP uses `all`, so the organizer hears back, unless notify is false.
-  - `externalOnly` is not exposed.
-- **Send caps.** `maxSendsPerHour` and `maxSendsPerDay` count calendar writes that email anyone (audit
-  `detail.emailed: true` on create_calendar_event, update_calendar_event, delete_calendar_event or
-  respond_to_invitation) as one send each, on the same counter as mail.
-  - Creates and attendee additions count whatever notify says (`detail.invited: n`): the event lands on
-    their calendars even without an email. Writes that neither email nor add anyone (rooms only, quiet
-    edits) don't count.
-  - A queued approval counts when queued, as with mail.
-  - A direct write that fails ambiguously (timeout, network, 5xx) counts when it would have (`detail.maybeSent`),
-    as with mail.
+- **`sendUpdates` defaults.** Create, update and delete use `all` when `notify_attendees` isn't false (agents
+  creating events usually mean to invite people; the allowTo check is the brake). RSVP uses `all`, so the organizer
+  hears back, unless notify is false. `externalOnly` is not exposed.
+- **Writes.** A create chooses its event id up front (base32hex, 26 characters), and `create_calendar_event` accepts
+  it back as `event_id`: an agent retrying after `write_uncertain` can't create a second event (Google's 409 with
+  the same content counts as applied; a different event under that id is `event_id_taken`). Update and delete send
+  `If-Match` with the etag just read. After a 412, an ambiguous failure (timeout, network, 5xx, `outcome_unknown`) or
+  a 409 on create, the event is re-read (`afterFailure` in server/calendar/apply.ts): a change already in place counts
+  as applied (with `maybeSent`); a change known not to have landed fails cleanly; one that can't be told apart fails
+  as `write_uncertain` ("may already have been applied").
 - **Audit.** Every tool call is audited by the MCP layer (action = tool name). Writes put
-  `{calendarId, eventId, mode, emailed, notified: n, invited: n}` in `detail`.
-  - Applying or rejecting an approval is audited as `approval.approve` or `approval.reject` with the kind.
-  - Denials use plain words: `calendar_scope`, `calendar_not_granted` and `calendar_api_disabled` were added
-    to DENIAL_REASONS, and `allow_to`, `reply_only`, `rate_limit` and `capability` are reused. A 412 from
-    Google is `calendar_conflict`.
-- **Event visibility.** `policy.canSeeEvent` is implemented and tested.
-  - calendar.* events need `calendar.read` plus the event's calendar in scope.
-  - Mail events need `read`, as before.
-  - `account.auth_failed` needs `read` or `calendar.read`; `sync.gap` (mail only) needs `read`.
-  - Old listeners and webhooks therefore never see calendar events unless the operator grants `calendar.read`.
-
-### Approvals
-
-- **Storage.** Approvals reuse the `approvals` table and API. Kinds are `calendar.create`,
-  `calendar.update`, `calendar.delete` and `calendar.rsvp` (`CALENDAR_APPROVAL_KINDS`). For these kinds:
-  - `draft_id` is `''`.
-  - `payload.calendar` holds the `CalendarApprovalDetail`: the change, the event before it, who gets emailed
-    (`notified`), who had to pass allowTo (`checked`), the stored etag and, for RSVP, the comment.
-  - For create, `eventId` is chosen when the write is queued (base32hex, 26 characters; Google accepts client
-    ids of 5–1024 base32hex characters). Direct-mode creates choose one too, and `create_calendar_event`
-    accepts it back as `event_id`: an agent retrying after `write_uncertain` can't create a second event
-    (Google's 409 with the same content counts as applied; a different event under that id is
-    `event_id_taken`).
-  - The mail fields mirror the change, so generic lists read well.
-  - Status `sent` means "applied", and `sent_message_id` holds the event id.
-- **Approve.** `server/mail/approvals.ts` keeps the state machine: claim, re-check, transient failures back
-  to pending, crash recovery. The "agent deleted or disabled" check is shared; for calendar kinds it then
-  calls `ctx.calendar.approvalBlockedReason` (calendar.write, calendar scope, `checked` against allowTo,
-  replyOnly against added attendees) and `ctx.calendar.applyApproval` (B).
-  - Every attempt is marked on the approval (`calendar.attemptedAt`) before anything goes to Google.
-  - Update re-reads the event first; update and delete send `If-Match` with the etag seen when queued.
-  - Did it land? After a 412, an ambiguous failure (timeout or network error: GoogleApiError status 0; a 5xx;
-    workstream A's `outcome_unknown`), a 409 on create, or an etag that moved since queuing, the event is
-    re-read (`afterFailure`):
-    - every field of the change already in place (create: the event exists; delete: it's gone, including a
-      retried delete answered 404/410; RSVP: the answer is set) → applied. In direct mode that also sets
-      `maybeSent`.
-    - known not to have landed (etag unchanged, event missing for create, still there for delete) → a
-      transient error goes back to pending (retrying is safe: same id, same If-Match); a 412 fails as "the
-      event changed in Google Calendar since, so it was not applied".
-    - can't tell (an earlier or ambiguous attempt, and the event moved on since) → fails as "may already
-      have been applied; check Google Calendar". Never "not applied".
-  - Crash recovery puts the approval back to pending with calendar wording; the next approve goes through
-    the same checks, so it is never applied twice.
-  - Transient: GoogleApiError status 0, 429 and 5xx, an account needing reconnection (including D's
-    `needs_reauth` from the calendar list).
-  - A calendar approval whose payload is malformed (no `payload.calendar`, no `eventId`, no etag for
-    update/delete, no response for RSVP, `notified` not a list) fails for good instead of returning to pending.
-- **Reject and expire.** The change is discarded; nothing reached Google before approval, so there is no
-  draft to delete.
-- **Cancellation.** Removing `send` cancels pending mail approvals. Removing `calendar.write` cancels pending
-  calendar approvals (`cancelForAgent(…, only)`, implemented and tested).
+  `{calendarId, eventId, emailed, notified: n}` in `detail`. Denials use plain words: `calendar_not_found`,
+  `calendar_not_granted`, `calendar_api_disabled`, `allow_to` and `read_only`. A 412 from Google is
+  `calendar_conflict`.
+- **Event visibility.** `policy.canSeeEvent`: an enabled agent with a grant on the account sees its mail, calendar
+  and account events alike.
 
 ### Events
 
@@ -242,8 +168,8 @@ reference doesn't document a default. `sendNotifications` is deprecated.
 ### Sync (polling by default)
 
 - **Which calendars.** An account syncs only while it has every `CALENDAR_SCOPES` scope, isn't paused or
-  `needs_reauth`, and at least one enabled agent's grant on it has `calendar.read`. Mail-only installs make
-  zero Calendar API calls.
+  `needs_reauth`, and at least one enabled agent has a grant on it. Mail-only installs make zero Calendar API
+  calls.
   - Synced calendars are calendarList entries with accessRole owner or writer, refreshed every 15 minutes
     and on kick.
   - Read-only subscriptions (holidays, colleagues) are readable through tools but not synced into events.
@@ -338,8 +264,8 @@ reference doesn't document a default. `sendNotifications` is deprecated.
        `missingScopes`.
      - If the API is still off, the probe D runs right after the consent (calendarList, maxResults 1) sets
        `api_disabled`. The flow returns to step 3 with Google's `activationUrl`.
-  8. **Done.** Grant calendar access per agent in the grant editor: Hermes gets `calendar.read` and,
-     optionally, `calendar.write` in approval mode. Sync starts at the next poll.
+  8. **Done.** Agents with a grant on the account use its calendars (read only, or full access to change them).
+     Sync starts at the next poll.
 - **Accounts that haven't upgraded** keep working for mail. Calendar tools resolve them to a ToolError
   `calendar_not_granted` ("ask the operator to add Google Calendar for <email>").
 

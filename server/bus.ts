@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { Account, Agent, Approval, AuditEntry, Delivery, MailEvent, PairingRequest, Settings } from "../shared/types.ts";
+import type { Account, Agent, AuditEntry, Delivery, MailEvent, PairingRequest, Settings } from "../shared/types.ts";
 
 /**
  * In-process notifications. Fired *after* the change is committed to the database, so listeners
@@ -11,8 +11,6 @@ export interface BusEvents {
   event: [MailEvent];
   /** A delivery was created or changed state. */
   delivery: [Delivery];
-  /** An approval was created or decided. */
-  approval: [Approval];
   audit: [AuditEntry];
   /** An account was connected or its status/sync state changed. */
   account: [Account];

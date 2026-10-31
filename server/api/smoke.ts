@@ -1,7 +1,7 @@
 // Admin-only endpoints for `xaq smoke google-workspace` (server/smoke, contract in shared/smoke.ts). Same admin
 // session and CSRF guard as the rest of /api. They exist because no agent tool may do these things:
-// - create the run's temporary agent with exactly its grants (mail read + draft to itself, the Workspace connection
-//   at "ask", nothing inherited, tools listed directly);
+// - create the run's temporary agent with exactly its grants (full, sending only to itself, the Workspace connection
+//   at "full", nothing inherited, tools listed directly);
 // - read and delete the run's draft (there is no draft-delete tool): only a draft the run's agent created (the audit
 //   log says so), whose id is in the command's ledger and whose subject carries the run's marker;
 // - report what a run left behind, and at the start of a run sweep what earlier runs left (their agents deleted,
@@ -82,17 +82,12 @@ export function smokeApi(ctx: AppContext) {
         grants: [
           {
             accountId: account.id,
-            // Draft-only: read mail, create drafts. No send, organize or trash.
-            capabilities: ["read", "draft"],
-            labelScope: null,
-            sendMode: "draft_only",
+            // Full, but sends only reach the account itself.
+            level: "full",
             allowTo: [account.email.toLowerCase()],
-            replyOnly: false,
-            maxSendsPerHour: null,
-            maxSendsPerDay: null,
           },
         ],
-        connections: [{ connectionId: body.connectionId, level: "ask" }],
+        connections: [{ connectionId: body.connectionId, level: "full" }],
       },
       { inheritAllAgents: false },
     );

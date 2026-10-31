@@ -230,7 +230,7 @@ export function codexBlock(t: McpSetupTarget): string {
     `[mcp_servers.${t.name}]`,
     `url = ${tomlString(t.url)}`,
     `http_headers = { Authorization = ${tomlString(`Bearer ${t.key}`)} }`,
-    `# codex exec never prompts: approve ${t.name} tools up front (the grant's send mode still applies).`,
+    `# codex exec never prompts: approve ${t.name} tools up front (the grant's access still applies).`,
     `default_tools_approval_mode = "approve"`,
     "",
   ].join("\n");

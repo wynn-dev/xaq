@@ -34,14 +34,12 @@ describe("connections rename (CLI)", () => {
   const tools = (slug: string) =>
     d.h.ctx.db.all<{ exposed_name: string }>("SELECT exposed_name FROM upstream_tools t JOIN connections c ON c.id = t.connection_id WHERE c.slug = ? ORDER BY exposed_name", slug).map((r) => r.exposed_name);
 
-  it("renames the slug and the exposed tool names after the warning and a yes; keeps approval rules", async () => {
+  it("renames the slug and the exposed tool names after the warning and a yes", async () => {
     expect(await addConnection("notion", { yes: true }, deps(yes()))).toBe(0);
     const before = tools("notion");
     expect(before.length).toBeGreaterThan(0);
     expect(before.every((t) => t.startsWith("notion__"))).toBe(true);
     const id = d.h.ctx.db.get<{ id: string }>("SELECT id FROM connections WHERE slug = 'notion'")!.id;
-    const tool = d.h.ctx.db.get<{ name: string }>("SELECT name FROM upstream_tools WHERE connection_id = ? LIMIT 1", id)!.name;
-    d.h.ctx.db.run("INSERT INTO approval_rules (id, agent_id, connection_id, tool, created_at) VALUES ('rul_1', ?, ?, ?, ?)", d.agents.hermes, id, tool, new Date().toISOString());
 
     const declined = new ScriptedPrompter(["n"]);
     expect(await renameConnection("notion", { slug: "notion-work" }, deps(declined))).toBe(0);
@@ -55,7 +53,6 @@ describe("connections rename (CLI)", () => {
     expect(tools("notion")).toEqual([]);
     expect(tools("notion-work")).toEqual(before.map((t) => t.replace(/^notion__/, "notion-work__")));
     expect(d.h.ctx.db.get<{ name: string }>("SELECT name FROM connections WHERE id = ?", id)!.name).toBe("Work wiki");
-    expect(d.h.ctx.db.get("SELECT tool FROM approval_rules WHERE id = 'rul_1'")).toEqual({ tool });
   });
 
   it("a slug that's in use (or invalid) fails cleanly, before any question, and changes nothing", async () => {

@@ -25,7 +25,7 @@ beforeAll(async () => {
   s = await startStack();
   email = mailbox("events");
   [account] = (await s.bootstrap({ accounts: [email], pubsub: true })) as [Account];
-  if (HAS_AGENTS) agentId = (await s.createAgent("hooks-agent", [grant(account.id, { capabilities: ["read"] })])).agent.id;
+  if (HAS_AGENTS) agentId = (await s.createAgent("hooks-agent", [grant(account.id, { level: "read" })])).agent.id;
 });
 afterAll(async () => {
   await s.close();
@@ -255,24 +255,6 @@ describe.runIf(HAS_AGENTS)("webhook delivery", () => {
     expect(verifyStandardWebhook(secret, last).ok).toBe(false);
   });
 
-  it("only delivers events the webhook's agent may see (label scope)", async () => {
-    const vip = s.fake.addLabel(email, "VIP");
-    const scoped = await s.createAgent("vip-only", [grant(account.id, { capabilities: ["read"], labelScope: [vip] })]);
-    const { webhook } = await s.admin.post<WebhookWithSecret>("/api/webhooks", {
-      agentId: scoped.agent.id,
-      name: "vip",
-      url: `${rx.url}/hooks/vip`,
-      eventTypes: ["message.received"],
-    });
-    const plain = s.fake.deliver(email, { from: "a@else.test", subject: "Not VIP", text: "x" });
-    const special = s.fake.deliver(email, { from: "b@else.test", subject: "VIP mail", text: "y", labelIds: ["INBOX", "UNREAD", vip] });
-    const evPlain = await s.waitForEvent((e) => e.message?.id === plain.id);
-    const evVip = await s.waitForEvent((e) => e.message?.id === special.id);
-    await waitFor(async () => (await deliveries(webhook.id)).find((d) => d.eventId === evVip.id && d.status === "succeeded"), { what: "VIP delivery" });
-    expect((await deliveries(webhook.id)).some((d) => d.eventId === evPlain.id)).toBe(false);
-    expect(rx.at("/hooks/vip").map((h) => h.json!.data.message?.subject)).toEqual(["VIP mail"]);
-  });
-
   it("refuses webhook URLs that resolve to private or metadata addresses", async () => {
     for (const url of ["http://169.254.169.254/latest/meta-data", "http://10.1.2.3/hook"]) {
       const err = await s.admin.failure(createHook("/x", { url }));
@@ -282,12 +264,12 @@ describe.runIf(HAS_AGENTS)("webhook delivery", () => {
     expect(creds.status).toBe(400);
   });
 
-  it("turns label changes into label events for label-filtered webhooks and thread-scoped agents", async () => {
+  it("turns label changes into label events for label-filtered webhooks", async () => {
     const urgent = s.fake.addLabel(email, "Urgent");
     // Whole-mailbox agent, webhook filtered on the label (message-level filter, incl. the changed labels).
     const { webhook: filtered } = await createHook("/hooks/label-filter", { eventTypes: ["label.added", "label.removed", "message.received"], filter: { labelIds: [urgent] } });
-    // Label-scoped agent, unfiltered webhook (visibility is thread-level).
-    const scoped = await s.createAgent("urgent-only", [grant(account.id, { capabilities: ["read"], labelScope: [urgent] })]);
+    // Another agent, unfiltered webhook: it sees every event of the account.
+    const scoped = await s.createAgent("urgent-all", [grant(account.id, { level: "read" })]);
     const { webhook: scopedHook } = await s.admin.post<WebhookWithSecret>("/api/webhooks", {
       agentId: scoped.agent.id,
       name: "urgent scope",
@@ -303,7 +285,7 @@ describe.runIf(HAS_AGENTS)("webhook delivery", () => {
     expect(added.labelIds).toEqual([urgent]);
     expect(added.message!.labelIds).toContain(urgent);
 
-    // A reply in the now-urgent thread has no label itself but is in scope at thread level.
+    // A reply in the now-urgent thread has no label itself.
     const reply = s.fake.deliver(email, { from: "boss@else.test", subject: "Re: Label me", text: "y", threadId: msg.threadId });
     await s.waitForEvent((e) => e.type === "message.received" && e.message?.id === reply.id);
 
@@ -315,25 +297,25 @@ describe.runIf(HAS_AGENTS)("webhook delivery", () => {
     const succeeded = async (id: string, n: number) =>
       waitFor(async () => (await deliveries(id)).filter((d) => d.status === "succeeded").length === n, { what: `${n} deliveries` });
     await succeeded(filtered.id, 2);
-    await succeeded(scopedHook.id, 2);
+    await succeeded(scopedHook.id, 4);
     const seen = (path: string) => rx.at(path).map((h) => [h.json!.type, h.json!.data.message?.id]);
     // The filter matches the label on the message, and the removed label on label.removed.
     expect(seen("/hooks/label-filter")).toEqual([
       ["label.added", msg.id],
       ["label.removed", msg.id],
     ]);
-    // Scope is thread-level: the label event and the unlabeled reply are visible. Per the canSeeEvent
-    // contract (server/policy/types.ts) the label.removed that takes the thread out of scope is not.
     expect(seen("/hooks/label-scope")).toEqual([
+      ["message.received", msg.id],
       ["label.added", msg.id],
       ["message.received", reply.id],
+      ["label.removed", msg.id],
     ]);
   });
 
   it("delivers account.auth_failed to webhooks subscribed to it", async () => {
     const other = mailbox("events-auth");
     const acc = await s.connectAccount(other);
-    const watcher = await s.createAgent("auth-watcher", [grant(acc.id, { capabilities: ["read"], labelScope: ["INBOX"] })]);
+    const watcher = await s.createAgent("auth-watcher", [grant(acc.id, { level: "read" })]);
     const { webhook, secret } = await s.admin.post<WebhookWithSecret>("/api/webhooks", {
       agentId: watcher.agent.id,
       name: "auth",

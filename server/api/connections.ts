@@ -21,7 +21,6 @@ import { checkGoogleApis, googleSetupContext, isGooglePreset } from "../extensio
 import { extensionConsentConnection } from "../google/oauth.ts";
 import { exposedName } from "../broker/catalog/index.ts";
 import { connectionView, getConnection, listConnections, notifyAgent } from "../broker/service.ts";
-import { Approvals } from "../mail/approvals.ts";
 import { connectionHookUrl } from "../integrations/hooks.ts";
 import type { WebhookReachability } from "../broker/reachability.ts";
 import { presetServerSlug, presetServerUrl } from "../integrations/user-server.ts";
@@ -120,7 +119,6 @@ function freeSlug(ctx: AppContext, base: string): string {
 
 export function connectionsApi(ctx: AppContext) {
   const app = router();
-  const approvals = new Approvals(ctx);
   const audit = (action: string, target: string, detail: Record<string, unknown> | null = null) =>
     ctx.audit.record({ ...ADMIN_ACTOR, action, target, outcome: "ok", detail });
 
@@ -240,7 +238,7 @@ export function connectionsApi(ctx: AppContext) {
     const chosenName = body.name ?? freeName(ctx, userServer ? new URL(url!).host : (preset?.displayName ?? new URL(url!).hostname), ownerId);
     const agentIds = body.agentIds ?? ctx.db.all<{ id: string }>("SELECT id FROM agents ORDER BY created_at").map((a) => a.id);
     requireAgents(agentIds);
-    const levelDefault = body.levelDefault ?? "ask";
+    const levelDefault = body.levelDefault ?? "full";
     const id = newId("con");
     const t = now();
     // A Google extension's connection has no access until an account is picked and allowed (Connect does both).
@@ -284,7 +282,6 @@ export function connectionsApi(ctx: AppContext) {
     const changed: string[] = [];
     const granted: string[] = [];
     let credentialsCleared = false;
-    let cancelled = 0;
     ctx.db.tx(() => {
       const t = now();
       if (body.name !== undefined && body.name !== before.name) {
@@ -316,7 +313,7 @@ export function connectionsApi(ctx: AppContext) {
         if (ctx.db.get("SELECT 1 FROM connections WHERE slug = ? AND id <> ?", body.slug, id)) throw conflict(`The slug ${body.slug} is taken`);
         ctx.db.run("UPDATE connections SET slug = ?, updated_at = ? WHERE id = ?", body.slug, t, id);
         // Exposed names follow the slug, by the catalog's rule (sanitised, cut to 64 with a hash suffix); the
-        // registry recomputes them from the slug anyway. Approval rules keep the upstream name, so they survive.
+        // registry recomputes them from the slug anyway.
         const tools = ctx.db.all<{ name: string }>("SELECT name FROM upstream_tools WHERE connection_id = ?", id);
         // Two passes so a rename can't collide with this connection's own old names midway.
         for (const tool of tools) ctx.db.run("UPDATE upstream_tools SET exposed_name = ? WHERE connection_id = ? AND name = ?", `x_renaming_${randomToken(20)}`, id, tool.name);
@@ -335,7 +332,7 @@ export function connectionsApi(ctx: AppContext) {
         if (before.kind !== "remote_http" || before.preset) throw badRequest("Only custom MCP connections have an editable URL", "Add a new connection instead.");
         // A new URL is a new server: the old credentials must never be sent to it. They're deleted, the
         // connection needs reconnecting, its cached negotiation and expiry go, the private-target allow (granted
-        // for the old host) goes, and pending calls (approved against the old server) are cancelled.
+        // for the old host) goes.
         ctx.db.run(
           `UPDATE connections SET url = ?, private_target = NULL, status = 'needs_reauth', status_reason = 'URL changed; reconnect',
              expires_at = NULL, protocol = NULL, protocol_checked_at = NULL, updated_at = ? WHERE id = ?`,
@@ -346,7 +343,6 @@ export function connectionsApi(ctx: AppContext) {
         credentialsCleared = !!ctx.db.get("SELECT 1 AS x FROM connection_credentials WHERE connection_id = ?", id);
         // Sign-ins started for the old server can't complete (finishConnect also checks the origin).
         ctx.db.run("DELETE FROM oauth_states WHERE connection_id = ?", id);
-        cancelled = approvals.cancelForConnection(id, null, `${before.name}'s URL changed`);
         changed.push("url");
       }
     });
@@ -362,7 +358,7 @@ export function connectionsApi(ctx: AppContext) {
     for (const agentId of granted) ctx.broker.invalidate({ agentId });
     for (const agentId of granted) notifyAgent(ctx, agentId);
     if (changed.length || granted.length) {
-      audit("connection.update", id, { changed, ...(granted.length ? { granted } : {}), ...(changed.includes("url") ? { credentialsCleared, cancelled } : {}) });
+      audit("connection.update", id, { changed, ...(granted.length ? { granted } : {}), ...(changed.includes("url") ? { credentialsCleared } : {}) });
     }
     return c.json<ConnectionView>(view(id));
   });
@@ -372,8 +368,7 @@ export function connectionsApi(ctx: AppContext) {
     return c.body(null, 204);
   });
 
-  // Mounted before the policy's own /connections/:id/kill (server/api/broker-approvals.ts): the service runs the
-  // onKill hooks (a revoke needs the token) before the policy clears the credentials.
+  // The service runs the onKill hooks (a revoke needs the token) before the policy clears the credentials.
   app.post("/connections/:id/kill", async (c) => {
     const id = c.req.param("id");
     requireConnection(id);
@@ -454,11 +449,7 @@ export function connectionsApi(ctx: AppContext) {
         );
       }
     });
-    // Fresh tool views first, then the policy cancels pending calls and deletes "always allow" rules of removed
-    // grants, and re-checks changed ones.
     for (const agentId of new Set([...removed, ...changed])) ctx.broker.invalidate({ agentId });
-    for (const agentId of removed) ctx.broker.onGrantRemoved(agentId, id);
-    for (const agentId of changed.filter((a) => before.has(a))) ctx.broker.onGrantChanged(agentId, id);
     if (removed.length || changed.length) audit("connection.grants", id, { removed, changed });
     for (const agentId of new Set([...removed, ...changed])) notifyAgent(ctx, agentId);
     return c.json<ConnectionGrant[]>(grantsOf(id));

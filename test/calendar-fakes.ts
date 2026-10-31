@@ -1,5 +1,5 @@
 // In-memory fake of the CalendarClient interface (server/google/calendar.ts) and a context for the calendar
-// policy and approval tests (workstream B). Follows Google's semantics where they matter to policy: etags and
+// policy tests. Follows Google's semantics where they matter to policy: etags and
 // If-Match (412), client-chosen event ids (409 when taken), attendeesOmitted patches, 404 for unknown ids.
 
 import type { CalendarInfo } from "../shared/types.ts";
@@ -247,20 +247,16 @@ export async function tool<T>(
     const reason = error instanceof PolicyDenied ? error.reason : error instanceof ToolError ? error.code : "internal";
     r = { error, outcome, reason, detail: trace.detail };
   }
-  try {
-    ctx.audit.record({
-      actorType: "agent",
-      actorId: agentId,
-      action,
-      accountId: trace.accountId ?? null,
-      target: trace.target ?? null,
-      outcome: r.outcome,
-      reason: r.reason,
-      detail: Object.keys(trace.detail).length ? trace.detail : null,
-    });
-  } finally {
-    trace.release?.();
-  }
+  ctx.audit.record({
+    actorType: "agent",
+    actorId: agentId,
+    action,
+    accountId: trace.accountId ?? null,
+    target: trace.target ?? null,
+    outcome: r.outcome,
+    reason: r.reason,
+    detail: Object.keys(trace.detail).length ? trace.detail : null,
+  });
   return r;
 }
 

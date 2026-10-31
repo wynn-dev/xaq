@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GmailLabel } from "../shared/types.ts";
 import { sha256 } from "../server/crypto.ts";
 import { parseGrantInput } from "../server/policy/grants.ts";
 import { matchesGlob } from "../server/util/glob.ts";
-import { disallowedRecipients, labelSearchTerm, querySyntaxError, scopedSearch, threadLabels } from "../server/policy/enforce.ts";
+import { disallowedRecipients, threadLabels } from "../server/policy/enforce.ts";
 import { grantInput, mailTestContext } from "./mail-fakes.ts";
 
 let dispose: (() => Promise<void>) | undefined;
@@ -150,14 +149,13 @@ describe("grants", () => {
   it("upserts one grant per agent × account and audits", () => {
     const { ctx } = setup();
     const { agent } = ctx.policy.createAgent({ name: "a" });
-    const g1 = ctx.policy.upsertGrant(agent.id, "acc_a", grantInput("acc_a", { capabilities: ["send", "read", "read"], sendMode: "approval" }));
-    expect(g1.capabilities).toEqual(["read", "send"]);
-    const g2 = ctx.policy.upsertGrant(agent.id, "acc_a", grantInput("acc_a", { allowTo: [" *@Acme.com "], maxSendsPerDay: 5 }));
+    const g1 = ctx.policy.upsertGrant(agent.id, "acc_a", grantInput("acc_a", { level: "full" }));
+    expect(g1.level).toBe("full");
+    const g2 = ctx.policy.upsertGrant(agent.id, "acc_a", grantInput("acc_a", { level: "full", allowTo: [" *@Acme.com "] }));
     expect(g2.id).toBe(g1.id);
     expect(g2.allowTo).toEqual(["*@acme.com"]);
-    expect(g2.maxSendsPerDay).toBe(5);
     expect(ctx.policy.grants(agent.id)).toHaveLength(1);
-    expect(ctx.policy.grant(agent.id, "acc_a")?.sendMode).toBe("direct");
+    expect(ctx.policy.grant(agent.id, "acc_a")?.level).toBe("full");
     ctx.policy.deleteGrant(agent.id, "acc_a");
     expect(ctx.policy.grant(agent.id, "acc_a")).toBeNull();
     expect(() => ctx.policy.deleteGrant(agent.id, "acc_a")).toThrow(/not found/);
@@ -167,14 +165,10 @@ describe("grants", () => {
   });
 
   it.each([
-    ["unknown capability", { capabilities: ["read", "admin"] }],
-    ["no capabilities", { capabilities: [] }],
-    ["empty label scope", { labelScope: [] }],
-    ["bad send mode", { sendMode: "yolo" }],
+    ["an unknown level", { level: "ask" }],
+    ["no level", { level: undefined }],
     ["malformed glob", { allowTo: ["not an address"] }],
     ["glob without domain", { allowTo: ["alice@"] }],
-    ["zero cap", { maxSendsPerHour: 0 }],
-    ["fractional cap", { maxSendsPerDay: 1.5 }],
   ])("rejects %s", (_name, patch) => {
     const { ctx } = setup();
     const { agent } = ctx.policy.createAgent({ name: "a" });
@@ -200,9 +194,8 @@ describe("grants", () => {
 });
 
 describe("grant defaults, ordering and glob folding", () => {
-  it("defaults sendMode to draft_only", () => {
-    const { sendMode: _omit, ...rest } = grantInput("acc_a");
-    expect(parseGrantInput(rest).sendMode).toBe("draft_only");
+  it("defaults the allowlist to anyone", () => {
+    expect(parseGrantInput({ accountId: "acc_a", level: "read" })).toEqual({ accountId: "acc_a", level: "read", allowTo: [] });
   });
 
   it("lists grants and agents in insertion order", () => {
@@ -223,60 +216,22 @@ describe("grant defaults, ordering and glob folding", () => {
 });
 
 describe("canSeeEvent", () => {
-  it("requires read, honours thread-level label scope and passes account events", () => {
+  it("needs a grant on the account (any level) and an enabled agent", () => {
     const { ctx } = setup();
-    const { agent: scoped } = ctx.policy.createAgent({ name: "s", grants: [grantInput("acc_a", { labelScope: ["Label_support"] })] });
-    const { agent: noRead } = ctx.policy.createAgent({ name: "n", grants: [grantInput("acc_a", { capabilities: ["send"] })] });
-    const { agent: full } = ctx.policy.createAgent({ name: "f", grants: [grantInput("acc_a")] });
-    const ev = (type: "message.received" | "sync.gap" | "account.auth_failed", labels: string[], accountId = "acc_a") => ({ accountId, type, threadLabelIds: labels });
+    const { agent: reader } = ctx.policy.createAgent({ name: "r", grants: [grantInput("acc_a")] });
+    const { agent: full } = ctx.policy.createAgent({ name: "f", grants: [grantInput("acc_a", { level: "full" })] });
+    const ev = (type: "message.received" | "sync.gap" | "account.auth_failed", accountId = "acc_a") => ({ accountId, type });
 
-    expect(ctx.policy.canSeeEvent(scoped.id, ev("message.received", ["INBOX", "Label_support"]))).toBe(true);
-    expect(ctx.policy.canSeeEvent(scoped.id, ev("message.received", ["INBOX"]))).toBe(false);
-    expect(ctx.policy.canSeeEvent(scoped.id, ev("sync.gap", []))).toBe(true);
-    expect(ctx.policy.canSeeEvent(scoped.id, ev("account.auth_failed", []))).toBe(true);
-    expect(ctx.policy.canSeeEvent(scoped.id, ev("message.received", ["Label_support"], "acc_b"))).toBe(false);
-    expect(ctx.policy.canSeeEvent(noRead.id, ev("message.received", ["INBOX"]))).toBe(false);
-    expect(ctx.policy.canSeeEvent(noRead.id, ev("sync.gap", []))).toBe(false);
-    expect(ctx.policy.canSeeEvent(full.id, ev("message.received", []))).toBe(true);
+    expect(ctx.policy.canSeeEvent(reader.id, ev("message.received"))).toBe(true);
+    expect(ctx.policy.canSeeEvent(reader.id, ev("sync.gap"))).toBe(true);
+    expect(ctx.policy.canSeeEvent(reader.id, ev("message.received", "acc_b"))).toBe(false);
+    expect(ctx.policy.canSeeEvent(full.id, ev("account.auth_failed"))).toBe(true);
     ctx.policy.updateAgent(full.id, { disabled: true });
-    expect(ctx.policy.canSeeEvent(full.id, ev("message.received", []))).toBe(false);
+    expect(ctx.policy.canSeeEvent(full.id, ev("message.received"))).toBe(false);
   });
 });
 
-describe("query scoping", () => {
-  const labels: GmailLabel[] = [
-    { id: "INBOX", name: "INBOX", type: "system" },
-    { id: "CATEGORY_UPDATES", name: "CATEGORY_UPDATES", type: "system" },
-    { id: "Label_1", name: "Support", type: "user" },
-    { id: "Label_2", name: "Clients/Big Co", type: "user" },
-    { id: "Label_3", name: 'Odd "quoted"', type: "user" },
-  ];
-
-  it("maps labels to Gmail's search form", () => {
-    expect(labelSearchTerm(labels[0]!)).toBe("in:inbox");
-    expect(labelSearchTerm(labels[1]!)).toBe("category:updates");
-    expect(labelSearchTerm(labels[2]!)).toBe("label:support");
-    expect(labelSearchTerm(labels[3]!)).toBe("label:clients-big-co");
-    expect(labelSearchTerm(labels[4]!)).toBe("label:odd--quoted-");
-  });
-
-  it("uses the exact labelIds filter for one scope label and ORs label terms for several", () => {
-    expect(scopedSearch("from:bob", null, labels)).toEqual({ q: "from:bob" });
-    expect(scopedSearch("from:bob", ["Label_1"], labels)).toEqual({ q: "from:bob", labelIds: ["Label_1"] });
-    expect(scopedSearch("from:bob OR from:eve", ["Label_1", "Label_2"], labels)).toEqual({ q: "(from:bob OR from:eve) (label:support OR label:clients-big-co)" });
-    expect(scopedSearch("", ["Label_1", "INBOX"], labels)).toEqual({ q: "(label:support OR in:inbox)" });
-    expect(scopedSearch("x", ["Label_gone", "Label_1"], labels)).toEqual({ q: "x", labelIds: ["Label_1"] });
-    expect(scopedSearch("x", ["Label_gone"], labels)).toBeNull();
-  });
-
-  it("rejects queries that could escape the wrapping group", () => {
-    expect(querySyntaxError('subject:"a (b" (x OR y) {c d}')).toBeNull();
-    expect(querySyntaxError("x) OR (label:secret")).toMatch(/closing/);
-    expect(querySyntaxError("(x")).toMatch(/opening/);
-    expect(querySyntaxError('subject:"open')).toMatch(/quote/);
-    expect(querySyntaxError("a } OR {b")).toMatch(/closing/);
-  });
-
+describe("thread labels", () => {
   it("computes thread-level label unions", () => {
     expect(threadLabels({ messages: [{ labelIds: ["A"] }, { labelIds: ["B", "A"] }, {}] }).sort()).toEqual(["A", "B"]);
   });

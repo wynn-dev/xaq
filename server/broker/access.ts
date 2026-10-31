@@ -36,27 +36,6 @@ export function canSeeConnection(db: Db, brokerOn: boolean, agentId: string, con
   return !!r && !bool(r.disabled);
 }
 
-/**
- * A connection event's visibility (policy.canSeeEvent). approval.requested follows approvalEventVisible
- * (server/broker/policy): the requesting agent everywhere, and any webhook subscribed to the type (it carries
- * who asked for what and the approve link, never the arguments). Everything else: a grant on the connection.
- */
-export function canSeeConnectionEvent(
-  db: Db,
-  brokerOn: boolean,
-  agentId: string,
-  ev: { type: string; connectionId?: string | null; detail?: Record<string, unknown> | null },
-  via: "feed" | "listener" | "webhook",
-): boolean {
-  if (!brokerOn || !ev.connectionId) return false;
-  if (ev.type === "approval.requested") {
-    if (via === "webhook") return true;
-    const agent = db.get<{ disabled: number }>("SELECT disabled FROM agents WHERE id = ?", agentId);
-    return !!agent && !bool(agent.disabled) && ev.detail?.agentId === agentId;
-  }
-  return canSeeConnection(db, brokerOn, agentId, ev.connectionId);
-}
-
 /** Connection ids whose events the agent may see (empty while the broker is off). */
 export function visibleConnectionIds(db: Db, brokerOn: boolean, agentId: string): string[] {
   if (!brokerOn) return [];

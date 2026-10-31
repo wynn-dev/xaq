@@ -14,11 +14,10 @@ agentinbox grows from a Gmail/Calendar broker into an **MCP broker**:
   extension, so the native WHOOP described below has left core.)*
 - **The broker holds every upstream credential.** Agents never see them.
 - **Each agent gets only the tools it's allowed.**
-- **Existing machinery is reused:** approvals, the audit log, signed webhooks and the listener relay.
+- **Existing machinery is reused:** the audit log, signed webhooks and the listener relay.
 
 Why: today Hermes has 7 separate MCP entries (agentinbox, whoop, brightspace, hearloom, 3× T3). Each has its own auth,
-timeouts and re-login dance: 30-day OAuth with no refresh, and a 401 re-auth by hand. None of them share audit or
-approvals.
+timeouts and re-login dance: 30-day OAuth with no refresh, and a 401 re-auth by hand. None of them share an audit log.
 
 ### DECIDED (Wynn, 2026-10-16)
 
@@ -79,7 +78,7 @@ So the SSRF guard needs the [private-target allow](#private-targets) below, or M
 agent (Claude Code, Codex, Cursor, Hermes, any MCP client)
    │  one endpoint: POST /mcp, Authorization: Bearer aib_… (per agent, as today)
    ▼
-broker ──── policy (grants: native + per-tool) ── approvals ── audit ── events/webhooks/listen
+broker ──── policy (grants: full or read) ── audit ── events/webhooks/listen
    │
    ├── native: Gmail, Calendar (unchanged tool names)
    ├── native: WHOOP (WHOOP API v2)
@@ -201,10 +200,8 @@ ask for them. Resources and prompts aren't proxied in v1.
     and new hash and the fields that differ, `connection.tool_added` for a new tool,
     `connection.instructions_changed` for the instructions), visible in the console's audit log. No event, webhook,
     listener message, notice or badge.
-  - A changed tool is re-classified from its new definition, so access levels, approvals for risky tools and
-    "always allow" rules (keyed by the tool's name) apply exactly as for any tool. A schema change that makes a read
-    tool risky follows the normal risky rules; that's not a hold. A pending approval queued before the change can't
-    run after it (the hash it was asked with no longer matches): reject it and the agent asks again.
+  - A changed tool is re-classified from its new definition, so access levels apply exactly as for any tool. A
+    schema change that makes a read tool risky takes it off Read only; that's not a hold.
   - Arguments are validated against the current `inputSchema` (ajv) before they're forwarded.
   - On upgrade, tools an older version left on hold are released at startup: the definition that was waiting is
     used, with the same audit entry. The hold columns of `upstream_tools` stay in the schema, unused.
@@ -213,24 +210,24 @@ ask for them. Resources and prompts aren't proxied in v1.
   signs as information, never as a gate: `<IMPORTANT>`, "don't tell the user", file paths, other servers' tool names,
   catch-all parameters (`context`, `sidenote`) and base64 blobs.
 
-### Access and approvals (DECIDED: Wynn's model)
+### Access
 
-Native Gmail/Calendar grants stay exactly as they are in M1. Moving them to this model is an M4 item.
+One permission model for everything: each agent's access to each Google account and each connection is **Full
+access** or **Read only**. No row = no access. Nothing waits for approval.
 
-**One choice per connection.** Connecting an integration asks one question: what can agents do with it?
-
-| Level | Tools listed | Asking |
-|---|---|---|
-| **Full access** | all | never |
-| **Ask before risky actions** (the default) | all | risky tools wait for approval; everything else goes straight through |
-| **Read only** | read tools only | never; other tools aren't listed or callable |
+| Level | Connection tools listed |
+|---|---|
+| **Full access** (the default for a new connection) | all |
+| **Read only** | read tools only; other tools aren't listed or callable |
 
 **Agents:** the connect dialog also asks which agents get the connection, defaulting to all of them. Each agent's
-page shows its connections with the same three-way choice plus "no access", so one agent can have a different level.
-That's stored as a `connection_grants` row per agent × connection with a `level`. There are no per-tool grant modes.
+page shows its connections with the same choice plus "no access", so one agent can have a different level. That's
+stored as a `connection_grants` row per agent × connection with a `level`. There are no per-tool grant modes. A
+Google account grant is the same choice (`grants.level`) plus one extra rule, a recipient allowlist for sends and
+calendar guests.
 
 **What counts as risky: irreversible actions only.** Deleting, sending mail or messages, publishing or sharing outside,
-and payments. Creating and editing goes through without asking. Classification, in this order:
+and payments. Risky tools are never reads. Classification, in this order:
 
 1. **Pre-made integrations say so themselves.** Each extension's manifest ships a risk map (`risk.tools`: exact tool
    names, each `read`, `write` or `risky`; see [EXTENSIONS.md](EXTENSIONS.md)). The risky ones:
@@ -269,31 +266,8 @@ and payments. Creating and editing goes through without asking. Classification, 
 
 Anything else is hidden at the read-only level. Better to hide a harmless tool than expose a write.
 
-**Approvals.** One kind, `mcp.call`, used for risky tools at the "ask" level.
-- **Pending is returned at once.** The agent gets `pending_approval` and an `approval_id` immediately, never a
-  blocking call, and carries on with other work. It checks back with `get_call_status(approval_id)`. The status is
-  pending, rejected, expired, or done with the call's result, which the broker stores when it runs the approved call.
-- **Exact arguments.** When the call is queued, the arguments are validated, canonicalised and stored with their
-  sha256 and the tool's pinned hash. The card shows exactly those bytes: lines wrap, invisible characters appear as
-  escapes, and recipients and URLs come first. On approve, the broker re-checks the agent, the grant, the pin and the
-  hash, then forwards the stored bytes. An interrupted call is marked as having an unknown outcome and is never
-  retried automatically.
-- **"Always allow this"** is on every card. It creates an allow rule for **this agent and this tool**, optionally also
-  for **the target**: the preset's target field (a Notion page or database id, a mail recipient), or, for generic
-  tools, one argument the user picks on the card. A matching call never asks again. The rules are listed and
-  removable on the agent's page.
-- **The approval link** opens a **one-tap approve page** (`/approve/<id>`): a minimal, mobile-first page with the
-  call, then Approve, Always allow, and Reject. The user is already signed in through the console session; if they
-  aren't, they sign in and come back to it. It isn't the full console. The link goes out in the `approval.requested`
-  event, so webhooks and the listener can carry it: Hermes can text it to Wynn. **Chat replies can't approve.**
-- **Expiry:** an unanswered approval expires after 24 hours, which is configurable. The agent's `get_call_status`
-  says so.
-- **Schema:** the `approvals` table is rebuilt with `account_id` and `draft_id` nullable, keeping pending rows.
-  `approval_rules` holds agent, connection, tool, an optional target path and value, and created_at.
-
-**Limits kept from the earlier draft:** per-agent caps on risky calls per hour and day (counting queued and uncertain
-ones), and the kill switch per connection. Argument constraints, the egress byte budget and the trifecta banner move
-to M4.
+**Limits:** the kill switch per connection. Argument constraints, the egress byte budget and the trifecta banner are
+M4 items.
 
 ### Upstream output is untrusted
 
@@ -340,7 +314,7 @@ The design:
 
    Every inner call is audited and governed under its real name, so search mode loses nothing on the broker side.
    Search mode only trims `tools/list`: every tool the agent could call in direct mode stays callable by its real
-   name (scripts and prompts that call `search_threads` keep working), through the same handler, policy, approvals
+   name (scripts and prompts that call `search_threads` keep working), through the same handler, policy
    and audit; a name the agent can't use still gets -32602.
 
    An agent's mode never changes under it. The per-agent setting (`broker.search:<agentId>`) is `direct` or
@@ -352,7 +326,7 @@ The design:
 3. **Code mode is deferred.** It cuts tokens the most
    ([Cloudflare](https://blog.cloudflare.com/enterprise-mcp/),
    [Anthropic](https://www.anthropic.com/engineering/code-execution-with-mcp)), but it needs a sandbox and hides each
-   inner call from approvals.
+   inner call from the policy.
 4. **Toolset groups are configuration only.** Turning groups on at runtime through `list_changed` breaks Codex, which
    ignores it ([codex#37417](https://github.com/openai/codex/issues/37417)).
 
@@ -583,7 +557,7 @@ The bar: the CLI wizard and console guide every step end to end, with deep links
   - **Custom:** paste a URL. The broker probes it and shows what it found ("OAuth via auth.example.com, supports
     automatic registration", or "needs an API key"), then shows the right button or field. stdio: an admin form with
     a command preview and the version-pinning check.
-  - Then **one choice**: full access, ask before risky actions (preselected) or read only, plus which agents get it.
+  - Then **one choice**: full access (preselected) or read only, plus which agents get it.
     Done. There's no tool review step.
 - **Import from a client config, for Hermes dogfooding and migrations.**
   - `npx agentinbox-cli import --from hermes` (also `claude-code`, `cursor`, `codex`) reads that client's MCP config.
@@ -895,16 +869,9 @@ All questions are decided. Building proceeds M0 → M1 → M2 → M3.
 2. **No hosted piece run by the project.** Notion uses automatic registration, and WHOOP uses each user's own app.
 3. **No stdio in M1** (decision 5): every Hermes upstream is remote HTTP.
 4. **Google optional on first run:** yes, the recommendation. Adri's relay grouped "Q4" with approvals, but in this list Q4 is the Google question; tell the lead if that was meant otherwise.
-5. **The default policy for new tools is replaced by Wynn's model** ([Access and approvals](#access-and-approvals-decided-wynns-model)):
-   - one choice per connection: full access, ask before risky actions (the default), or read only;
-   - risky means irreversible only;
-   - "always allow" on every card;
-   - a one-tap approve page;
-   - no review gate at setup, and no hold on a change: a changed tool keeps working and is only audited (changed by
-     the owner on 2026-10-16; the plan said "pin on connect; hold and ping on a tool change");
-   - pending returned at once.
-6. **Approvals on the phone:** a link to the one-tap approve page goes out in `approval.requested`. Chat replies can't
-   approve.
+5. **Access** ([Access](#access)): one choice per connection, full access or read only (approvals and the "ask"
+   level were removed on 2026-10-31); risky means irreversible only; no review gate at setup, and no hold on a
+   change: a changed tool keeps working and is only audited.
 7. **Keys and data directory** (decision 6): `aib_` for every key; `~/.agentinbox` kept, with no automatic move.
 8. **Search mode:** on automatically for a new agent with more than about 30 tools when it first connects. Real
    names are kept below that, and for agents that existed before search mode. The mode then changes only when the

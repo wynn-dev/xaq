@@ -123,7 +123,7 @@ export class SyncPass {
     }
   }
 
-  /** Union of labels across the message's thread (label scopes are thread-level). */
+  /** Union of labels across the message's thread (label filters are thread-level). */
   threadLabelIds(msg: GmailMessage): Promise<string[]> {
     let p = this.threadLabels.get(msg.threadId);
     if (!p) {

@@ -1,15 +1,12 @@
-// Google Calendar MCP tools (workstream C, docs/calendar.md "C: MCP tools"). Registered by buildMcpServer
-// strictly by capability; each handler builds `new AgentCalendar(ctx, mail.principal, mail.trace)`
-// (server/calendar/agent.ts, B: grants, calendar scope, write mode, allowTo, send caps) and formats its
-// result. This layer owns argument shapes: times are checked and normalized here so the policy layer and
+// Google Calendar MCP tools (docs/calendar.md "MCP tools"). Registered by buildMcpServer when some granted
+// account has Calendar; each handler builds `new AgentCalendar(ctx, mail.principal, mail.trace)`
+// (server/calendar/agent.ts: full or read, allowTo) and formats its result. This layer owns argument shapes: times are checked and normalized here so the policy layer and
 // Google only ever see well-formed RFC 3339. Event text is untrusted: descriptions are wrapped in
 // <calendar_content … untrusted>, one-liners go through cleanLine (server/mcp/format.ts).
 //
 // Tools (names in TOOL_NAMES):
-//   calendar.read:  list_calendars, list_calendar_events, get_calendar_event, get_free_busy
-//   calendar.write: create_calendar_event
-//   calendar.read + calendar.write (one grant): update_calendar_event, delete_calendar_event, respond_to_invitation
-//   get_send_status is also registered for calendar.write (server/mcp/server.ts).
+//   any grant: list_calendars, list_calendar_events, get_calendar_event, get_free_busy
+//   full:      create_calendar_event, update_calendar_event, delete_calendar_event, respond_to_invitation
 
 import { z } from "zod";
 import type { CalendarEventInput } from "../../shared/types.ts";
@@ -160,7 +157,6 @@ const calendarId = z
   .optional()
   .describe('Calendar id from list_calendars. Default "primary": the account\'s main calendar.');
 const eventId = z.string().min(1).max(1024).describe("Event id (from list_calendar_events, get_calendar_event or calendar events).");
-const reason = z.string().max(500).optional().describe("Why you are making this change; shown to the human if it needs approval.");
 const notifyAttendees = z
   .boolean()
   .optional()
@@ -217,7 +213,7 @@ function eventInput(a: {
 }
 
 const WRITE_RESULTS =
-  'The result\'s status says what happened: "applied" (in Google Calendar now), "deleted", or "pending_approval" (a human must approve it in the xaq console first; check it with get_send_status).';
+  'The result\'s status says what happened: "applied" (in Google Calendar now) or "deleted".';
 const SERIES_NOTE =
   "list_calendar_events shows each occurrence of a repeating event with its own event_id: passing it affects only that occurrence. To change or answer every occurrence, pass the series id (series: in list_calendar_events, or Repeats in get_calendar_event) as event_id.";
 const NOTIFY_NOTE =
@@ -228,7 +224,7 @@ export function registerCalendarTools(ctx: AppContext, register: Register, can: 
   const calendar = (mail: { principal: AgentCalendar["principal"]; trace: AgentCalendar["trace"] }) => new AgentCalendar(ctx, mail.principal, mail.trace);
   const maxChars = () => ctx.settings.get().maxBodyChars;
 
-  if (can.has("calendar.read")) {
+  if (can.calendar) {
     register(
       "list_calendars",
       {
@@ -320,14 +316,14 @@ export function registerCalendarTools(ctx: AppContext, register: Register, can: 
   // Writes can email people and can't be recalled once Google sent them: marked destructive like sends.
   const annotations = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true };
 
-  if (can.has("calendar.write")) {
+  if (can.calendarFull) {
     register(
       "create_calendar_event",
       {
         title: "Create calendar event",
         description:
           `Create an event, optionally inviting attendees and adding a Meet link. ${NOTIFY_NOTE} ` +
-          `Depending on the account's settings the event is created at once or queued for human approval. ${WRITE_RESULTS} Only create events your user asked for. ` +
+          `The event is created at once. ${WRITE_RESULTS} Only create events your user asked for. ` +
           "If a create fails with write_uncertain, retry with the same details and the event_id the error names: it can't create a second event.",
         input: {
           account,
@@ -336,7 +332,6 @@ export function registerCalendarTools(ctx: AppContext, register: Register, can: 
           start: eventTime("Start"),
           end: eventTime("End (exclusive for all-day events: the day after the last day)"),
           notify_attendees: notifyAttendees,
-          reason,
           event_id: z
             .string()
             .regex(/^[a-v0-9]{5,1024}$/, "event_id is 5-1024 characters a-v and 0-9: only pass the one a write_uncertain error named.")
@@ -348,14 +343,11 @@ export function registerCalendarTools(ctx: AppContext, register: Register, can: 
       async (args, mail) => {
         const input = { ...eventInput(args), ...eventTimes(args) };
         return formatCalendarWrite(
-          await calendar(mail).createEvent(args.account, args.calendar_id, input, { notifyAttendees: args.notify_attendees, reason: args.reason, eventId: args.event_id }),
+          await calendar(mail).createEvent(args.account, args.calendar_id, input, { notifyAttendees: args.notify_attendees, eventId: args.event_id }),
         );
       },
     );
-  }
 
-  // Changing an existing event means reading it first (attendees, etag), so these need both capabilities on one grant.
-  if (can.hasAll("calendar.read", "calendar.write")) {
     register(
       "update_calendar_event",
       {
@@ -383,7 +375,6 @@ export function registerCalendarTools(ctx: AppContext, register: Register, can: 
           add_meet_link: fields.add_meet_link,
           recurrence: fields.recurrence,
           notify_attendees: notifyAttendees,
-          reason,
         },
         annotations,
       },
@@ -399,7 +390,7 @@ export function registerCalendarTools(ctx: AppContext, register: Register, can: 
         }
         if (!Object.keys(change).length) throw new ToolError("invalid_arguments", "Nothing to change: pass at least one field to update.");
         return formatCalendarWrite(
-          await calendar(mail).updateEvent(args.account, args.calendar_id, args.event_id, change, { notifyAttendees: args.notify_attendees, reason: args.reason }),
+          await calendar(mail).updateEvent(args.account, args.calendar_id, args.event_id, change, { notifyAttendees: args.notify_attendees }),
         );
       },
     );
@@ -411,11 +402,11 @@ export function registerCalendarTools(ctx: AppContext, register: Register, can: 
         description:
           `Delete an event (with a series id: every occurrence). ${SERIES_NOTE} When you organize it, attendees get a cancellation email unless notify_attendees is false. ` +
           `To turn down someone else's invitation use respond_to_invitation instead. ${WRITE_RESULTS}`,
-        input: { account, calendar_id: calendarId, event_id: eventId, notify_attendees: notifyAttendees, reason },
+        input: { account, calendar_id: calendarId, event_id: eventId, notify_attendees: notifyAttendees },
         annotations,
       },
       async (args, mail) =>
-        formatCalendarWrite(await calendar(mail).deleteEvent(args.account, args.calendar_id, args.event_id, { notifyAttendees: args.notify_attendees, reason: args.reason })),
+        formatCalendarWrite(await calendar(mail).deleteEvent(args.account, args.calendar_id, args.event_id, { notifyAttendees: args.notify_attendees })),
     );
 
     register(
@@ -432,7 +423,6 @@ export function registerCalendarTools(ctx: AppContext, register: Register, can: 
           response: z.enum(["accepted", "declined", "tentative"]).describe("Your answer."),
           comment: z.string().max(500).optional().describe("A note to the organizer, shown with your answer."),
           notify_organizer: z.boolean().optional().describe("Whether Google emails the organizer your answer (default true)."),
-          reason,
         },
         annotations: { ...annotations, idempotentHint: true },
       },
@@ -441,7 +431,6 @@ export function registerCalendarTools(ctx: AppContext, register: Register, can: 
           await calendar(mail).respond(args.account, args.calendar_id, args.event_id, args.response, {
             notifyAttendees: args.notify_organizer,
             comment: args.comment?.trim() || undefined,
-            reason: args.reason,
           }),
         ),
     );

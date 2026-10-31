@@ -52,7 +52,7 @@ npx xaq-cli listen --save --recipe hermes              # try it; then: listen se
 
 ```
 xaq connect <daemon-url> [--name <name>] [--tool claude-code|codex|cursor|hermes|other]
-                   [--account <email>]… [--capabilities read,draft,calendar.read] [--reason <text>]
+                   [--account <email>]… [--reason <text>]
                    [--setup-mcp] [--profile <name>] [--consumer <name>] [--log <file>] [--insecure] [--force]
 ```
 
@@ -60,24 +60,18 @@ xaq connect <daemon-url> [--name <name>] [--tool claude-code|codex|cursor|hermes
    daemon builds the link from its public URL setting (default `http://localhost:<port>`); when that isn't the
    address you connected to (`127.0.0.1`, a LAN IP, an SSH tunnel's port), the link on your address comes first and
    the public-URL one is shown below it.
-2. Someone with console access opens the link and checks that the code matches. They choose the mailboxes,
-   capabilities and send mode, then approve. The console starts at **Read only**; when send access is granted, the
-   send mode defaults to `draft_only` (sends become Gmail drafts). "Send with my approval" queues each send in the
-   console's Approvals.
+2. Someone with console access opens the link and checks that the code matches. They choose the mailboxes and, per
+   mailbox, read only (the default) or full access, then approve.
 3. `connect` polls at the server's interval and backs off when told `slow_down`. It shows elapsed time and an expiry
    countdown. In a TTY that's a live status line; otherwise it prints plain lines. Once approved, the daemon hands
    over the API key **exactly once**.
 4. The key goes into a profile file (mode 0600, in a 0700 directory) and is **never printed**. `connect` then reads
    the agent's access (`GET /agent/v1/me`) and prints what was actually granted per mailbox, in plain words (for
-   example `ops@acme.dev: read, draft, send; sends need your approval in the console`), and the next steps for your
+   example `ops@acme.dev: full access (mail and calendar); only to *@acme.dev`), and the next steps for your
    `--tool`: try the listener in the foreground, send a test email from the console, then install the service.
-   Calendar access is described after the mail part (`ops@acme.dev: read, calendar.read, calendar.write; mail read
-   only (can't draft or send); calendar changes need your approval in the console`), with `only calendar …` when the
-   grant is confined to some calendars. `/me` reports each grant's `calendarScope` (calendar ids, `null` = every
-   calendar in the account's list) and `calendarWriteMode` (`direct` or `approval`); older daemons leave them out.
+   `/me` reports each grant's `level` (`full` or `read`) and `allowTo`.
 
-`--account` and `--capabilities` are only a request. The approver decides. Request `calendar.read` for a listener that
-should wake on calendar invitations.
+`--account` is only a request. The approver decides.
 
 Exit codes: `0` approved, `2` denied, `3` code expired, `4` already consumed (the key is never delivered twice),
 `130` cancelled with Ctrl-C, `1` other errors.
@@ -152,8 +146,7 @@ npx xaq-cli listen --save --types message.received,calendar.invitation_received 
 ```
 
 **Calendar events** (`calendar.invitation_received`, `calendar.event_created`, `calendar.event_updated`,
-`calendar.event_cancelled`) reach a listener whose agent has `calendar.read` on the account, for the calendars its grant
-covers. An agent with only `calendar.read` (no mail `read`) can listen too; it then gets calendar events only. They
+`calendar.event_cancelled`) reach a listener whose agent has a grant on the account, like its mail events. They
 arrive in the same payload as mail events, with `data.message: null` and `data.calendarEvent` set (title, start and end,
 location, organizer, attendees, your response; no description unless bodies are included). Invitations are usually what
 you want: someone put a meeting on your calendar, and the agent may answer it with `respond_to_invitation`.
@@ -329,8 +322,8 @@ running whenever the listener is.
 - The listener reconnects forever with jittered backoff (1 s up to 60 s). Pings arrive every 15 s, so 45 s of silence
   counts as a dead connection. A jump in the wall clock (the machine woke from sleep) triggers an immediate reconnect.
 - If the stream holds more than 200 unstarted events, the listener disconnects and resumes once the backlog drains.
-- **Refusals that can be undone** (an admin disabled the agent, or it has neither `read` nor `calendar.read` on any
-  mailbox right now) don't stop the listener. It logs the reason once, retries every 60 s, and resumes on its own.
+- **Refusals that can be undone** (an admin disabled the agent, or it has no grant on any mailbox or connection right
+  now) don't stop the listener. It logs the reason once, retries every 60 s, and resumes on its own.
 - **Permanent revocation** (the key was rotated, or the agent was deleted) is logged clearly and the listener exits
   with code **78**. The systemd unit won't restart on 78. Under launchd the service waits 15 minutes before exiting,
   so it doesn't spin. To recover, run `npx xaq-cli connect <url> --force`, which keeps your listener settings,
@@ -341,9 +334,9 @@ running whenever the listener is.
 ## Recipes
 
 Anyone who can email you can trigger these, so each recipe limits what the woken agent can do as far as its CLI
-allows. The real limit is still the agent's grant, enforced by the daemon: give listener-woken agents `draft_only` or
-`approval` send modes, and an `allowTo` recipient allowlist. Reply-only doesn't limit who an attacker can make the agent
-reply to (they choose the sender address); use `allowTo` for that.
+allows. The real limit is still the agent's grant, enforced by the daemon: give listener-woken agents read only where
+it's enough, and an `allowTo` recipient allowlist with full access (an attacker chooses the sender address a reply goes
+to).
 
 Use a recipe with `--recipe <name>` (`claude-code`, `codex`, `cursor`, `hermes` or `hermes-oneshot`), on `listen` and on
 `listen service install`, e.g. `npx xaq-cli listen service install --recipe claude-code`. It fills in this
@@ -569,8 +562,7 @@ After updating xaq (for example from a `0.1.0-nightly.34` listener):
   though: top-level `type`, the message under `event.data.message`.
 - **Calendar invitations don't wake the agent by default.** The default types are still `message.received` only. Add
   them with `--types message.received,calendar.invitation_received` (plus `calendar.event_created`,
-  `calendar.event_updated`, `calendar.event_cancelled` if wanted, or `all`); the agent needs `calendar.read` on the
-  account.
+  `calendar.event_updated`, `calendar.event_cancelled` if wanted, or `all`); the account needs Google Calendar.
 
 ## Status
 
@@ -609,14 +601,13 @@ After updating xaq (for example from a `0.1.0-nightly.34` listener):
 - **Prompt injection.** Email content and calendar descriptions are wrapped and labelled untrusted, and the xaq
   skill tells the agent to treat them as data. Calendar invitations need the same care as mail: anyone who knows the
   address can put one on the calendar. That alone isn't a security boundary. The real limits are:
-  - the grant, enforced by the daemon (capabilities, labels, calendars, send and calendar write modes, recipient
-    allowlist, rate limits)
+  - the grant, enforced by the daemon (full or read, recipient allowlist)
   - the recipes' tool confinement: complete for Claude Code and Hermes, partial for Codex, and up to your permissions
     config for Cursor (see [Recipes](#recipes))
   - the private working directory
 
   A woken agent that still has file access could read local files and send them out through its own tools. Confine
-  it, and prefer `draft_only` / `approval` grants.
+  it, and prefer read-only grants or a recipient allowlist.
 - **Forward mode** only targets this machine and signs every request.
 
 ## Files

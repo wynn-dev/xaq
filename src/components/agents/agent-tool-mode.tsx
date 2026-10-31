@@ -32,7 +32,7 @@ export function AgentToolMode({ agentId }: { agentId: string }) {
     <Card>
       <CardHeader>
         <CardTitle>Tool list</CardTitle>
-        <CardDescription>What the agent sees when it asks xaq for its tools. Calling a tool by name works either way, with the same limits and approvals.</CardDescription>
+        <CardDescription>What the agent sees when it asks xaq for its tools. Calling a tool by name works either way, with the same access.</CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
         {q.isPending ? (

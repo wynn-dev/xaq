@@ -53,41 +53,28 @@ function start(extra: Partial<RunListenerOptions> = {}) {
 }
 
 describe("grants in plain words", () => {
-  const g = (capabilities: string[], sendMode: "draft_only" | "approval" | "direct", labelScope: string[] | null = null) =>
-    ({ accountId: "a", accountEmail: "ops@acme.dev", capabilities, labelScope, sendMode }) as Parameters<typeof describeGrant>[0];
+  const g = (level: "full" | "read", allowTo: string[] = []) => ({ accountId: "a", accountEmail: "ops@acme.dev", level, allowTo });
 
-  it("matches the console's choices", () => {
-    expect(describeGrant(g(["read"], "draft_only"))).toBe("ops@acme.dev: read only (can't draft or send)");
-    expect(describeGrant(g(["read", "draft", "send"], "draft_only"))).toBe("ops@acme.dev: read, draft, send; sends become Gmail drafts for you to send");
-    expect(describeGrant(g(["read", "draft", "send", "organize"], "approval"))).toBe("ops@acme.dev: read, draft, send, organize; sends need your approval in the console");
-    expect(describeGrant(g(["read", "draft", "send"], "direct"))).toBe("ops@acme.dev: read, draft, send; sends go out directly");
-    expect(describeGrant(g(["read", "draft"], "draft_only"))).toBe("ops@acme.dev: read, draft; can't send");
-    expect(describeGrant(g(["read"], "draft_only", ["INBOX"]))).toContain("only label INBOX");
-    expect(describeGrant({ ...g(["read", "send"], "direct"), allowTo: ["*@acme.dev"], replyOnly: true, maxSendsPerHour: 5, maxSendsPerDay: null })).toBe(
-      "ops@acme.dev: read, send; sends go out directly to allowed recipients; only to *@acme.dev; replies in existing threads only; at most 5/hour",
-    );
+  it("says full or read, and the allowlist", () => {
+    expect(describeGrant(g("read"))).toBe("ops@acme.dev: read only (mail and calendar)");
+    expect(describeGrant(g("full"))).toBe("ops@acme.dev: full access (mail and calendar)");
+    expect(describeGrant(g("full", ["*@acme.dev"]))).toBe("ops@acme.dev: full access (mail and calendar); only to *@acme.dev");
     expect(describeGrants([])[0]).toMatch(/no mailbox or calendar access yet/);
     expect(describeGrants([], [{ name: "WHOOP", slug: "whoop", level: "read" }])).toEqual(["WHOOP (whoop__… tools): read only"]);
-    expect(describeGrants([g(["read"], "draft_only")], [{ name: "Notion", slug: "notion", level: "full" }])).toEqual([
-      "ops@acme.dev: read only (can't draft or send)",
+    expect(describeGrants([g("read")], [{ name: "Notion", slug: "notion", level: "full" }])).toEqual([
+      "ops@acme.dev: read only (mail and calendar)",
       "Notion (notion__… tools): full access",
     ]);
-    expect(describeGrant(g(["calendar.read"], "draft_only"))).toBe("ops@acme.dev: calendar.read");
-    expect(describeGrant(g(["read", "calendar.read"], "draft_only"))).toBe("ops@acme.dev: read, calendar.read; mail read only (can't draft or send)");
-    expect(describeGrant({ ...g(["read", "calendar.read", "calendar.write"], "draft_only"), calendarScope: ["team@group.calendar.google.com"] })).toBe(
-      "ops@acme.dev: read, calendar.read, calendar.write; mail read only (can't draft or send); calendar changes need your approval in the console; only calendar team@group.calendar.google.com",
-    );
-    expect(describeGrant({ ...g(["read", "calendar.write"], "draft_only"), calendarWriteMode: "direct" })).toBe("ops@acme.dev: read, calendar.write; mail read only (can't draft or send); calendar changes apply directly");
   });
 });
 
 describe("connect", () => {
   it("prints the grant the approver actually chose (not a draft-only boilerplate)", async () => {
-    api.grants = [{ accountId: "acc_1", accountEmail: "ops@acme.dev", capabilities: ["read", "draft", "send", "organize"], labelScope: null, sendMode: "approval" }];
+    api.grants = [{ accountId: "acc_1", accountEmail: "ops@acme.dev", level: "full", allowTo: [] }];
     api.pollScript = [approved()];
     expect(await runConnect(api.url, { tool: "claude-code" }, { pollIntervalMs: 10 })).toBe(CONNECT_EXIT.approved);
     expect(plain()).toContain("Access granted");
-    expect(plain()).toContain("ops@acme.dev: read, draft, send, organize; sends need your approval in the console");
+    expect(plain()).toContain("ops@acme.dev: full access (mail and calendar)");
     expect(plain()).not.toMatch(/New grants are draft-only/);
     expect(output).not.toContain(FAKE_KEY);
   });
@@ -101,15 +88,15 @@ describe("connect", () => {
 
   it("lists connection access, and drops the mail-only next steps without a mailbox", async () => {
     api.grants = [];
-    api.connections = [{ name: "Notion", slug: "notion", level: "ask" }];
+    api.connections = [{ name: "Notion", slug: "notion", level: "full" }];
     api.pollScript = [approved()];
     expect(await runConnect(api.url, { tool: "hermes" }, { pollIntervalMs: 10 })).toBe(CONNECT_EXIT.approved);
     const text = plain();
-    expect(text).toContain("Notion (notion__… tools): ask before risky actions");
+    expect(text).toContain("Notion (notion__… tools): full access");
     expect(text).not.toContain("no mailbox or calendar access yet");
     expect(text).not.toContain("sends a test email");
     expect(text).not.toContain("when mail arrives");
-    expect(text).toContain("--types approval.requested,connection.auth_failed,connection.expiring");
+    expect(text).toContain("--types connection.auth_failed,connection.expiring");
   });
 
   it("uses the address the CLI connected to for the approve link when the public URL differs", async () => {
@@ -216,11 +203,10 @@ describe("listen", () => {
   it("shows the access in plain words and logs a grant change", async () => {
     saveProfile("default", baseProfile());
     const l = start({ grantsRefreshMs: 100 });
-    await waitFor(() => plain().includes("me@example.com: read, draft; can't send"), 5000, "initial grants");
-    expect(plain()).not.toContain("draft_only");
-    api.grants = [{ accountId: "acc_1", accountEmail: "me@example.com", capabilities: ["read", "draft", "send"], labelScope: null, sendMode: "approval" }];
+    await waitFor(() => plain().includes("me@example.com: read only (mail and calendar)"), 5000, "initial grants");
+    api.grants = [{ accountId: "acc_1", accountEmail: "me@example.com", level: "full", allowTo: [] }];
     await waitFor(() => plain().includes("Access changed in the console"), 5000, "grant change");
-    expect(plain()).toContain("me@example.com: read, draft, send; sends need your approval in the console");
+    expect(plain()).toContain("me@example.com: full access (mail and calendar)");
     const changes = plain().match(/Access changed/g)!.length;
     await new Promise((r) => setTimeout(r, 300));
     expect(plain().match(/Access changed/g)!.length).toBe(changes); // only on a change
@@ -231,7 +217,7 @@ describe("listen", () => {
   it("listen status reports the access in plain words", async () => {
     saveProfile("default", baseProfile());
     await printStatus("default");
-    expect(plain()).toMatch(/Access\s+me@example.com: read, draft; can't send/);
+    expect(plain()).toMatch(/Access\s+me@example.com: read only \(mail and calendar\)/);
   });
 
   // The seqs the handler ran for, sorted: events run two at a time (default --concurrency 2), each `echo >>` its own

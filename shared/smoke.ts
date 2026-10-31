@@ -26,7 +26,7 @@ export interface SmokeAgentInput {
   name: string;
   /** The Gmail account: read + draft only, drafts addressed to its own address. */
   accountId: string;
-  /** The google-workspace connection, granted at "ask". */
+  /** The google-workspace connection, granted at "full". */
   connectionId: string;
 }
 

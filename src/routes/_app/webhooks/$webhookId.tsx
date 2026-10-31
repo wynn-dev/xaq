@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { ArrowLeftIcon, BotIcon, KeyRoundIcon, MoreHorizontalIcon, PencilIcon, Trash2Icon } from "lucide-react";
 import { useState } from "react";
-import { useCalendarNames } from "@/components/agents/calendar-scope-picker";
+import { useCalendarNames } from "@/components/webhooks/calendar-list";
 import { CopyField, QueryError, TimeAgo } from "@/components/common";
 import { confirm } from "@/components/confirm";
 import { Button } from "@/components/ui/button";

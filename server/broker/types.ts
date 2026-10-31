@@ -2,13 +2,13 @@
 // - the upstream manager (server/broker/upstream/*) implements ToolSource for remote MCP servers;
 // - native integrations (server/integrations/<id>/*) implement IntegrationPreset (+ ToolSource when native);
 // - the catalog (server/broker/catalog/*) implements ToolRegistry and pinning;
-// - policy and approvals (server/broker/policy/*) implement BrokerPolicy and BrokerCalls;
+// - policy (server/broker/policy/*) implements BrokerPolicy and BrokerCalls;
 // - the credential store (server/broker/credentials/*) implements CredentialStore and TokenRefresher;
 // - /mcp and search mode only consume ToolRegistry and BrokerCalls.
 // Members marked FROZEN are relied on across workstreams: change them only with the lead's agreement.
 
 /** One choice per connection (and per agent × connection): Wynn's model. FROZEN. */
-export type AccessLevel = "full" | "ask" | "read";
+export type AccessLevel = "full" | "read";
 
 /** Where a tool's risk classification came from. FROZEN. */
 export type ClassSource = "preset" | "annotation" | "heuristic";
@@ -33,19 +33,13 @@ export interface ToolDef {
   annotations?: ToolAnnotations;
 }
 
-/** Classification used by levels and approvals. FROZEN. */
+/** Classification used by levels. FROZEN. */
 export interface ToolClass {
-  /** Irreversible: delete, send, publish/share externally, payments. Asks at the "ask" level. */
+  /** Irreversible: delete, send, publish/share externally, payments. Never listed at the "read" level. */
   risky: boolean;
   /** Listed at the "read" level. */
   read: boolean;
   source: ClassSource;
-  /**
-   * JSON Pointer (RFC 6901) into the call's arguments naming the target, offered for "always allow … for this
-   * target" (e.g. `/page_ids`). Not dot paths: `{"a.b": x}` vs `{a: {b: y}}` must never be confused. The value may
-   * be an array of ids; a rule matches only when every element is covered.
-   */
-  targetPath?: string;
 }
 
 /** A content block of a tool result (MCP CallToolResult content; kept SDK-agnostic). */
@@ -351,20 +345,16 @@ export interface ToolRegistry {
 }
 
 /** The policy's verdict on one call. FROZEN. */
-export type CallDecision =
-  /** `ruleId`: the "always allow" rule that let a risky call through at the "ask" level (audit). */
-  | { kind: "allow"; ruleId?: string }
-  | { kind: "ask" }
-  | { kind: "deny"; reason: string; message: string };
+export type CallDecision = { kind: "allow" } | { kind: "deny"; reason: string; message: string };
 
 export interface BrokerPolicy {
-  /** Level + risk + "always allow" rules + caps. Never runs the call. */
-  decide(agentId: string, tool: RegisteredTool, args: Record<string, unknown>): CallDecision;
+  /** Connection state + the agent's level. Never runs the call. */
+  decide(tool: RegisteredTool): CallDecision;
 }
 
 /**
  * The single entry point for running a broker tool, used by /mcp and search mode: resolve, decide, then run
- * (with output wrapping, token scrubbing, audit) or queue an approval and return `pending_approval` at once. FROZEN.
+ * (with output wrapping, token scrubbing, audit). FROZEN.
  */
 export interface BrokerCalls {
   call(agentId: string, exposedName: string, args: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult>;

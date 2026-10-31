@@ -1,23 +1,9 @@
-// The console's broker decisions (src/components/connections/connection-flow.ts, approvals/mcp-call.ts,
-// setup/first-run.ts) against the real /api/connections and approval DTOs: connection status in words, the Add
-// connection request sequence, agent access over per-connection grants, the mcp.call card (targets, warnings, done
-// states), and first run with Google optional (without disturbing the Google wizard).
+// The console's broker decisions (src/components/connections/connection-flow.ts, setup/first-run.ts) against the
+// real /api/connections DTOs: connection status in words, the Add connection request sequence, agent access over
+// per-connection grants, and first run with Google optional (without disturbing the Google wizard).
 import { describe, expect, it } from "vitest";
 import type * as Shared from "../shared/types.ts";
 import type { SetupState } from "../shared/types.ts";
-import {
-  alwaysAllowFor,
-  argsHaveInvisible,
-  asMcpApproval,
-  atPointer,
-  cardWarnings,
-  doneState,
-  escapeInvisible,
-  isCallView,
-  targetChoices,
-  targetLabel,
-  targetName,
-} from "../src/components/approvals/mcp-call.ts";
 import {
   agentConnections,
   authControl,
@@ -54,7 +40,6 @@ import { fixtureManifest } from "./extension-fixtures.ts";
 
 const NOW = Date.parse("2026-10-16T12:00:00.000Z");
 const inDays = (d: number) => new Date(NOW + d * 86_400_000).toISOString();
-const ch = (cp: number) => String.fromCodePoint(cp);
 
 const conn = (over: Partial<Shared.ConnectionView> = {}): Shared.ConnectionView => ({
   id: "con_1",
@@ -66,7 +51,7 @@ const conn = (over: Partial<Shared.ConnectionView> = {}): Shared.ConnectionView 
   name: "Notion",
   url: "https://mcp.notion.com/mcp",
   authType: "oauth",
-  levelDefault: "ask",
+  levelDefault: "full",
   privateTarget: null,
   status: "active",
   statusReason: null,
@@ -89,48 +74,6 @@ const conn = (over: Partial<Shared.ConnectionView> = {}): Shared.ConnectionView 
 const grant = (agentId: string, connectionId: string, level: Shared.AccessLevel): Shared.ConnectionGrant => ({ agentId, connectionId, level, createdAt: inDays(-1), updatedAt: inDays(-1) });
 
 const probe = (over: Partial<Shared.ConnectionProbe> = {}): Shared.ConnectionProbe => ({ reachable: true, auth: "none", message: "", ...over });
-
-const call = (over: Partial<Shared.McpCallApproval> = {}, detail: Partial<Shared.McpCallApprovalDetail> = {}): Shared.McpCallApproval => ({
-  id: "apr_1",
-  agentId: "agt_1",
-  agentName: "Hermes",
-  status: "pending",
-  to: [],
-  cc: [],
-  bcc: [],
-  subject: "",
-  body: "",
-  threadId: null,
-  attachments: [],
-  reason: null,
-  decidedAt: null,
-  decisionNote: null,
-  sentMessageId: null,
-  error: null,
-  createdAt: inDays(0),
-  expiresAt: inDays(1),
-  kind: "mcp.call",
-  accountId: null,
-  accountEmail: null,
-  draftId: null,
-  connectionId: "con_1",
-  call: { tool: "notion-delete-pages", exposedName: "notion__notion-delete-pages", args: '{"page_id":"abc"}', argsSha256: "00", pinHash: "11", ...detail },
-  ...over,
-});
-
-const view = (over: Partial<Shared.McpCallApprovalView> = {}): Shared.McpCallApprovalView => ({
-  approval: call(),
-  connection: { id: "con_1", slug: "notion", name: "Notion", status: "active" },
-  tool: { exposedName: "notion__notion-delete-pages", name: "notion-delete-pages", title: null, risky: true, read: false, targetPath: "/page_id", level: "ask", pinMatches: true },
-  argsDisplay: '{"page_id":"abc"}',
-  pretty: '{\n  "page_id": "abc"\n}',
-  recipients: [],
-  urls: [],
-  target: { path: "/page_id", value: "abc" },
-  argumentPaths: ["/page_id"],
-  argsIntact: true,
-  ...over,
-});
 
 const notion: Shared.PresetView = { id: "notion", displayName: "Notion", slug: "notion", kind: "remote_http", url: "https://mcp.notion.com/mcp", authType: "oauth", setupSteps: [], reconnectPolicy: { maxLifetimeDays: 180 }, userServer: null, official: true };
 const whoop: Shared.PresetView = {
@@ -203,7 +146,7 @@ describe("T3 Code in the console: a user-named server, expiry and granted scopes
     // A server that doesn't sign in isn't T3.
     expect(draftProblems({ ...ready, probe: probe({ auth: "none" }) }, [])[0]).toMatch(/doesn't look like a T3 Code server/);
     // The create body carries the preset, the address (path added) and a typed name.
-    expect(createInput(ready)).toEqual({ preset: "t3code", url: "http://100.104.249.49:3773/mcp", slug: "t3-100-104-249-49", levelDefault: "ask" });
+    expect(createInput(ready)).toEqual({ preset: "t3code", url: "http://100.104.249.49:3773/mcp", slug: "t3-100-104-249-49", levelDefault: "full" });
     expect(createInput({ ...ready, name: "forge" }).name).toBe("forge");
   });
 
@@ -264,11 +207,11 @@ describe("T3 Code in the console: a user-named server, expiry and granted scopes
 
 describe("Agent access over per-connection grants", () => {
   const list = [conn(), conn({ id: "con_2", slug: "t3", name: "T3 forge" })];
-  const grants = { con_1: [grant("agt_1", "con_1", "ask"), grant("agt_2", "con_1", "full")], con_2: [grant("agt_2", "con_2", "read")] };
+  const grants = { con_1: [grant("agt_1", "con_1", "full"), grant("agt_2", "con_1", "full")], con_2: [grant("agt_2", "con_2", "read")] };
 
   it("shows one agent's level on every connection, 'none' without a grant", () => {
     expect(agentConnections("agt_1", list, grants).map((r) => [r.name, r.level])).toEqual([
-      ["Notion", "ask"],
+      ["Notion", "full"],
       ["T3 forge", "none"],
     ]);
   });
@@ -276,7 +219,7 @@ describe("Agent access over per-connection grants", () => {
   it("changes one agent's level and keeps everyone else's; 'none' drops the grant", () => {
     expect(grantsWith(grants.con_1, "agt_1", "read")).toEqual({ grants: [{ agentId: "agt_2", level: "full" }, { agentId: "agt_1", level: "read" }] });
     expect(grantsWith(grants.con_1, "agt_1", "none")).toEqual({ grants: [{ agentId: "agt_2", level: "full" }] });
-    expect(grantsWith([], "agt_3", "ask")).toEqual({ grants: [{ agentId: "agt_3", level: "ask" }] });
+    expect(grantsWith([], "agt_3", "full")).toEqual({ grants: [{ agentId: "agt_3", level: "full" }] });
   });
 });
 
@@ -320,12 +263,12 @@ describe("Add connection", () => {
     expect(why).toContain("only at this exact address");
   });
 
-  it("defaults to 'Ask before risky actions' and all agents (agentIds omitted), with no tool review", () => {
+  it("defaults to full access and all agents (agentIds omitted), with no tool review", () => {
     const d = emptyDraft(notion);
-    expect(d.level).toBe("ask");
+    expect(d.level).toBe("full");
     expect(d.agents).toBe("all");
-    expect(LEVEL_INFO.ask.label).toBe("Ask before risky actions");
-    expect(createInput(d)).toEqual({ preset: "notion", slug: "notion", levelDefault: "ask" });
+    expect(LEVEL_INFO.full.label).toBe("Full access");
+    expect(createInput(d)).toEqual({ preset: "notion", slug: "notion", levelDefault: "full" });
     expect(connectInput(d)).toEqual({});
   });
 
@@ -339,7 +282,7 @@ describe("Add connection", () => {
     expect(draftProblems(allowed, ["local-8787"])).toEqual(["Paste the API key or token."]);
     const ready = { ...allowed, headerValue: " sk-123 ", agents: ["agt_1"] };
     expect(draftProblems(ready, ["local-8787"])).toEqual([]);
-    expect(createInput(ready)).toEqual({ url: d.url, slug: "local-8787", levelDefault: "ask", agentIds: ["agt_1"] });
+    expect(createInput(ready)).toEqual({ url: d.url, slug: "local-8787", levelDefault: "full", agentIds: ["agt_1"] });
     expect(connectInput(ready)).toEqual({ header: { name: "Authorization", value: "Bearer sk-123" } });
     expect(connectInput({ ...ready, headerValue: "Bearer sk-123" }).header?.value).toBe("Bearer sk-123");
     expect(connectInput({ ...ready, headerName: "X-API-Key" }).header).toEqual({ name: "X-API-Key", value: "sk-123" });
@@ -348,14 +291,14 @@ describe("Add connection", () => {
   });
 
   it("gives a connection created early for the allow the rest of the draft before connecting", () => {
-    const created = conn({ name: "127.0.0.1", slug: "local-8787", levelDefault: "ask" });
+    const created = conn({ name: "127.0.0.1", slug: "local-8787", levelDefault: "read" });
     const d = { ...emptyDraft(), name: "Brightspace", slug: "brightspace", level: "full" as const, agents: "all" as const };
     expect(finishEarlyCreate(d, created, ["agt_1", "agt_2"])).toEqual({
       patch: { name: "Brightspace", slug: "brightspace", levelDefault: "full", allAgents: true },
       grants: { grants: [{ agentId: "agt_1", level: "full" }, { agentId: "agt_2", level: "full" }] },
     });
-    const same = { ...emptyDraft(), name: "127.0.0.1", slug: "local-8787", agents: ["agt_2"] };
-    expect(finishEarlyCreate(same, created, ["agt_1", "agt_2"])).toEqual({ patch: null, grants: { grants: [{ agentId: "agt_2", level: "ask" }] } });
+    const same = { ...emptyDraft(), name: "127.0.0.1", slug: "local-8787", level: "read" as const, agents: ["agt_2"] };
+    expect(finishEarlyCreate(same, created, ["agt_1", "agt_2"])).toEqual({ patch: null, grants: { grants: [{ agentId: "agt_2", level: "read" }] } });
   });
 
   it("checks a preset's setup inputs and sends them trimmed", () => {
@@ -379,74 +322,6 @@ describe("Upstream sign-in", () => {
   });
 });
 
-describe("mcp.call approval card", () => {
-  it("shows invisible characters as JSON escapes, and notices escaped ones", () => {
-    const raw = JSON.stringify({ title: `Hi${ch(0x200b)}there${ch(0x202e)}`, tag: `x${ch(0xe0041)}` });
-    expect(escapeInvisible(raw)).toContain("Hi\\u200Bthere\\u202E");
-    expect(escapeInvisible(raw)).toContain("x\\uDB40\\uDC41");
-    expect(JSON.parse(escapeInvisible(raw))).toEqual(JSON.parse(raw));
-    expect(escapeInvisible("plain é ✓")).toBe("plain é ✓");
-    expect(argsHaveInvisible(raw)).toBe(true);
-    expect(argsHaveInvisible('{"a":"\\u200b"}')).toBe(true);
-    expect(argsHaveInvisible('{"a":"ok"}')).toBe(false);
-  });
-
-  it("labels 'only for this target', one rule per item for an array target", () => {
-    expect(targetLabel({ path: "/parent/page_id", value: "abc" })).toBe("Only for page_id abc");
-    expect(targetLabel({ path: "/to", value: `a${ch(0x200b)}b` })).toBe("Only for to a\\u200Bb");
-    expect(targetLabel({ path: "/page_ids", value: ["p1", "p2", "p3"] })).toBe("Only for these 3 items");
-    expect(targetLabel({ path: "/page_ids", value: ["p1"] })).toBe("Only for this item (p1)");
-    expect(targetName("/a~1b/c~0d")).toBe("c~d");
-  });
-
-  it("offers the tool's own target, else any argument the server lists (argumentPaths)", () => {
-    const own = targetChoices(view());
-    expect(own).toEqual([{ path: "/page_id", label: "Only for page_id abc", own: true }]);
-    expect(alwaysAllowFor(own[0]!)).toEqual({ target: true });
-    const generic = view({
-      target: null,
-      argumentPaths: ["/channel", "/thread/id", "/missing"],
-      approval: call({}, { args: '{"channel":"#ops","thread":{"id":7},"text":"hi"}' }),
-    });
-    expect(targetChoices(generic)).toEqual([
-      { path: "/channel", label: "Only for channel #ops", own: false },
-      { path: "/thread/id", label: "Only for id 7", own: false },
-    ]);
-    expect(alwaysAllowFor(targetChoices(generic)[1]!)).toEqual({ target: true, targetPath: "/thread/id" });
-    expect(alwaysAllowFor(null)).toEqual({ target: false });
-    expect(atPointer({ a: [{ b: 1 }] }, "/a/0/b")).toBe(1);
-    expect(atPointer({ a: 1 }, "/nope")).toBeUndefined();
-  });
-
-  it("warns before deciding when the call can't run as asked", () => {
-    expect(cardWarnings(view())).toEqual([]);
-    expect(cardWarnings(view({ argsIntact: false }))[0]).toMatch(/fingerprint/);
-    expect(cardWarnings(view({ tool: null }))[0]).toMatch(/can't reach this tool/);
-    expect(cardWarnings(view({ connection: null }))[0]).toMatch(/connection was removed/);
-    expect(cardWarnings(view({ connection: { id: "con_1", slug: "notion", name: "Notion", status: "needs_reauth" } }))[0]).toMatch(/Notion isn't working.*needs reauth/);
-  });
-
-  it("says plainly what happened after a decision, including an unknown outcome", () => {
-    expect(doneState(call({ status: "sent" }), "always").title).toBe("Approved, and always allowed");
-    expect(doneState(call({ status: "sent" }), "approve").description).toMatch(/^The call ran/);
-    expect(doneState(call({ status: "rejected" }), "reject").description).toMatch(/Nothing ran/);
-    expect(doneState(call({ status: "expired" }), null).title).toBe("This request expired");
-    const unknown = doneState(call({ status: "failed", error: "timeout" }, { outcomeUnknown: true }), "approve");
-    expect(unknown.title).toBe("Approved: outcome unknown");
-    expect(unknown.description).toMatch(/may or may not have run/);
-    expect(doneState(call({ status: "failed", error: "Upstream said no." }), "approve").description).toMatch(/^Upstream said no\./);
-    expect(doneState(call({ status: "pending", error: "Reconnect Notion. Approve again once that's fixed." }), "approve")).toMatchObject({ title: "Not run yet", tone: "bad" });
-  });
-
-  it("tells mcp.call approvals and their card view from mail ones", () => {
-    const mail = { ...call(), kind: "send", call: undefined, accountId: "acc_1", accountEmail: "me@example.com", draftId: "d1", connectionId: null } as unknown as Shared.Approval;
-    expect(asMcpApproval(mail)).toBeNull();
-    const c = call();
-    expect(asMcpApproval(c)).toBe(c);
-    expect(isCallView(view())).toBe(true);
-    expect(isCallView(c)).toBe(false);
-  });
-});
 describe("First run with Google optional", () => {
   const fresh: Pick<SetupState, "googleClientConfigured" | "accountsConnected" | "gcpProjectId"> = { googleClientConfigured: false, accountsConnected: 0, gcpProjectId: null };
 
@@ -513,14 +388,6 @@ describe("Review fixes (#65)", () => {
     expect(connectionStatusView({ ...fresh, status: "needs_reauth", authType: "header" }, NOW).label).toBe("Not signed in");
     expect(connectionStatusView({ ...fresh, authType: "none" }, NOW).label).toBe("Active");
     expect(connectionStatusView(conn({ toolsCachedAt: inDays(-1) }), NOW).label).toBe("Active");
-  });
-
-  it("escapes controls in one-line places and in target names; an empty array target offers no 'only for'", () => {
-    expect(escapeInvisible("a\nb\tc\u0007")).toBe("a\nb\tc\\u0007");
-    expect(escapeInvisible("a\nb\tc", true)).toBe("a\\u000Ab\\u0009c");
-    expect(targetName(`/to${ch(0x202e)}x`)).toBe("to\\u202Ex");
-    expect(targetLabel({ path: "/to", value: "a@b.c\nBcc: evil@x.y" })).toBe("Only for to a@b.c\\u000ABcc: evil@x.y");
-    expect(targetChoices(view({ target: { path: "/page_ids", value: [] } }))).toEqual([]);
   });
 
   it("a ?step= link always opens the Google wizard, whatever first run chose", () => {

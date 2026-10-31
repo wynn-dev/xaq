@@ -184,14 +184,6 @@ describe("T3 Code extension: shape and risk table", () => {
     expect(steps.find((s) => s.id === "access")!.body).toMatch(/browser profile on that computer with its saved logins/);
   });
 
-  it("targets for always-allow come from the tool's own id argument", () => {
-    expect(classifyT3Tool(t3Tool("t3_project_delete", { projectId: {}, force: {} }))?.targetPath).toBe("/projectId");
-    expect(classifyT3Tool(t3Tool("t3_project_update", { projectId: {} }))?.targetPath).toBe("/projectId");
-    expect(classifyT3Tool(t3Tool("delete_scheduled_task", { scheduledTaskId: {} }))?.targetPath).toBe("/scheduledTaskId");
-    expect(classifyT3Tool(t3Tool("t3_project_delete", {}))?.targetPath).toBeUndefined();
-    expect(classifyT3Tool(t3Tool("t3_thread_send", { threadId: {} }))?.targetPath).toBeUndefined();
-  });
-
   it("the name-check exemption covers exactly the reviewed names; everything else still gets it", () => {
     expect([...T3_NAME_CHECK_EXEMPT].sort()).toEqual(["t3_thread_merge_back", "t3_thread_send", "t3_thread_send_attachments"]);
     // Every non-risky table entry whose name has a risky verb is in the exemption, and nothing else is.
@@ -577,11 +569,11 @@ async function agentClient(s: ApiEnv, apiKey: string, path = "/mcp") {
 const text = (r: unknown) => (r as { content: { text?: string }[] }).content.map((c) => c.text ?? "").join("\n");
 
 describe("T3 Code connection end to end (fake T3: DCR, PKCE, iss, no refresh, 30 days)", () => {
-  it("connects with DCR, PKCE S256, state, resource and iss; records extra scopes; agents list and call; risky asks", async () => {
+  it("connects with DCR, PKCE S256, state, resource and iss; records extra scopes; agents list and call", async () => {
     const up = await fakeT3("orchestration:read orchestration:operate settings:write source-control:write");
     const s = await apiEnv();
     const { agent, apiKey } = s.ctx.policy.createAgent({ name: "Hermes" });
-    const { con, authorizeUrl, callback } = await connectT3(s, up, { agentIds: [agent.id], levelDefault: "ask" });
+    const { con, authorizeUrl, callback } = await connectT3(s, up, { agentIds: [agent.id], levelDefault: "full" });
 
     // The URL got T3's MCP path; name and slug come from the host.
     expect(con).toMatchObject({ preset: "t3code", url: up.url, name: new URL(up.url).host, slug: "t3-127-0-0-1", authType: "oauth" });
@@ -605,23 +597,20 @@ describe("T3 Code connection end to end (fake T3: DCR, PKCE, iss, no refresh, 30
     const audit = s.ctx.db.get<{ detail: string }>("SELECT detail FROM audit_log WHERE action = 'connection.connect' AND target = ? AND actor_type = 'admin' AND detail LIKE '%scope%' ORDER BY id DESC LIMIT 1", con.id)!;
     expect(JSON.parse(audit.detail)).toMatchObject({ refresh: false, scope: "orchestration:read orchestration:operate settings:write source-control:write" });
 
-    // The agent: T3's real tool names, namespaced; a read runs, a thread send goes straight through, delete asks.
+    // The agent: T3's real tool names, namespaced; a read runs, a thread send goes straight through, and so does delete.
     const client = await agentClient(s, apiKey);
     const names = (await client.listTools()).tools.map((t) => t.name);
     expect(names).toEqual(expect.arrayContaining(["t3-127-0-0-1__t3_project_list", "t3-127-0-0-1__t3_thread_send", "t3-127-0-0-1__t3_project_delete"]));
     expect(text(await client.callTool({ name: "t3-127-0-0-1__t3_project_list", arguments: {} }))).toContain('"title":"demo"');
     expect(text(await client.callTool({ name: "t3-127-0-0-1__t3_thread_send", arguments: { threadId: "th1", message: "hi" } }))).toContain("queued to th1");
-    const pending = text(await client.callTool({ name: "t3-127-0-0-1__t3_project_delete", arguments: { projectId: "p1" } }));
-    expect(pending).toContain("pending_approval");
-    const called = () => up.requests.filter((r) => r.rpcMethod === "tools/call").map((r) => (JSON.parse(r.body) as { params: { name: string } }).params.name);
-    expect(called()).not.toContain("t3_project_delete");
+    const deleted = text(await client.callTool({ name: "t3-127-0-0-1__t3_project_delete", arguments: { projectId: "p1" } }));
+    expect(deleted).toContain("deleted p1");
 
     // Search mode: the same tools by their real names, under the same policy.
     const search = await agentClient(s, apiKey, "/mcp?mode=search");
     expect(text(await search.callTool({ name: "search_tools", arguments: { query: "list projects" } }))).toContain("t3-127-0-0-1__t3_project_list");
     expect(text(await search.callTool({ name: "call_read_tool", arguments: { name: "t3-127-0-0-1__t3_project_list", arguments: {} } }))).toContain('"title":"demo"');
-    expect(text(await search.callTool({ name: "call_write_tool", arguments: { name: "t3-127-0-0-1__t3_project_delete", arguments: { projectId: "p2" } } }))).toContain("pending_approval");
-    expect(called()).not.toContain("t3_project_delete");
+    expect(text(await search.callTool({ name: "call_write_tool", arguments: { name: "t3-127-0-0-1__t3_project_delete", arguments: { projectId: "p2" } } }))).toContain("deleted p2");
   }, 30_000);
 
   it("Read only in T3 grants less than asked: recorded as is", async () => {
@@ -706,8 +695,8 @@ describe("T3 Code connection end to end (fake T3: DCR, PKCE, iss, no refresh, 30
     const s = await apiEnv();
     const a = s.ctx.policy.createAgent({ name: "Hermes" }).agent;
     const b = s.ctx.policy.createAgent({ name: "Codex" }).agent;
-    const { con, authorizeUrl: first } = await connectT3(s, up, { name: "forge", agentIds: [a.id, b.id], levelDefault: "ask" });
-    expect((await s.api(`/connections/${con.id}/grants`, { method: "PUT", json: { grants: [{ agentId: a.id, level: "read" }, { agentId: b.id, level: "ask" }] } })).status).toBe(200);
+    const { con, authorizeUrl: first } = await connectT3(s, up, { name: "forge", agentIds: [a.id, b.id], levelDefault: "full" });
+    expect((await s.api(`/connections/${con.id}/grants`, { method: "PUT", json: { grants: [{ agentId: a.id, level: "read" }, { agentId: b.id, level: "full" }] } })).status).toBe(200);
     // An agent added later doesn't get it ("All agents" is off): a reconnect mustn't change that.
     const c = s.ctx.policy.createAgent({ name: "Cursor" }).agent;
 
@@ -718,10 +707,10 @@ describe("T3 Code connection end to end (fake T3: DCR, PKCE, iss, no refresh, 30
     const { authorizeUrl: again } = await signIn(s, up, con.id);
 
     const after = await json(await s.api(`/connections/${con.id}`));
-    expect(after).toMatchObject({ status: "active", expired: false, name: "forge", slug: con.slug, levelDefault: "ask", allAgents: false, agents: 2 });
+    expect(after).toMatchObject({ status: "active", expired: false, name: "forge", slug: con.slug, levelDefault: "full", allAgents: false, agents: 2 });
     expect(Date.parse(after.expiresAt)).toBeGreaterThan(Date.now() + 29 * DAY);
     const grants = (await json(await s.api(`/connections/${con.id}/grants`))) as { agentId: string; level: string }[];
-    expect(grants.map((g) => `${g.agentId}:${g.level}`).sort()).toEqual([`${a.id}:read`, `${b.id}:ask`].sort());
+    expect(grants.map((g) => `${g.agentId}:${g.level}`).sort()).toEqual([`${a.id}:read`, `${b.id}:full`].sort());
     expect(grants.some((g) => g.agentId === c.id)).toBe(false);
     // The sign-in asks T3 for no scope it didn't ask for (or grant) before.
     const scopes = (u: URL) => new Set((u.searchParams.get("scope") ?? "").split(" ").filter(Boolean));
@@ -753,7 +742,7 @@ describe("T3 Code connection end to end (fake T3: DCR, PKCE, iss, no refresh, 30
     expect((await early.listTools()).tools.map((t) => t.name)).not.toContain("search_tools");
     expect(agentSearchSettings(s.ctx.db, agent.id).mode).toBe("direct");
 
-    await connectT3(s, up, { agentIds: [agent.id], levelDefault: "ask" });
+    await connectT3(s, up, { agentIds: [agent.id], levelDefault: "full" });
     const direct = await agentClient(s, apiKey);
     const names = (await direct.listTools()).tools.map((t) => t.name);
     expect(names.filter((n) => n.startsWith("t3-127-0-0-1__"))).toHaveLength(3 + reads.length);
@@ -768,7 +757,7 @@ describe("T3 Code connection end to end (fake T3: DCR, PKCE, iss, no refresh, 30
     expect(listed).not.toContain("t3-127-0-0-1__t3_thread_list");
     expect(text(await search.callTool({ name: "search_tools", arguments: { query: "list threads" } }))).toContain("t3-127-0-0-1__t3_thread_list");
     expect(text(await search.callTool({ name: "t3-127-0-0-1__t3_thread_list", arguments: {} }))).toContain("ran t3_thread_list");
-    expect(text(await search.callTool({ name: "t3-127-0-0-1__t3_project_delete", arguments: { projectId: "p9" } }))).toContain("pending_approval");
+    expect(text(await search.callTool({ name: "t3-127-0-0-1__t3_project_delete", arguments: { projectId: "p9" } }))).toContain("deleted p9");
   }, 30_000);
 
   it("several T3 servers are several connections, with unique names per owner", async () => {

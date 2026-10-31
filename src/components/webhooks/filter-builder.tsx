@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { type Account, CALENDAR_EVENT_TYPES, EVENT_TYPES, type EventType, isCalendarEventType, type WebhookFilter } from "@shared/types";
 import { ShieldAlertIcon } from "lucide-react";
-import { CalendarChecklist, useCalendars } from "@/components/agents/calendar-scope-picker";
+import { CalendarChecklist, useCalendars } from "@/components/webhooks/calendar-list";
 import { ChipsInput } from "@/components/chips-input";
 import { LabelMultiSelect } from "@/components/label-multi-select";
 import { Checkbox } from "@/components/ui/checkbox";

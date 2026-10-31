@@ -1,5 +1,5 @@
 // Console-side logic of the setup wizard's last mile: the Verify checks, the commands the console
-// prints (they must match what `connect` prints), and grants in plain words.
+// prints (they must match what `connect` prints).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentTool } from "../shared/agent-api.ts";
@@ -7,7 +7,6 @@ import { type AuditEntry, isMcpToolAction, type ListenerInfo, type MailEvent, ty
 import { printNextSteps } from "../server/listen/connect.ts";
 import type { Profile } from "../server/listen/profile.ts";
 import { recipe } from "../server/listen/recipes.ts";
-import { grantInWords } from "../src/components/agents/grant-words.ts";
 import { deniedDescription, linkedPairing } from "../src/components/approvals/pairing-link.ts";
 import { listenerHandled } from "../src/components/agents/listener-handled.ts";
 import { allStepsDone, type SetupDraft, showsSetupLink, skippedPatch, STEP_META, STEP_IDS, startsVerify, type StepId, type StepStatus, stepStatuses, verifiedPatch, verifyDoneHeading, wizardStep } from "../src/components/setup/steps.ts";
@@ -314,23 +313,6 @@ describe("connectCommands matches what `connect` prints", () => {
 });
 
 // ───────────── Grants in plain words ─────────────
-
-describe("grantInWords", () => {
-  it("never reads as sending for draft_only", () => {
-    expect(grantInWords({ capabilities: ["read", "draft", "send"], sendMode: "draft_only" })).toBe("Can read and save drafts; can't send");
-    expect(grantInWords({ capabilities: ["read", "send"], sendMode: "draft_only" })).toBe("Can read and save drafts; can't send");
-  });
-  it("read only", () => {
-    expect(grantInWords({ capabilities: ["read"], sendMode: "draft_only" })).toBe("Can read; can't change or send anything");
-  });
-  it("approval and direct sending", () => {
-    expect(grantInWords({ capabilities: ["read", "draft", "send", "organize"], sendMode: "approval" })).toBe("Can read, save drafts, organize and send once you approve");
-    expect(grantInWords({ capabilities: ["read", "draft", "send", "organize", "trash"], sendMode: "direct" })).toBe("Can read, save drafts, organize, trash and send");
-  });
-  it("nothing granted", () => {
-    expect(grantInWords({ capabilities: [], sendMode: "direct" })).toBe("No access");
-  });
-});
 
 // ───────────── Stepper: when "Check that it works" is done ─────────────
 

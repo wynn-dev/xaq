@@ -1,12 +1,11 @@
-// Agent-facing calendar actions (workstream B, docs/calendar.md "Grants and policy"). Like AgentMail: each
-// method resolves the agent's grant, enforces capabilities, calendar scope, write mode, attendee allowTo
-// and send caps, and returns structured data that server/mcp/calendar.ts (C) formats. Denials throw
-// PolicyDenied (audited as "denied" with the reason); fixable input problems throw ToolError.
+// Agent-facing calendar actions (docs/calendar.md "Access"). Like AgentMail: each method resolves the agent's
+// grant, enforces full or read and the attendee allowTo, and returns structured data that
+// server/mcp/calendar.ts formats. Denials throw PolicyDenied (audited as "denied" with the reason); fixable
+// input problems throw ToolError.
 
 import type {
+  AccessLevel,
   Account,
-  CalendarApprovalDetail,
-  CalendarCapability,
   CalendarEventInput,
   CalendarEventSummary,
   CalendarInfo,
@@ -17,22 +16,12 @@ import type {
 import type { AppContext } from "../context.ts";
 import { type CalendarClient, type CalendarEventRaw, classifyCalendarError } from "../google/calendar.ts";
 import { GoogleApiError } from "../google/types.ts";
-import { Approvals, type ApprovalPayload } from "../mail/approvals.ts";
 import { AgentMail, MAX_RECIPIENTS, ToolError, type ToolTrace } from "../mail/agent.ts";
 import { cleanLine } from "../mail/content.ts";
-import {
-  assertAttendeesAllowed,
-  assertNoNewAttendees,
-  attendeeImpact,
-  calendarNotAccessible,
-  newCalendarEventId,
-  normalizeCalendarId,
-  resolveCalendarId,
-} from "../policy/calendar.ts";
-import { reserveSend } from "../policy/enforce.ts";
+import { assertAttendeesAllowed, attendeeImpact, calendarNotAccessible, newCalendarEventId, normalizeCalendarId, resolveCalendarId } from "../policy/calendar.ts";
 import type { AgentPrincipal } from "../policy/types.ts";
 import { HttpError, PolicyDenied } from "../util/errors.ts";
-import { addedAttendees, afterFailure, applyChange, CalendarApplyError, type CalendarWriteKind, isAmbiguous } from "./approvals.ts";
+import { afterFailure, applyChange, CalendarApplyError, type CalendarChange, type CalendarWriteKind, isAmbiguous } from "./apply.ts";
 import { cleanEventDescription } from "./content.ts";
 import { selfAttendee, summarizeEvent } from "./summary.ts";
 
@@ -46,14 +35,11 @@ export interface CalendarAccess {
 export interface WriteArgs {
   /** sendUpdates "all" (true, default) or "none". RSVP: whether the organizer is told. */
   notifyAttendees?: boolean;
-  /** Shown to the human when the write needs approval. */
-  reason?: string;
 }
 
 export type CalendarWriteOutcome =
   | { status: "applied"; event: CalendarEventSummary; notified: string[] }
-  | { status: "deleted"; calendarId: string; eventId: string; notified: string[] }
-  | { status: "pending_approval"; approvalId: string; expiresAt: string; message: string };
+  | { status: "deleted"; calendarId: string; eventId: string; notified: string[] };
 
 const EMAIL = /^[^\s@<>,;"]+@[^\s@<>,;"]+\.[^\s@<>,;"]+$/;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -61,8 +47,6 @@ const DATE_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{
 const RECURRENCE = /^(RRULE|EXRULE|RDATE|EXDATE)[:;][^\r\n]{1,500}$/i;
 const MAX_RESULTS = 250;
 const MAX_FREEBUSY = 50;
-
-const CAP_HINT = "Try again later, or ask your user to make this change in Google Calendar.";
 
 const eventNotAccessible = (eventId: string) =>
   `Event ${eventId} was not found or is not accessible to you. Use list_calendar_events to find events you can access.`;
@@ -175,7 +159,7 @@ export function validateEventInput(input: CalendarEventInput, kind: "create" | "
 }
 
 export class AgentCalendar {
-  /** Per call: the account's calendar list (null calendar scopes are checked against it). */
+  /** Per call: the account's calendar list (calendar ids are checked against it). */
   private readonly lists = new Map<string, Promise<CalendarInfo[]>>();
 
   constructor(
@@ -184,21 +168,19 @@ export class AgentCalendar {
     readonly trace: ToolTrace = { detail: {} },
   ) {}
 
-  /** Grants with any calendar capability, joined with their accounts. */
+  /** Grants joined with their accounts. */
   accessible(): { grant: Grant; account: Account }[] {
-    return new AgentMail(this.ctx, this.principal, this.trace)
-      .accessible()
-      .filter((x) => x.grant.capabilities.includes("calendar.read") || x.grant.capabilities.includes("calendar.write"));
+    return new AgentMail(this.ctx, this.principal, this.trace).accessible();
   }
 
   /**
-   * Picks the account (email or id; optional when exactly one qualifies) and checks `cap`. Sets
+   * Picks the account (email or id; optional when exactly one qualifies) and checks `level`. Sets
    * trace.accountId. ToolError calendar_not_granted / needs_reauth when the account can't serve calendar calls.
    */
-  resolve(account: string | undefined, cap: CalendarCapability): CalendarAccess {
+  resolve(account: string | undefined, level: AccessLevel): CalendarAccess {
     let found;
     try {
-      found = new AgentMail(this.ctx, this.principal, this.trace).resolve(account, cap);
+      found = new AgentMail(this.ctx, this.principal, this.trace).resolve(account, level);
     } catch (err) {
       const email = this.trace.accountId ? this.ctx.accounts.get(this.trace.accountId)?.email : null;
       if (err instanceof ToolError && err.code === "needs_reauth" && email) {
@@ -209,35 +191,6 @@ export class AgentCalendar {
     const { grant, account: acc } = found;
     if (!acc.calendar || acc.calendar.status === "not_granted") throw notGranted(acc.email);
     return { grant, account: acc, calendar: this.ctx.google.calendar(acc.id) };
-  }
-
-  /**
-   * Writes to an existing event read it first and their answers and denials describe it, so they need
-   * calendar.read as well as calendar.write.
-   */
-  private resolveExisting(account: string | undefined): CalendarAccess {
-    const a = this.resolve(account, "calendar.write");
-    if (!a.grant.capabilities.includes("calendar.read")) {
-      throw new PolicyDenied(
-        "capability",
-        `Your access to ${a.account.email} lets you create events but not read them, and changing an existing event needs both. Ask the operator to add calendar.read.`,
-      );
-    }
-    return a;
-  }
-
-  /** Like resolve, accepting any of several capabilities. */
-  private resolveAny(account: string | undefined, caps: CalendarCapability[]): CalendarAccess {
-    let lastErr: unknown;
-    for (const cap of caps) {
-      try {
-        return this.resolve(account, cap);
-      } catch (err) {
-        if (!(err instanceof PolicyDenied)) throw err;
-        lastErr = err;
-      }
-    }
-    throw lastErr;
   }
 
   /** The account's calendar list (ctx.calendar.calendars), once per call. */
@@ -255,29 +208,16 @@ export class AgentCalendar {
   }
 
   /**
-   * The calendar id to act on. Omitted means the account's primary calendar when it is in scope, else the
-   * only calendar in scope, else ToolError calendar_required. "primary" is the primary calendar. Out of
-   * scope → PolicyDenied calendar_scope (the message never reveals whether it exists). A null scope covers
-   * the calendars in the account's list, nothing else.
+   * The calendar id to act on. Omitted means the account's primary calendar; "primary" is the primary calendar.
+   * Any other id must be in the account's calendar list, else PolicyDenied calendar_not_found (the message never
+   * reveals whether it exists).
    */
   async calendarFor(a: CalendarAccess, calendarId: string | undefined): Promise<string> {
     const primary = a.account.email.toLowerCase();
-    const scope = a.grant.calendarScope;
-    let id: string;
-    if (calendarId?.trim()) {
-      id = resolveCalendarId(checkId("Calendar", calendarId), a.account.email);
-    } else if (scope === null || scope.includes(primary)) {
-      id = primary;
-    } else if (scope.length === 1) {
-      id = scope[0]!;
-    } else {
-      throw new ToolError("calendar_required", `Pass calendar_id; you can use these calendars: ${scope.join(", ")}.`);
-    }
-    const shown = calendarId?.trim() || id;
-    if (scope !== null) {
-      if (!scope.includes(id)) throw new PolicyDenied("calendar_scope", calendarNotAccessible(shown));
-    } else if (id !== primary && !(await this.listed(a)).some((c) => normalizeCalendarId(c.id) === id)) {
-      throw new PolicyDenied("calendar_scope", calendarNotAccessible(shown));
+    if (!calendarId?.trim()) return primary;
+    const id = resolveCalendarId(checkId("Calendar", calendarId), a.account.email);
+    if (id !== primary && !(await this.listed(a)).some((c) => normalizeCalendarId(c.id) === id)) {
+      throw new PolicyDenied("calendar_not_found", calendarNotAccessible(calendarId.trim()));
     }
     return id;
   }
@@ -300,12 +240,11 @@ export class AgentCalendar {
 
   // ───────────── Read ─────────────
 
-  /** Calendars in the grant's scope. */
+  /** The account's calendars. */
   async listCalendars(account: string | undefined): Promise<{ account: Account; calendars: CalendarInfo[] }> {
-    const a = this.resolveAny(account, ["calendar.read", "calendar.write"]);
-    const scope = a.grant.calendarScope;
-    const calendars = (await this.listed(a)).filter((c) => scope === null || scope.includes(normalizeCalendarId(c.id)));
-    this.trace.detail = { results: calendars.length, scoped: scope !== null };
+    const a = this.resolve(account, "read");
+    const calendars = await this.listed(a);
+    this.trace.detail = { results: calendars.length };
     return { account: a.account, calendars };
   }
 
@@ -314,7 +253,7 @@ export class AgentCalendar {
     account: string | undefined,
     p: { calendarId?: string; timeMin: string; timeMax: string; query?: string; maxResults?: number; pageToken?: string },
   ): Promise<{ account: Account; calendarId: string; events: CalendarEventSummary[]; nextPageToken: string | null; timeZone: string | null }> {
-    const a = this.resolve(account, "calendar.read");
+    const a = this.resolve(account, "read");
     const range = timeRange(p.timeMin, p.timeMax);
     if (p.query && p.query.length > 500) throw new ToolError("invalid_query", "query is too long (max 500 characters).");
     const calendarId = await this.calendarFor(a, p.calendarId);
@@ -344,7 +283,7 @@ export class AgentCalendar {
     calendarId: string | undefined,
     eventId: string,
   ): Promise<{ account: Account; event: CalendarEventSummary; content: MessageContent | null }> {
-    const a = this.resolve(account, "calendar.read");
+    const a = this.resolve(account, "read");
     const id = checkId("Event", eventId);
     const cal = await this.calendarFor(a, calendarId);
     this.trace.target = id;
@@ -354,31 +293,22 @@ export class AgentCalendar {
     return { account: a.account, event: summarizeEvent(raw, cal), content };
   }
 
-  /**
-   * Busy intervals. `calendars` default to the in-scope calendars (the primary calendar under a null scope);
-   * with a null calendar scope any calendar id or address may be asked (Google decides what the user can
-   * see), otherwise only in-scope ids.
-   */
+  /** Busy intervals. `calendars` default to the primary calendar; any calendar id or address may be asked (Google decides what the user can see). */
   async freeBusy(
     account: string | undefined,
     p: { timeMin: string; timeMax: string; calendars?: string[] },
   ): Promise<{ account: Account; calendars: { id: string; busy: { start: string; end: string }[]; error: string | null }[] }> {
-    const a = this.resolve(account, "calendar.read");
+    const a = this.resolve(account, "read");
     const range = timeRange(p.timeMin, p.timeMax);
-    const scope = a.grant.calendarScope;
     let items: string[];
     if (!p.calendars?.length) {
-      items = scope === null ? [a.account.email.toLowerCase()] : [...scope];
+      items = [a.account.email.toLowerCase()];
     } else {
       if (p.calendars.length > MAX_FREEBUSY) throw new ToolError("invalid_arguments", `At most ${MAX_FREEBUSY} calendars per query.`);
-      items = p.calendars.map((c) => {
-        const id = resolveCalendarId(checkId("Calendar", c), a.account.email);
-        if (scope !== null && !scope.includes(id)) throw new PolicyDenied("calendar_scope", calendarNotAccessible(c.trim()));
-        return id;
-      });
+      items = p.calendars.map((c) => resolveCalendarId(checkId("Calendar", c), a.account.email));
     }
     items = [...new Set(items)];
-    this.trace.detail = { calendars: items.length, scoped: scope !== null };
+    this.trace.detail = { calendars: items.length };
     const res = await this.google(a, () => a.calendar.freeBusy({ ...range, items }));
     const byLower = new Map(Object.entries(res.calendars).map(([k, v]) => [normalizeCalendarId(k), v]));
     return {
@@ -402,7 +332,7 @@ export class AgentCalendar {
     input: CalendarEventInput,
     opts: WriteArgs & { eventId?: string },
   ): Promise<CalendarWriteOutcome> {
-    const a = this.resolve(account, "calendar.write");
+    const a = this.resolve(account, "full");
     const change = validateEventInput(input, "create");
     const eventId = opts.eventId?.trim();
     if (eventId !== undefined && !CLIENT_EVENT_ID.test(eventId)) {
@@ -420,7 +350,7 @@ export class AgentCalendar {
     change: CalendarEventInput,
     opts: WriteArgs,
   ): Promise<CalendarWriteOutcome> {
-    const a = this.resolveExisting(account);
+    const a = this.resolve(account, "full");
     const id = checkId("Event", eventId);
     const valid = validateEventInput(change, "update");
     const cal = await this.calendarFor(a, calendarId);
@@ -429,7 +359,7 @@ export class AgentCalendar {
   }
 
   async deleteEvent(account: string | undefined, calendarId: string | undefined, eventId: string, opts: WriteArgs): Promise<CalendarWriteOutcome> {
-    const a = this.resolveExisting(account);
+    const a = this.resolve(account, "full");
     const id = checkId("Event", eventId);
     const cal = await this.calendarFor(a, calendarId);
     const raw = await this.existing(a, cal, id);
@@ -448,7 +378,7 @@ export class AgentCalendar {
     response: Exclude<CalendarResponseStatus, "needsAction">,
     opts: WriteArgs & { comment?: string },
   ): Promise<CalendarWriteOutcome> {
-    const a = this.resolveExisting(account);
+    const a = this.resolve(account, "full");
     const id = checkId("Event", eventId);
     if (!["accepted", "declined", "tentative"].includes(response)) throw new ToolError("invalid_arguments", "response must be accepted, declined or tentative.");
     const comment = opts.comment?.trim() || null;
@@ -469,10 +399,8 @@ export class AgentCalendar {
   }
 
   /**
-   * The shared write path: who the change involves (attendeeImpact), replyOnly against new attendees,
-   * allowTo over everyone involved, a send-cap slot when Google will email anyone or the event lands on new
-   * attendees' calendars, then the grant's write mode. Audit detail: {calendarId, eventId, mode, emailed,
-   * notified, invited}.
+   * The shared write path: who the change involves (attendeeImpact), allowTo over everyone involved, then the
+   * write. Audit detail: {calendarId, eventId, emailed, notified}.
    */
   private async write(
     a: CalendarAccess,
@@ -495,19 +423,8 @@ export class AgentCalendar {
       organizerSelf: kind === "create" || !!raw?.organizer?.self,
       comment: !!w.comment,
     });
-    const before = raw ? summarizeEvent(raw, calendarId) : null;
-    const added = addedAttendees(w.change, others, a.account.email);
-    // Even without an email, a create or an added attendee puts the event on their calendar: it counts too.
-    const counts = impact.emailed.length > 0 || added.length > 0;
     this.trace.target = eventId;
-    this.trace.detail = {
-      calendarId,
-      eventId,
-      mode: a.grant.calendarWriteMode,
-      emailed: impact.emailed.length > 0,
-      notified: impact.emailed.length,
-      invited: added.length,
-    };
+    this.trace.detail = { calendarId, eventId, emailed: impact.emailed.length > 0, notified: impact.emailed.length };
     // Who would see the change can't be checked when Google hides the guest list from the account.
     const hidden = raw && !raw.organizer?.self && (raw.guestsCanSeeOtherGuests === false || raw.attendeesOmitted);
     if (hidden && a.grant.allowTo.length && (kind === "update" || (kind === "rsvp" && w.comment))) {
@@ -517,92 +434,46 @@ export class AgentCalendar {
           (kind === "rsvp" ? "Answer without a comment, or ask your user." : "Ask your user to change it in Google Calendar."),
       );
     }
-    assertNoNewAttendees(a.grant, added);
     assertAttendeesAllowed(a.grant, impact.checked);
-    // Synchronous check-and-reserve, shared with mail sends: no await between the cap check and taking the slot.
-    if (counts) this.trace.release = reserveSend(this.ctx.db, a.grant, Date.now(), CAP_HINT);
 
-    const detail: CalendarApprovalDetail & { eventId: string } = {
+    const change: CalendarChange = {
       calendarId,
-      calendarName: null,
       eventId,
       change: w.change,
-      before,
       etag: raw?.etag ?? null,
       response: w.response ?? null,
       comment: w.comment ?? null,
       notifyAttendees: notify,
-      notified: impact.emailed,
-      checked: impact.checked,
     };
-
-    if (a.grant.calendarWriteMode === "direct") {
-      const after = await this.apply(a, kind, detail, raw, counts);
-      try {
-        this.ctx.calendar.kick(a.account.id, calendarId);
-      } catch {
-        // kick never throws; tolerate placeholders.
-      }
-      if (kind === "delete" || !after) return { status: "deleted", calendarId, eventId, notified: impact.emailed };
-      // Without calendar.read the result says only what the agent sent (a retried event_id may have matched
-      // an event with more in it).
-      const shown = kind === "create" && !a.grant.capabilities.includes("calendar.read") ? ownView(eventId, w.change) : after;
-      return { status: "applied", event: summarizeEvent(shown, calendarId), notified: impact.emailed };
+    const after = await this.apply(a, kind, change, raw);
+    try {
+      this.ctx.calendar.kick(a.account.id, calendarId);
+    } catch {
+      // kick never throws; tolerate placeholders.
     }
-
-    detail.calendarName = (await this.listed(a).catch(() => [])).find((c) => normalizeCalendarId(c.id) === calendarId)?.name ?? null;
-    const payload: ApprovalPayload = {
-      to: impact.emailed.map((email) => ({ name: null, email })),
-      cc: [],
-      bcc: [],
-      subject: w.change.summary ?? before?.summary ?? "",
-      body: kind === "rsvp" ? (w.comment ?? "") : (w.change.description ?? ""),
-      threadId: null,
-      attachments: [],
-      reason: opts.reason?.trim() || null,
-      calendar: detail,
-    };
-    const approval = new Approvals(this.ctx).create({
-      agentId: this.principal.agentId,
-      accountId: a.account.id,
-      kind: `calendar.${kind}`,
-      draftId: "",
-      payload,
-    });
-    this.trace.target = approval.id;
-    return {
-      status: "pending_approval",
-      approvalId: approval.id,
-      expiresAt: approval.expiresAt,
-      message: "Queued for human approval; nothing has changed in Google Calendar yet. Check later with get_send_status.",
-    };
+    if (kind === "delete" || !after) return { status: "deleted", calendarId, eventId, notified: impact.emailed };
+    return { status: "applied", event: summarizeEvent(after, calendarId), notified: impact.emailed };
   }
 
   /**
-   * A direct write. A failed attempt is judged by afterFailure (the event re-read): already in place counts
-   * as applied. A failure that may have happened after Google accepted it is recorded as maybeSent when the
-   * write counts toward the send caps, and the agent is told how to check or retry safely.
+   * The write. A failed attempt is judged by afterFailure (the event re-read): already in place counts as
+   * applied. A failure that may have happened after Google accepted it is recorded as maybeSent, and the agent
+   * is told how to check or retry safely.
    */
-  private async apply(
-    a: CalendarAccess,
-    kind: CalendarWriteKind,
-    d: CalendarApprovalDetail & { eventId: string },
-    raw: CalendarEventRaw | null,
-    counts: boolean,
-  ): Promise<CalendarEventRaw | null> {
+  private async apply(a: CalendarAccess, kind: CalendarWriteKind, d: CalendarChange, raw: CalendarEventRaw | null): Promise<CalendarEventRaw | null> {
     try {
       return await applyChange(a.calendar, kind, d, raw);
     } catch (err) {
-      const r = await afterFailure(a.calendar, kind, d, err, false);
+      const r = await afterFailure(a.calendar, kind, d, err);
       if ("applied" in r) {
-        if (counts && isAmbiguous(err)) this.trace.detail.maybeSent = true;
+        if (isAmbiguous(err)) this.trace.detail.maybeSent = true;
         return r.applied;
       }
       const e = r.error;
       if (e instanceof CalendarApplyError) {
         if (e.code === "write_uncertain") {
-          if (counts) this.trace.detail.maybeSent = true;
-          throw new ToolError("write_uncertain", `The change may already have been applied, but the event changed since, so xaq can't tell. ${this.checkAdvice(a, kind, d.eventId)}`);
+          this.trace.detail.maybeSent = true;
+          throw new ToolError("write_uncertain", `The change may already have been applied, but the event changed since, so xaq can't tell. ${this.checkAdvice(kind, d.eventId)}`);
         }
         if (e.code === "event_id_taken") throw new ToolError("event_id_taken", `event_id ${d.eventId} already belongs to a different event. Leave event_id out to create a new event.`);
         if (e.code === "calendar_conflict") throw translate(a, new GoogleApiError(412, "Precondition Failed"));
@@ -611,33 +482,17 @@ export class AgentCalendar {
       const known = translate(a, e, eventNotAccessible(d.eventId));
       if (known !== e) throw known;
       if (!isAmbiguous(e)) throw e;
-      if (counts) this.trace.detail.maybeSent = true;
-      throw new ToolError("write_uncertain", `The connection to Google Calendar failed, so the change may or may not have been applied. ${this.checkAdvice(a, kind, d.eventId)}`);
+      this.trace.detail.maybeSent = true;
+      throw new ToolError("write_uncertain", `The connection to Google Calendar failed, so the change may or may not have been applied. ${this.checkAdvice(kind, d.eventId)}`);
     }
   }
 
-  /** How to find out whether an uncertain write landed, with the tools this grant has. */
-  private checkAdvice(a: CalendarAccess, kind: CalendarWriteKind, eventId: string): string {
-    const canRead = a.grant.capabilities.includes("calendar.read");
+  /** How to find out whether an uncertain write landed. */
+  private checkAdvice(kind: CalendarWriteKind, eventId: string): string {
     const check = `check with get_calendar_event (event_id ${eventId})`;
     if (kind !== "create") return `${check[0]!.toUpperCase()}${check.slice(1)} before retrying.`;
-    const retry = `To retry, call create_calendar_event again with the same details and event_id ${eventId}: it can't create a second event.`;
-    return canRead ? `${retry} Or ${check} first.` : retry;
+    return `To retry, call create_calendar_event again with the same details and event_id ${eventId}: it can't create a second event. Or ${check} first.`;
   }
-}
-
-/** The event as the agent described it, with Google's id: nothing read back from Google. */
-function ownView(eventId: string, change: CalendarEventInput): CalendarEventRaw {
-  const at = (v: string | undefined) => (v === undefined ? undefined : change.allDay ? { date: v } : { dateTime: v, ...(change.timeZone ? { timeZone: change.timeZone } : {}) });
-  return {
-    id: eventId,
-    summary: change.summary,
-    location: change.location,
-    start: at(change.start),
-    end: at(change.end),
-    recurrence: change.recurrence,
-    attendees: change.attendees?.map((email) => ({ email })),
-  };
 }
 
 const notGranted = (email: string) =>

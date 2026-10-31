@@ -1,5 +1,5 @@
 // The MCP broker's side of /mcp (docs/MCP-BROKER.md, M1 PR 7): upstream tools listed next to the
-// native ones, called through BrokerCalls, plus get_call_status. Only with Settings.brokerUpstreams on
+// native ones, called through BrokerCalls. Only with Settings.brokerUpstreams on
 // (ctx.broker.view is null otherwise); native tools, their names, behaviour and audit are untouched.
 //
 // Upstream tools are served with their pinned JSON Schema as is. McpServer.registerTool only takes zod
@@ -19,7 +19,6 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { type AccessLevel, EXPOSED_TOOL_NAME_RE } from "../../shared/types.ts";
-import { GET_CALL_STATUS_TOOL } from "../broker/policy/index.ts";
 import type { AgentBrokerView } from "../broker/service.ts";
 import type { RegisteredTool, ToolResult } from "../broker/types.ts";
 import type { AppContext } from "../context.ts";
@@ -29,7 +28,6 @@ import { errorMessage } from "../util/errors.ts";
 
 const LEVEL_TEXT: Record<AccessLevel, string> = {
   full: "full access",
-  ask: "risky actions (deleting, sending, sharing, paying) wait for human approval; check them with get_call_status",
   read: "read only",
 };
 
@@ -122,33 +120,6 @@ export function registerBrokerTools(ctx: AppContext, server: McpServer, principa
     content: [{ type: "text", text: `Internal error: ${errorMessage(err)}. Retry later; if it persists, tell the operator.` }],
   });
 
-  // ───────────── get_call_status ─────────────
-
-  const input = { approval_id: z.string().min(1).describe(GET_CALL_STATUS_TOOL.inputSchema.properties.approval_id.description) };
-  state.shapes.set("get_call_status", input);
-  server.registerTool(
-    "get_call_status",
-    {
-      title: GET_CALL_STATUS_TOOL.title,
-      description: GET_CALL_STATUS_TOOL.description,
-      inputSchema: input,
-      annotations: { title: GET_CALL_STATUS_TOOL.title, readOnlyHint: true, openWorldHint: false },
-    },
-    async (args, extra) => {
-      state.handled.add(extra.requestId);
-      const started = Date.now();
-      try {
-        const result: ToolResult = await ctx.broker.callStatus(agentId, args.approval_id);
-        audit("get_call_status", result.isError ? "error" : "ok", result.isError ? "call_status" : null, started, cleanLine(args.approval_id, 64));
-        return result as CallToolResult;
-      } catch (err) {
-        log.error("Tool get_call_status failed", { agent: agentId, error: errorMessage(err) });
-        audit("get_call_status", "error", "internal", started);
-        return internal(err);
-      }
-    },
-  );
-
   // ───────────── upstream tools ─────────────
 
   // Every tool is registered, in search mode too (exposeTools trims the listing there), so a call by name works alike.
@@ -175,7 +146,7 @@ export function registerBrokerTools(ctx: AppContext, server: McpServer, principa
   server.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const name = request.params.name;
     if (!state.dynamic.has(name)) return (await callNative(request, extra)) as CallToolResult;
-    // BrokerCalls resolves, decides, runs or queues, and audits under the exposed name.
+    // BrokerCalls resolves, decides, runs and audits under the exposed name.
     state.handled.add(extra.requestId);
     const started = Date.now();
     const signal = state.signal ? AbortSignal.any([extra.signal, state.signal]) : extra.signal;

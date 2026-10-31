@@ -24,7 +24,7 @@ import { CALENDAR_RESPONSE_LABEL, EVENT_TYPE_INFO } from "@/lib/labels";
 import { queries } from "@/lib/queries";
 import { prettySystemLabel } from "@/hooks/use-label-names";
 import { cn } from "@/lib/utils";
-import { calendarEventLines, grantSees, httpsUrl, organizedHere } from "./calendar-event";
+import { calendarEventLines, httpsUrl, organizedHere } from "./calendar-event";
 
 const ICON: Record<EventType, typeof MailIcon> = {
   "message.received": MailIcon,
@@ -40,7 +40,6 @@ const ICON: Record<EventType, typeof MailIcon> = {
   "calendar.invitation_received": CalendarPlusIcon,
   "connection.auth_failed": KeyRoundIcon,
   "connection.expiring": KeyRoundIcon,
-  "approval.requested": SendIcon,
 };
 const ALERT_TYPES: EventType[] = ["account.auth_failed", "sync.gap"];
 
@@ -69,8 +68,8 @@ function headline(e: MailEvent) {
 }
 
 /**
- * `xaq listen` instances that got this event: their agent may see it (account and label
- * scope), it is of a type the listener asked for, it came after the listener started, and the
+ * `xaq listen` instances that got this event: their agent has a grant on its account,
+ * it is of a type the listener asked for, it came after the listener started, and the
  * listener acknowledged it (ran its command, or skipped it by its own --from/--to/--label/--subject
  * filter, which only the listener's machine knows).
  */
@@ -78,7 +77,7 @@ function useListenerDelivery(e: MailEvent) {
   const agents = useQuery(queries.agents());
   const out: { name: string; host: string | null }[] = [];
   for (const a of agents.data ?? []) {
-    if (!a.grants.some((g) => grantSees(g, e))) continue;
+    if (!a.grants.some((g) => g.accountId === e.accountId)) continue;
     for (const l of a.listeners) if (listenerHandled(l, e)) out.push({ name: a.name, host: l.client.hostname ?? null });
   }
   return out;

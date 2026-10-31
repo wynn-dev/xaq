@@ -118,7 +118,6 @@ export function registerListenCommands(program: Command): void {
     .option("--name <name>", 'how the agent appears in the console (default "<Tool> on <hostname>")')
     .option("--tool <tool>", `the agent's tool: ${TOOLS.join(", ")}; tailors the next steps`)
     .option("--account <email>", "mailbox to request access to (repeatable; the approver decides)", collect)
-    .option("--capabilities <list>", "capabilities to request, e.g. read,draft or read,calendar.read (the approver decides)")
     .option("--reason <text>", "why the agent needs access (shown to the approver)")
     .option("--setup-mcp", "also register the MCP server in the chosen tool (the key is never shown; `setup-mcp --help` lists exactly what changes)")
     .option("--profile <name>", `profile to save the key in (default "${DEFAULT_PROFILE}")`)

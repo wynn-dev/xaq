@@ -51,7 +51,6 @@ export function overviewStats(ctx: AppContext, at = new Date()): OverviewStats {
     },
     events24h: n("SELECT COUNT(*) AS n FROM events WHERE seq > 0 AND created_at >= ?", since),
     deliveries24h: { succeeded: deliveries.ok ?? 0, failed: deliveries.failed ?? 0 },
-    pendingApprovals: n("SELECT COUNT(*) AS n FROM approvals WHERE status = 'pending' AND expires_at > ?", at.toISOString()),
     toolCalls24h: agentCalls.calls,
     denied24h: agentCalls.denied ?? 0,
     activity,

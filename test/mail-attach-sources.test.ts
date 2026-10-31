@@ -2,7 +2,7 @@
 // another message's attachment and a Drive file (downloaded, or exported for Google-native files), mixed in one
 // message, on send_message, create_draft, reply and forward; Gmail's 25 MB of attachments and the API's 35 MB for the
 // encoded message (with a Drive link in the error); the Drive grant (a Google Workspace connection bound to the same
-// account) and the Drive scope; and what approval cards and the audit log say about each file's source.
+// account) and the Drive scope; and what the audit log says about each file's source.
 
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -70,8 +70,8 @@ const grantConnection = (agentId: string, connectionId: string, level = "read") 
 };
 
 /** An MCP agent with a mail grant on `accountId`; `workspace` also grants it a Google Workspace connection bound to that account. */
-async function agent(name: string, accountId: string, g: Partial<GrantInput> = {}, workspace: false | "read" | "ask" | "full" = "read") {
-  const { agent: a } = ctx.policy.createAgent({ name, grants: [grantInput(accountId, { capabilities: ["read", "draft", "send"], sendMode: "direct", ...g })] });
+async function agent(name: string, accountId: string, g: Partial<GrantInput> = {}, workspace: false | "read" | "full" = "read") {
+  const { agent: a } = ctx.policy.createAgent({ name, grants: [grantInput(accountId, { level: "full", ...g })] });
   if (workspace) grantConnection(a.id, workspaceConnection(accountId), workspace);
   const c = await connectAgent(ctx, a.id, name);
   closers.push(c.close);
@@ -166,32 +166,6 @@ describe("attachment sources", () => {
     ]);
     expect(detail.attachments.every((x) => /^[0-9a-f]{64}$/.test(x.sha256))).toBe(true);
     expect(JSON.stringify(detail)).not.toContain(invoice.toString("base64").slice(0, 40));
-  });
-
-  it("approval cards show where each file came from", async () => {
-    const a = await agent("approver", me.id, { sendMode: "approval" });
-    const src = fake.deliver(ME, { from: "hr@example.org", subject: "Form", text: "Form attached", attachments: [{ filename: "form.pdf", mimeType: "application/pdf", content: pdf(800) }] });
-    const sheet = fake.drive.addFile(ME, { name: "Budget", mimeType: "application/vnd.google-apps.spreadsheet", exports: { "text/csv": Buffer.from("a,b\n1,2\n") } });
-    writeFileSync(join(docs, "alias-target.txt"), "target");
-    const r = await a.json("reply", {
-      message_id: src.id,
-      body: "Filled in, plus the budget.",
-      reason: "user asked",
-      attachments: [
-        { path: `${docs}/contracts/../alias-target.txt`, filename: "notes.txt" },
-        { message_id: src.id, attachment_id: partId(src, "form.pdf") },
-        { drive_file_id: sheet, export_as: "csv" },
-      ],
-    });
-    expect(r.status).toBe("pending_approval");
-    const approval = ctx.mail.getApproval(r.approvalId!)!;
-    expect(approval.attachments).toEqual([
-      { filename: "notes.txt", mimeType: "text/plain", size: 6, source: { kind: "path", path: join(docs, "alias-target.txt"), requested: `${docs}/contracts/../alias-target.txt` } },
-      { filename: "form.pdf", mimeType: "application/pdf", size: 800, source: { kind: "message", messageId: src.id, attachmentId: partId(src, "form.pdf"), filename: "form.pdf" } },
-      { filename: "Budget.csv", mimeType: "text/csv", size: 8, source: { kind: "drive", fileId: sheet, name: "Budget", exportedAs: "csv" } },
-    ]);
-    // Approval follows the grant's policy, unchanged: nothing went out yet.
-    expect(fake.sent(ME).some((m) => ctx.google.mime.parse(m).summary.subject === "Re: Form")).toBe(false);
   });
 
   it("create_draft and forward take new attachments too; forward keeps include_attachments", async () => {
@@ -343,7 +317,7 @@ describe("attachment sources", () => {
     // Mail access alone (the account has the Drive scope): refused, audited as a denial, Drive never asked.
     const mailOnly = await agent("mail-only", me.id, {}, false);
     expect(await send(mailOnly)).toMatchObject({ isError: true, text: expect.stringContaining(denied) });
-    expect(mailOnly.audit("send_message")[0]).toMatchObject({ outcome: "denied", reason: "capability" });
+    expect(mailOnly.audit("send_message")[0]).toMatchObject({ outcome: "denied", reason: "no_access" });
 
     // A grant on a Google Workspace connection bound to another account, on an unbound one, on a disabled one,
     // or on another extension's connection bound to this account: still refused.
@@ -356,7 +330,7 @@ describe("attachment sources", () => {
     expect(driveCalls()).toBe(before);
 
     // Any level on the bound connection is enough: read, ask or full.
-    for (const level of ["read", "ask", "full"] as const) {
+    for (const level of ["read", "full"] as const) {
       const ok = await agent(`granted-${level}`, me.id, {}, level);
       const r = await send(ok);
       expect(r.isError).toBe(false);
@@ -373,18 +347,10 @@ describe("attachment sources", () => {
     }
   });
 
-  it("another message's attachment needs read access, the message in scope, and an id it lists", async () => {
+  it("another message's attachment needs an id it lists", async () => {
     const src = fake.deliver(ME, { from: "a@example.org", subject: "Private", text: "x", attachments: [{ filename: "private.pdf", mimeType: "application/pdf", content: pdf(300) }] });
-    const sendOnly = await agent("send-only", me.id, { capabilities: ["send"] });
-    const att = { message_id: src.id, attachment_id: partId(src, "private.pdf") };
-    expect((await sendOnly.call("send_message", { to: "x@example.org", subject: "s", body: "b", attachments: [att] })).text).toMatch(
-      /Attaching another message's file needs permission to read and search mail/,
-    );
-    const label = fake.addLabel(ME, "Shared");
-    const scoped = await agent("scoped", me.id, { labelScope: [label] });
-    expect((await scoped.call("send_message", { to: "x@example.org", subject: "s", body: "b", attachments: [att] })).isError).toBe(true);
-    const reader = await agent("reader", me.id);
-    expect((await reader.call("send_message", { to: "x@example.org", subject: "s", body: "b", attachments: [{ message_id: src.id, attachment_id: "nope" }] })).text).toMatch(
+    const sender = await agent("sender", me.id);
+    expect((await sender.call("send_message", { to: "x@example.org", subject: "s", body: "b", attachments: [{ message_id: src.id, attachment_id: "nope" }] })).text).toMatch(
       new RegExp(`Message ${src.id} has no attachment nope\\. Its attachments: .*private\\.pdf`),
     );
   });
@@ -409,9 +375,9 @@ describe("attachment sources", () => {
   });
 
   it("no agent tool can change the attachment directories", async () => {
-    const a = await agent("curious", me.id, { capabilities: ["read", "draft", "send", "organize", "trash"] });
+    const a = await agent("curious", me.id, { level: "full" });
     void a;
-    const { agent: x } = ctx.policy.createAgent({ name: "lister", grants: [grantInput(me.id, { capabilities: ["read", "draft", "send", "organize", "trash"] })] });
+    const { agent: x } = ctx.policy.createAgent({ name: "lister", grants: [grantInput(me.id, { level: "full" })] });
     const c = await connectAgent(ctx, x.id, "lister");
     closers.push(c.close);
     const { tools } = await c.client.listTools();

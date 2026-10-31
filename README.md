@@ -5,8 +5,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 A self-hosted MCP broker for AI agents (formerly agentinbox, see [Upgrading from agentinbox](#upgrading-from-agentinbox)). One small server holds all your credentials (Notion, WHOOP, T3 Code, any MCP
-server, Gmail and Google Calendar) and gives each agent a single MCP endpoint with only the tools it's allowed. Risky actions
-(deleting, sending, publishing, payments) can wait for your one-tap approval, and every call is audited.
+server, Gmail and Google Calendar) and gives each agent a single MCP endpoint with only the tools it's allowed: full
+access or read only per account and connection, sends limited to the recipients you allow. Every call is audited.
 
 ```sh
 npx xaq-cli
@@ -25,8 +25,8 @@ and `npx xaq-cli import --from hermes` (also `claude-code`, `cursor`, `codex`) t
 servers behind the broker. Details: [Connections](docs/reference.md#connections-mcp-broker).
 
 For Gmail, Google Calendar is supported too (optional). It needs the Calendar API enabled in your Google Cloud project, the
-Calendar scopes on the consent screen, Calendar added to each account, and `calendar.read` (and, to make changes,
-`calendar.write`) on the agent's grant. The console's setup covers all of it; existing installs use Overview → "Add
+Calendar scopes on the consent screen, and Calendar added to each account; an agent's grant on the account covers its
+calendars (read only, or full access to change them). The console's setup covers all of it; existing installs use Overview → "Add
 Google Calendar". Details: [docs/calendar.md](docs/calendar.md).
 
 Agents can attach files to drafts, replies, forwards and new mail: bytes they have, a file from a directory you allow

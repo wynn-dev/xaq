@@ -227,7 +227,7 @@ describe("connections add", () => {
     const p = new ScriptedPrompter(["", "", "y", "y", "not a url", landed]);
     const code = await addConnection(url, {}, { ...deps(p, { SSH_CONNECTION: "1 2 3 4" }), openBrowser: async (u: string) => opened.push(u) });
     expect(code).toBe(0);
-    expect(row("example")).toMatchObject({ level_default: "ask" });
+    expect(row("example")).toMatchObject({ level_default: "full" });
     expect(d.h.ctx.db.get<{ n: number }>("SELECT count(*) AS n FROM connection_grants")!.n).toBe(2);
     expect(p.text).toContain("registers itself automatically (dynamic client registration)");
     expect(p.text).toContain("an address starting with http://localhost:8425/oauth/connections/callback");
@@ -324,7 +324,7 @@ describe("connections add", () => {
     d.h.ctx.db.run("UPDATE connections SET status = 'needs_reauth', expires_at = ?, auth_type = 'header' WHERE slug = 'hearloom'", new Date(Date.now() + 3 * 86_400_000 + 60_000).toISOString());
     const p = new ScriptedPrompter(["", "tok-2", "y", "y"]);
     await listConnections(deps(p));
-    expect(p.text).toMatch(/hearloom\s+needs_reauth\s+Ask before risky actions\s+3\s+https:\/\/hearloom\.example\.com\/mcp {2}\(expires in 3 days, Reconnect\)/);
+    expect(p.text).toMatch(/hearloom\s+needs_reauth\s+Full access\s+3\s+https:\/\/hearloom\.example\.com\/mcp {2}\(expires in 3 days, Reconnect\)/);
     expect(await reconnectConnection("hearloom", {}, deps(p))).toBe(0);
     expect(d.upstreams.connects.at(-1)).toEqual({ slug: "hearloom", input: { header: { name: "Authorization", value: "Bearer tok-2" } }, privateTarget: null });
     expect(await disableConnection("hearloom", deps(p))).toBe(0);

@@ -54,7 +54,7 @@ describe("through the real Calendar client", () => {
   it("a sync that works again clears api_disabled on every account (sync records through noteCalendarApi)", async () => {
     const a = (await consent(ctx, fake, OPS)).account!;
     const b = (await consent(ctx, fake, WYNN)).account!;
-    ctx.policy.createAgent({ name: "Hermes", grants: [grantInput(a.id, { capabilities: ["calendar.read"] })] });
+    ctx.policy.createAgent({ name: "Hermes", grants: [grantInput(a.id, { level: "read" })] });
     fake.disableApi("calendar", true);
     await expect(ctx.calendar.syncAccount(a.id)).rejects.toThrow(/has not been used/);
     await ctx.calendar.check();

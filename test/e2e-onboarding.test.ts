@@ -82,7 +82,7 @@ describe("onboarding wizard", () => {
   });
 
   it.runIf(HAS_AGENTS)("sends a test email that arrives as events and at a message.received webhook", async () => {
-    const { agent } = await s.createAgent("wizard-agent", [grant(account.id, { capabilities: ["read"] })]);
+    const { agent } = await s.createAgent("wizard-agent", [grant(account.id, { level: "read" })]);
     await s.admin.post<WebhookWithSecret>("/api/webhooks", {
       agentId: agent.id,
       name: "first webhook",

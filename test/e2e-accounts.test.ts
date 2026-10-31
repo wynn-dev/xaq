@@ -283,8 +283,8 @@ describe("account removal", () => {
     const msg = s.fake.deliver(email, { from: "Carol <carol@client.test>", subject: "Contract", text: "Please sign" });
 
     const { agent, apiKey } = await s.createAgent("remover", [
-      grant(account.id, { capabilities: ["read", "draft"] }),
-      grant(kept.id, { capabilities: ["read"] }),
+      grant(account.id, { level: "full" }),
+      grant(kept.id, { level: "read" }),
     ]);
     const mcp = await s.agent(apiKey);
     try {

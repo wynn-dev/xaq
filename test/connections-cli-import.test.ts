@@ -191,11 +191,11 @@ describe("import --from hermes", () => {
     expect(code).toBe(0);
 
     expect(rows()).toEqual([
-      { slug: "whoop", name: "whoop", url: "https://whoop.weish.me/api/mcp", level_default: "ask", private_target: null },
-      { slug: "brightspace", name: "brightspace", url: "http://127.0.0.1:8787/mcp", level_default: "ask", private_target: "http://127.0.0.1:8787" },
-      { slug: "hearloom", name: "hearloom", url: "http://127.0.0.1:3000/mcp", level_default: "ask", private_target: "http://127.0.0.1:3000" },
-      { slug: "t3code-macbook", name: "t3code-macbook", url: "http://127.0.0.1:3773", level_default: "ask", private_target: "http://127.0.0.1:3773" },
-      { slug: "forge", name: "forge", url: "http://100.104.249.49:3773", level_default: "ask", private_target: "http://100.104.249.49:3773" },
+      { slug: "whoop", name: "whoop", url: "https://whoop.weish.me/api/mcp", level_default: "full", private_target: null },
+      { slug: "brightspace", name: "brightspace", url: "http://127.0.0.1:8787/mcp", level_default: "full", private_target: "http://127.0.0.1:8787" },
+      { slug: "hearloom", name: "hearloom", url: "http://127.0.0.1:3000/mcp", level_default: "full", private_target: "http://127.0.0.1:3000" },
+      { slug: "t3code-macbook", name: "t3code-macbook", url: "http://127.0.0.1:3773", level_default: "full", private_target: "http://127.0.0.1:3773" },
+      { slug: "forge", name: "forge", url: "http://100.104.249.49:3773", level_default: "full", private_target: "http://100.104.249.49:3773" },
     ]);
     // The headers went to the connector (encrypted there), with the allow already in place; the OAuth ones sent nothing.
     expect(d.upstreams.connects).toEqual([
@@ -259,8 +259,8 @@ describe("import --from hermes", () => {
   it("declining the private-network allow imports only the public server; declining setup-mcp changes nothing", async () => {
     pairHermes(d.agents.hermes);
     const before = readFileSync(join(hermes, "config.yaml"), "utf8");
-    // private allow? no · access: 3 (read) · all agents? no · Hermes? yes · Claude Code? no · create? yes · replace in Hermes? no
-    const p = new ScriptedPrompter(["n", "3", "n", "y", "n", "y", "n"]);
+    // private allow? no · access: 2 (read) · all agents? no · Hermes? yes · Claude Code? no · create? yes · replace in Hermes? no
+    const p = new ScriptedPrompter(["n", "2", "n", "y", "n", "y", "n"]);
     expect(await runImport({ from: "hermes" }, deps(d, p))).toBe(0);
     expect(p.asked[0]).toContain("Allow xaq to connect to these 4?");
     expect(p.text).toContain("  http://100.104.249.49:3773  (forge)");
@@ -371,7 +371,7 @@ describe("import --from hermes", () => {
     // private allow? no · grant Hermes? no
     const p = new ScriptedPrompter(["n", "n"]);
     expect(await runImport({ from: "hermes" }, deps(d, p))).toBe(0);
-    expect(p.asked[1]).toContain('Hermes (the agent Hermes uses) has no access to "whoop". Give it Ask before risky actions?');
+    expect(p.asked[1]).toContain('Hermes (the agent Hermes uses) has no access to "whoop". Give it Full access?');
     expect(p.text).toContain(`"whoop" stays in Hermes: its agent couldn't use "whoop".`);
     expect(readFileSync(join(hermes, "config.yaml"), "utf8")).toBe(before);
 
@@ -379,7 +379,7 @@ describe("import --from hermes", () => {
     const p2 = new ScriptedPrompter(["n", "y", "y"]);
     expect(await runImport({ from: "hermes" }, deps(d, p2))).toBe(0);
     expect(d.h.ctx.db.all("SELECT agent_id, level FROM connection_grants WHERE connection_id = ? ORDER BY agent_id", whoop.id)).toEqual(
-      [{ agent_id: d.agents.claude, level: "ask" }, { agent_id: d.agents.hermes, level: "ask" }].sort((a, b) => a.agent_id.localeCompare(b.agent_id)),
+      [{ agent_id: d.agents.claude, level: "full" }, { agent_id: d.agents.hermes, level: "full" }].sort((a, b) => a.agent_id.localeCompare(b.agent_id)),
     );
     expect(Object.keys(readMcpServers(readFileSync(join(hermes, "config.yaml"), "utf8"))!)).not.toContain("whoop");
   });

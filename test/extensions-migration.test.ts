@@ -12,7 +12,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { classifyTool } from "../server/broker/catalog/classify.ts";
-import { addRule } from "../server/broker/policy/store.ts";
 import { createBrokerService } from "../server/broker/service.ts";
 import type { IntegrationPreset, ToolClass, ToolDef } from "../server/broker/types.ts";
 import { upstreams } from "../server/broker/upstream/runtime.ts";
@@ -163,7 +162,7 @@ function insertConnection(ctx: AppContext, c: { slug: string; name: string; pres
   const id = `con_wynn${++seq}`;
   const t = new Date(Date.now() - 40 * DAY).toISOString();
   ctx.db.run(
-    "INSERT INTO connections (id, kind, preset, slug, name, url, auth_type, level_default, private_target, status, created_at, updated_at) VALUES (?, 'remote_http', ?, ?, ?, ?, ?, 'ask', ?, 'active', ?, ?)",
+    "INSERT INTO connections (id, kind, preset, slug, name, url, auth_type, level_default, private_target, status, created_at, updated_at) VALUES (?, 'remote_http', ?, ?, ?, ?, ?, 'full', ?, 'active', ?, ?)",
     id,
     c.preset,
     c.slug,
@@ -177,14 +176,12 @@ function insertConnection(ctx: AppContext, c: { slug: string; name: string; pres
   return id;
 }
 
-const grant = (ctx: AppContext, agentId: string, connectionId: string, level: "full" | "ask" | "read") =>
+const grant = (ctx: AppContext, agentId: string, connectionId: string, level: "full" | "read") =>
   ctx.db.run("INSERT INTO connection_grants (agent_id, connection_id, level, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", agentId, connectionId, level, new Date().toISOString(), new Date().toISOString());
 
-const approvalId = (s: string) => /apr_[a-z0-9]+/.exec(s)![0];
-
 /**
- * Wynn's install: two Notion workspaces on the Notion preset (personal at "ask", work at Read only), WHOOP's
- * dashboard and Brightspace as generic servers; an always-allow rule and a pending approval from before.
+ * Wynn's install: two Notion workspaces on the Notion preset (personal at "full", work at Read only), WHOOP's
+ * dashboard and Brightspace as generic servers.
  */
 async function wynnInstall(e: Env) {
   const store = upstreams(e.ctx).store;
@@ -223,17 +220,12 @@ async function wynnInstall(e: Env) {
   }
   store.setHeader(ids.whoop, "Authorization", "Bearer whoop-dashboard-key");
   store.setHeader(ids.brightspace, "Authorization", "Bearer brightspace-key");
-  grant(e.ctx, e.agent.id, ids.personal, "ask");
+  grant(e.ctx, e.agent.id, ids.personal, "full");
   grant(e.ctx, e.agent.id, ids.work, "read");
   grant(e.ctx, e.agent.id, ids.whoop, "read");
-  grant(e.ctx, e.agent.id, ids.brightspace, "ask");
+  grant(e.ctx, e.agent.id, ids.brightspace, "full");
   for (const id of Object.values(ids)) await refresh(e, id);
-  // An "always allow" rule from before (made after the tool was listed): deleting this one page never asks.
-  addRule(e.ctx.db, { agentId: e.agent.id, connectionId: ids.personal, tool: "notion-delete-pages", targetPath: "/page_ids", targetValue: '"p-keep"' });
-  // A call waiting for approval from before the upgrade.
-  const c = await e.client();
-  const pending = approvalId(text(await c.callTool({ name: "notion-personal__notion-delete-pages", arguments: { page_ids: ["p-pending"] } })));
-  return { ups, ids, tokens, pending };
+  return { ups, ids, tokens };
 }
 
 type Wynn = Awaited<ReturnType<typeof wynnInstall>>;
@@ -246,14 +238,12 @@ async function refresh(e: Env, id: string) {
   expect(await e.ctx.broker.catalog.refresh(id)).toMatchObject({ ok: true });
 }
 
-/** Everything the upgrade must leave alone, byte for byte (`approvals`: the ones that existed before it). */
-function snapshot(ctx: AppContext, approvals: string[] = []) {
+/** Everything the upgrade must leave alone, byte for byte. */
+function snapshot(ctx: AppContext) {
   return {
     connections: ctx.db.all("SELECT id, kind, preset, slug, name, url, auth_type, level_default, all_agents, private_target, status, status_reason, expires_at FROM connections ORDER BY id"),
     credentials: ctx.db.all("SELECT * FROM connection_credentials ORDER BY connection_id"),
     grants: ctx.db.all("SELECT agent_id, connection_id, level FROM connection_grants ORDER BY connection_id"),
-    rules: ctx.db.all("SELECT id, agent_id, connection_id, tool, target_path, target_value FROM approval_rules ORDER BY id"),
-    approvals: ctx.db.all(`SELECT id, agent_id, connection_id, kind, status, payload, tool_call FROM approvals WHERE id IN (${approvals.map(() => "?").join(", ") || "NULL"}) ORDER BY id`, ...approvals),
     exposed: ctx.db.all("SELECT connection_id, name, exposed_name FROM upstream_tools ORDER BY exposed_name"),
   };
 }
@@ -271,7 +261,7 @@ const EXPOSED = [
 const authHeaders = (up: FakeMcpUpstream) => new Set(up.requests.filter((r) => r.rpcMethod === "tools/call").map((r) => r.headers.authorization));
 
 /**
- * All four list their tools under the same names, Notion's rules hold (spawning a Custom Agent asks, its reads are
+ * All four list their tools under the same names, Notion's rules hold (spawning a Custom Agent is risky, its reads are
  * listed at Read only, moving pages is a write), and calls reach each server with its own unchanged credential.
  */
 async function allFourWork(e: Env, w: Wynn) {
@@ -282,10 +272,10 @@ async function allFourWork(e: Env, w: Wynn) {
   expect(text(await c.callTool({ name: "notion-work__notion-search", arguments: { query: "okrs" } }))).toContain('work search {"query":"okrs"}');
   for (const name of HIDDEN_READS) expect(text(await c.callTool({ name: `notion-work__${name}`, arguments: {} }))).toContain(`work ${name}`);
   expect(text(await c.callTool({ name: "notion-personal__notion-move-pages", arguments: { page_ids: ["p1"], parent: "p0" } }))).toContain("personal moved");
-  expect(text(await c.callTool({ name: "notion-personal__notion-spawn-session", arguments: { agent_url: "a1", message: "go" } }))).toContain("pending_approval");
+  expect(text(await c.callTool({ name: "notion-personal__notion-spawn-session", arguments: { agent_url: "a1", message: "go" } }))).toContain("personal");
   expect(text(await c.callTool({ name: "whoop__get_status", arguments: {} }))).toContain("whoop status");
   expect(text(await c.callTool({ name: "brightspace__get_my_courses", arguments: {} }))).toContain("courses");
-  // The always-allow rule still lets its one target through at "ask".
+  // Risky tools run at "full".
   expect(text(await c.callTool({ name: "notion-personal__notion-delete-pages", arguments: { page_ids: ["p-keep"] } }))).toContain("personal deleted");
   // The same credentials: each server saw only its own token.
   expect(authHeaders(w.ups.personal)).toEqual(new Set([`Bearer ${w.tokens.personal}`]));
@@ -303,14 +293,6 @@ function noReauth(e: Env, w: Wynn) {
   for (const up of [w.ups.personal, w.ups.work]) expect(up.requests.filter((r) => r.server === "auth" && r.path.endsWith("/token"))).toEqual([]);
 }
 
-/** The approval from before the upgrade still runs, once, on the same credential. */
-async function approvePending(e: Env, w: Wynn) {
-  expect(await json(await e.api(`/approvals/${w.pending}/approve`, { method: "POST", json: {} }))).toMatchObject({ status: "sent" });
-  const deletes = w.ups.personal.requests.filter((r) => r.rpcMethod === "tools/call" && r.body.includes("p-pending"));
-  expect(deletes).toHaveLength(1);
-  expect(deletes[0]!.headers.authorization).toBe(`Bearer ${w.tokens.personal}`);
-}
-
 describe("upgrade to extensions: Wynn's install, no re-auth", () => {
   it("the fixture exercises the gap: the generic rules alone would loosen spawning and hide five reads", () => {
     const def = (t: FakeTool): ToolDef => ({ name: t.name, description: t.description ?? "", inputSchema: t.inputSchema ?? {}, ...(t.annotations ? { annotations: t.annotations } : {}) });
@@ -324,7 +306,7 @@ describe("upgrade to extensions: Wynn's install, no re-auth", () => {
   it("not yet installed: bound connections keep Notion's rules through the bootstrap snapshot; then the install takes over", async () => {
     const e = await env();
     const w = await wynnInstall(e);
-    const before = snapshot(e.ctx, [w.pending]);
+    const before = snapshot(e.ctx);
     await allFourWork(e, w);
 
     // xaq is updated: the Notion preset left core, and its extension isn't installed yet.
@@ -345,7 +327,7 @@ describe("upgrade to extensions: Wynn's install, no re-auth", () => {
     // The same names and credentials, and Notion's rules: nothing got looser.
     await allFourWork(e, w);
     noReauth(e, w);
-    expect(snapshot(e.ctx, [w.pending])).toEqual(before);
+    expect(snapshot(e.ctx)).toEqual(before);
 
     // The background install finishes: the installed extension takes over (re-listed under its manifest).
     store.release();
@@ -354,15 +336,14 @@ describe("upgrade to extensions: Wynn's install, no re-auth", () => {
     for (const id of Object.values(w.ids)) await refresh(e, id);
     await allFourWork(e, w);
     noReauth(e, w);
-    expect(snapshot(e.ctx, [w.pending])).toEqual(before);
+    expect(snapshot(e.ctx)).toEqual(before);
     expect((await json(await e.api(`/connections/${w.ids.personal}`))).preset).toBe("notion");
-    await approvePending(e, w);
   }, 30_000);
 
   it("already installed: nothing to install, the manifest's rules apply at once, nothing else changes", async () => {
     const e = await env();
     const w = await wynnInstall(e);
-    const before = snapshot(e.ctx, [w.pending]);
+    const before = snapshot(e.ctx);
     const store = stubExtensionStore({ installed: ["notion", "t3code", "brightspace"] });
     const up = e.upgrade(store);
     expect(up.missing).toEqual([]);
@@ -376,14 +357,13 @@ describe("upgrade to extensions: Wynn's install, no re-auth", () => {
       { slug: "whoop", preset: null },
     ]);
     noReauth(e, w);
-    expect(snapshot(e.ctx, [w.pending])).toEqual(before);
-    await approvePending(e, w);
+    expect(snapshot(e.ctx)).toEqual(before);
   }, 30_000);
 
   it("a failed or unpinned install leaves the connections on the snapshot, working", async () => {
     const e = await env();
     const w = await wynnInstall(e);
-    const before = snapshot(e.ctx, [w.pending]);
+    const before = snapshot(e.ctx);
     const failing = stubExtensionStore({ installable: [] });
     const up = e.upgrade(failing);
     await up.done;
@@ -396,8 +376,7 @@ describe("upgrade to extensions: Wynn's install, no re-auth", () => {
     await e.ctx.broker.upgradeExtensions(placeholder, ["notion", "t3code", "whoop", "brightspace"].map(zero)).done;
     expect(placeholder.installs).toEqual([]);
     noReauth(e, w);
-    expect(snapshot(e.ctx, [w.pending])).toEqual(before);
-    await approvePending(e, w);
+    expect(snapshot(e.ctx)).toEqual(before);
   }, 30_000);
 
   it("bound to an extension with neither an install nor a snapshot: generic rules, and a reconnect waits for the install", async () => {
@@ -531,7 +510,7 @@ describe("upgrade to extensions: T3 Code", () => {
     });
     const e = await env();
     // Made with today's core preset: the API, the private allow, a real sign-in (DCR, PKCE, same-origin).
-    const created = await e.api("/connections", { method: "POST", json: { preset: "t3code", url: t3.origin, agentIds: [e.agent.id], levelDefault: "ask" } });
+    const created = await e.api("/connections", { method: "POST", json: { preset: "t3code", url: t3.origin, agentIds: [e.agent.id], levelDefault: "full" } });
     expect(created.status).toBe(201);
     const con = await json(created);
     await e.api(`/connections/${con.id}/private-target`, { method: "PUT", json: { allow: true } });
@@ -540,17 +519,14 @@ describe("upgrade to extensions: T3 Code", () => {
     expect((await e.h.request(`${cb.pathname}${cb.search}`)).status).toBe(200);
     await refresh(e, con.id);
     const token = (await json(await e.api(`/connections/${con.id}`))) as { expiresAt: string; slug: string };
-    // From before the upgrade: an always-allow rule for deleting one project, and a delete waiting for approval.
-    addRule(e.ctx.db, { agentId: e.agent.id, connectionId: con.id, tool: "t3_project_delete", targetPath: "/projectId", targetValue: '"p-keep"' });
     const send = (c: Client) => c.callTool({ name: `${con.slug}__t3_thread_send`, arguments: { threadId: "th1", message: "hi" } });
     const del = (c: Client, projectId: string) => c.callTool({ name: `${con.slug}__t3_project_delete`, arguments: { projectId } });
     const c0 = await e.client();
     expect(text(await send(c0))).toContain("queued");
-    const pending = approvalId(text(await del(c0, "p-pending")));
-    const before = snapshot(e.ctx, [pending]);
+    const before = snapshot(e.ctx);
 
     // Updated xaq, extension not installed yet: the bootstrap snapshot keeps T3's table and exemptions (the send goes
-    // through, deleting asks unless the rule covers it), with the same names and the same sign-in.
+    // through), with the same names and the same sign-in.
     const store = stubExtensionStore({ installable: ["t3code"], hold: true });
     const up = e.upgrade(store);
     expect(up.bound).toEqual([{ connectionId: con.id, extension: "t3code" }]);
@@ -562,8 +538,7 @@ describe("upgrade to extensions: T3 Code", () => {
     expect(text(await c1.callTool({ name: `${con.slug}__t3_project_list`, arguments: {} }))).toContain("projects");
     expect(text(await send(c1))).toContain("queued");
     expect(text(await del(c1, "p-keep"))).toContain("deleted");
-    expect(text(await del(c1, "p-other"))).toContain("pending_approval");
-    expect(snapshot(e.ctx, [pending])).toEqual(before);
+    expect(snapshot(e.ctx)).toEqual(before);
 
     // Installed: the manifest's table and exemptions apply, on the same credential.
     store.release();
@@ -572,14 +547,10 @@ describe("upgrade to extensions: T3 Code", () => {
     const c2 = await e.client();
     expect(text(await send(c2))).toContain("queued");
     expect(text(await del(c2, "p-keep"))).toContain("deleted");
-    expect(text(await del(c2, "p1"))).toContain("pending_approval");
-    expect(snapshot(e.ctx, [pending])).toEqual(before);
+    expect(snapshot(e.ctx)).toEqual(before);
     expect(new Set(t3.requests.filter((r) => r.rpcMethod === "tools/call").map((r) => r.headers.authorization)).size).toBe(1);
     const after = await json(await e.api(`/connections/${con.id}`));
     expect(after).toMatchObject({ status: "active", expired: false, expiresAt: token.expiresAt, slug: token.slug, preset: "t3code" });
-    // The approval from before runs once.
-    expect(await json(await e.api(`/approvals/${pending}/approve`, { method: "POST", json: {} }))).toMatchObject({ status: "sent" });
-    expect(t3.requests.filter((r) => r.rpcMethod === "tools/call" && r.body.includes("p-pending"))).toHaveLength(1);
   }, 30_000);
 
   it("never installed: a T3 connection still reconnects, under the snapshot's same-origin sign-in, before its 30 days run out", async () => {

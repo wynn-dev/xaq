@@ -1,6 +1,6 @@
 // `xaq smoke google-workspace --scratch` end to end, offline: the real daemon (startStack: real HTTP, the fake
 // Google for Gmail and Drive), the real admin channel (a one-time session in the data dir), /mcp as the temporary
-// agent, and a fake google-workspace extension (test/fake-workspace.ts) as an MCP upstream connection at "ask", bound
+// agent, and a fake google-workspace extension (test/fake-workspace.ts) as an MCP upstream connection at "full", bound
 // to the account like the extension's Google setup leaves it (preset google-workspace, connections.google_account_id).
 // Every mail tool is the real one: create_draft's { path } and { drive_file_id } (#86, #90), list_attachments and
 // get_attachment's extraction (format "inline", which never saves) and saved files (#87). No stand-ins.
@@ -127,7 +127,7 @@ async function world(opts: { attachments?: { filename: string; mimeType: string;
   };
   const up = await startFakeMcpUpstream({ tools: ws.tools });
   cleanup.push(() => up.close());
-  const conn = await s.admin.post<ConnectionView>("/api/connections", { url: up.url, slug: "workspace", name: "Google Workspace", levelDefault: "ask", agentIds: [] });
+  const conn = await s.admin.post<ConnectionView>("/api/connections", { url: up.url, slug: "workspace", name: "Google Workspace", levelDefault: "full", agentIds: [] });
   await s.admin.put(`/api/connections/${conn.id}/private-target`, { allow: true });
   await s.admin.post(`/api/connections/${conn.id}/connect`, {});
   // What the extension's Google setup leaves: a google-workspace connection bound to the account.
@@ -153,7 +153,6 @@ async function world(opts: { attachments?: { filename: string; mimeType: string;
         confirm: async () => true,
         signal: controller.signal,
         tmpRoot,
-        pollMs: 10,
       },
     );
   return { s, ws, account, connection, admin, out, controller, tmpRoot, knobs, run };
@@ -202,9 +201,8 @@ describe.runIf(HAS_AGENTS)("xaq smoke google-workspace", () => {
       expect(tools).toContain(t);
     }
     expect(statusOf(report, "get_attachment")).toEqual(["PASS", "PASS"]);
-    expect(report.steps.find((s) => s.tool === "slides_delete_slide")!.detail).toMatch(/^pending, approved \(apr_/);
-    expect(report.steps.find((s) => s.tool === "drive_trash")!.detail).toMatch(/^pending, approved \(apr_/);
-    expect(run.ledger.approvals).toHaveLength(2);
+    expect(report.steps.find((s) => s.tool === "slides_delete_slide")!.detail).toBe("gone");
+    expect(report.steps.find((s) => s.tool === "drive_trash")!.detail).toBe("in the trash");
     // The private PNG is refused (never shared), the public image goes in.
     expect(report.steps.filter((s) => s.tool === "slides_insert_image").map((s) => `${s.step}: ${s.status} ${s.detail}`)).toEqual([
       "Drive image (private): PASS refused as expected",
@@ -356,7 +354,7 @@ describe.runIf(HAS_AGENTS)("xaq smoke google-workspace", () => {
     const w = await world();
     // The owner's own agent, made in the console, that happens to be named like a run.
     const lookalike = await w.s.createAgent("xaq-smoke-20240101T000000Z", [
-      { accountId: w.account.id, capabilities: ["read"], labelScope: null, sendMode: "draft_only", allowTo: [], replyOnly: false, maxSendsPerHour: null, maxSendsPerDay: null },
+      { accountId: w.account.id, level: "read", allowTo: [] },
     ]);
     const report = await w.run().run();
     expect(report.steps.find((s) => s.step === "sweep earlier runs' leftovers")!.detail).toMatch(/^0 agent\(s\) deleted,/);
@@ -527,7 +525,7 @@ describe.runIf(HAS_AGENTS)("xaq smoke google-workspace", () => {
     const w = await world();
     // An ordinary agent's draft (to someone else): the smoke endpoints refuse it.
     const other: AgentWithKey = await w.s.createAgent("hermes", [
-      { accountId: w.account.id, capabilities: ["read", "draft"], labelScope: null, sendMode: "draft_only", allowTo: [], replyOnly: false, maxSendsPerHour: null, maxSendsPerDay: null },
+      { accountId: w.account.id, level: "full", allowTo: [] },
     ]);
     const mcp = await connectAgentMcp(w.admin.baseUrl, other.apiKey);
     cleanup.push(() => mcp.close());

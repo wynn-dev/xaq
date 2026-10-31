@@ -23,7 +23,7 @@ import { parseArgs } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { PairingPoll, PairingStart, PairingStartInput } from "../../shared/agent-api.ts";
-import type { Account, Agent, AgentWithKey, Approval, GrantInput, PairingRequest, Webhook, WebhookWithSecret } from "../../shared/types.ts";
+import type { Account, Agent, AgentWithKey, GrantInput, PairingRequest, Webhook, WebhookWithSecret } from "../../shared/types.ts";
 import { readSetupToken } from "../../server/auth/setup-token.ts";
 import { CALENDAR_SCOPES } from "../../server/google/scopes.ts";
 import { loadConfig } from "../../server/config.ts";
@@ -212,46 +212,27 @@ const relayPort = await receiver(8787, (_req, res) => {
 
 // ───────────── Agents ─────────────
 
-const grant = (accountId: string, patch: Partial<GrantInput>): GrantInput => ({
-  accountId,
-  capabilities: ["read"],
-  labelScope: null,
-  sendMode: "draft_only",
-  allowTo: [],
-  replyOnly: false,
-  maxSendsPerHour: null,
-  maxSendsPerDay: null,
-  ...patch,
-});
+const grant = (accountId: string, patch: Partial<GrantInput>): GrantInput => ({ accountId, level: "read", allowTo: [], ...patch });
 
 const support = await api<AgentWithKey>("POST", "/api/agents", {
   name: "Support triage",
   description: "Reads new support tickets and drafts a first reply for a human to send.",
-  grants: [grant(ops.id, { capabilities: ["read", "draft", "organize"], labelScope: [labelIds.Support!], sendMode: "draft_only" })],
+  grants: [grant(ops.id, { level: "full", allowTo: ["*@acme.dev"] })],
 });
 const billing = await api<AgentWithKey>("POST", "/api/agents", {
   name: "Billing bot",
-  description: "Matches vendor invoices to POs and answers billing questions. Every send needs approval.",
-  grants: [
-    grant(ops.id, {
-      capabilities: ["read", "draft", "send", "organize"],
-      labelScope: [labelIds.Billing!, labelIds.Vendors!],
-      sendMode: "approval",
-      allowTo: ["*@acme.dev", "*@northwind.io", "ap@stripe.com"],
-      maxSendsPerHour: args["hidden-chars"] ? 4 : 3,
-      maxSendsPerDay: 20,
-    }),
-  ],
+  description: "Matches vendor invoices to POs and answers billing questions.",
+  grants: [grant(ops.id, { level: "full", allowTo: ["*@acme.dev", "*@northwind.io", "ap@stripe.com"] })],
 });
 await api<AgentWithKey>("POST", "/api/agents", {
   name: "Scheduling assistant",
-  description: "Watches the ops calendar, answers vendor invitations and books follow-ups. Calendar changes need approval.",
-  grants: [grant(ops.id, { capabilities: ["calendar.read", "calendar.write"], calendarWriteMode: "approval", allowTo: ["*@acme.dev", "*@northwind.io"] })],
+  description: "Watches the ops calendar, answers vendor invitations and books follow-ups.",
+  grants: [grant(ops.id, { level: "full", allowTo: ["*@acme.dev", "*@northwind.io"] })],
 });
 const digest = await api<AgentWithKey>("POST", "/api/agents", {
   name: "Weekly digest (old)",
   description: "Summarized the week's newsletters every Friday. Replaced by the n8n workflow.",
-  grants: [grant(ops.id, { capabilities: ["read"], labelScope: [labelIds.Newsletters!] })],
+  grants: [grant(ops.id, {})],
 });
 log("agents created");
 
@@ -303,7 +284,7 @@ function listen(apiKey: string, consumer: string, client: { hostname: string; pl
 const claudeStart = await startPairing({
   name: "Claude Code on wynn-mbp",
   description: "Personal assistant: triages the ops inbox and drafts replies.",
-  requested: { accounts: [OPS], capabilities: ["read", "draft"], reason: "Wake me when support mail arrives so I can draft replies." },
+  requested: { accounts: [OPS], reason: "Wake me when support mail arrives so I can draft replies." },
   client: { hostname: "wynn-mbp", platform: "darwin-arm64", tool: "claude-code", version: pkgVersion },
 });
 setPairingIp(claudeStart.userCode, "100.101.34.7");
@@ -311,8 +292,8 @@ const pendingClaude = (await api<PairingRequest[]>("GET", "/api/pairings?status=
 await api<Agent>("POST", `/api/pairings/${pendingClaude.id}/approve`, {
   userCode: claudeStart.userCode,
   grants: [
-    grant(ops.id, { capabilities: ["read", "draft"], labelScope: [labelIds.Support!, labelIds.Alerts!], sendMode: "draft_only" }),
-    grant(personal.id, { capabilities: ["read"], sendMode: "draft_only" }),
+    grant(ops.id, { level: "full", allowTo: ["*@acme.dev"] }),
+    grant(personal.id, {}),
   ],
 });
 const claudePoll = await poll(claudeStart.deviceCode);
@@ -331,8 +312,6 @@ async function ensurePendingPairing() {
     description: "CI helper: reads build failure emails and opens issues.",
     requested: {
       accounts: [OPS],
-      capabilities: ["read", "draft", "send"],
-      sendMode: "direct",
       reason: "Triage CI and Datadog alert emails, then email the on-call engineer a summary.",
     },
     client: { hostname: "build-01", platform: "linux-x64", tool: "codex", version: pkgVersion },
@@ -509,7 +488,7 @@ for (const mins of [1260, 900, 610, 380, 175, 60, 12]) {
   at(mins - 1, () => cc.call("search_threads", { account: OPS, query: "is:unread" }));
 }
 at(170, () => cc.call("get_thread", { account: OPS, thread_id: msgIds["datadog-alert"]!.threadId }));
-at(8, () => cc.call("send_message", { account: OPS, to: ["jules@acme.dev"], subject: "Heads up", body: "Latency alert fired." })); // no send capability
+at(8, () => cc.call("send_message", { account: OPS, to: ["jules@personal.example"], subject: "Heads up", body: "Latency alert fired." })); // allow_to denial
 
 at(600, () => bill.call("search_threads", { query: "label:Billing newer_than:2d" }));
 at(420, () => bill.call("get_thread", { thread_id: msgIds["aws-bill"]!.threadId }));
@@ -520,16 +499,14 @@ at(50, () =>
     to: ["ap@acme.dev"],
     subject: "AR summary: week 42",
     body: "Hi AP team,\n\nThree vendor invoices arrived this week: AWS ($4,318.27), Vercel ($480.00) and Northwind (INV-2291, $3,940.00). All match open POs except Northwind's incident-response line (6 h), which needs sign-off.\n\nBilling bot",
-    reason: "Weekly AR summary for the AP team",
   }),
 );
-at(44, () => bill.call("send_message", { to: ["dana@northwind.io"], subject: "Payment scheduled", body: "Hi Dana, payment is scheduled for tomorrow.", reason: "Confirm payment date" }));
+at(44, () => bill.call("send_message", { to: ["dana@northwind.io"], subject: "Payment scheduled", body: "Hi Dana, payment is scheduled for tomorrow." }));
 at(40, () =>
   bill.call("send_message", {
     to: ["dana.whitfield@gmail.com"],
     subject: "Invoice INV-2291",
     body: "Forwarding the remittance advice as requested.",
-    reason: "Vendor asked to send remittance to a personal address",
   }),
 ); // allow_to denial
 at(31, () =>
@@ -540,29 +517,17 @@ at(31, () =>
       "The incident-response line (6 hours on Oct 9) isn't on the PO yet, so I've asked our ops lead to sign it off.\n\n" +
       "We'll pay the matched amount ($3,040.00) this week and the remainder once it's approved, well within your net-15 terms.\n\n" +
       "Best,\nAcme Billing",
-    reason: "Acknowledge Northwind invoice INV-2291 and explain the partial payment",
   }),
 );
-const pendingTo = async (addr: string) =>
-  (await api<Approval[]>("GET", "/api/approvals?status=pending")).find((a) => a.kind === "send" && a.to.some((t) => t.email === addr));
-at(7, async () => {
-  const a = await pendingTo("ap@acme.dev");
-  if (a) await api("POST", `/api/approvals/${a.id}/approve`, { note: "Looks right." });
-});
-at(6, async () => {
-  const a = await pendingTo("dana@northwind.io");
-  if (a) await api("POST", `/api/approvals/${a.id}/reject`, { note: "Don't confirm dates by email; finance sends remittance from the bank portal." });
-});
 if (args["hidden-chars"]) {
   at(33, () =>
     bill.call("reply", {
       message_id: msgIds["northwind-invoice"]!.id,
       body: "Hi Dana,\n\nPlease use the updated bank details: IBAN \u202EGB29 NWBK\u202C 6016 1331 9268 19.\u200B\n\nThanks",
-      reason: "Confirm new bank details\u2066 as requested\u2069",
     }),
   );
 }
-at(5, () => bill.call("send_message", { to: ["ap@acme.dev"], subject: "One more thing", body: "…", reason: "Follow-up" })); // rate_limit denial
+at(5, () => bill.call("send_message", { to: ["ap@acme.dev"], subject: "One more thing", body: "…" }));
 // The old digest agent gets turned off (its webhook keeps failing), and the n8n hook gets a test send.
 at(15, () => api("PATCH", `/api/agents/${digest.agent.id}`, { disabled: true }));
 at(3, () => api("POST", `/api/webhooks/${n8n.webhook.id}/test`).catch(() => {}));
@@ -617,17 +582,6 @@ ctx.db.tx(() => {
   ctx.db.run("UPDATE webhooks SET created_at = ?", iso(2 * 24 * HOUR));
   ctx.db.run("UPDATE agents SET last_used_at = ?, created_at = ? WHERE id = ?", iso(9 * 24 * HOUR), iso(40 * 24 * HOUR), digest.agent.id);
   ctx.db.run("UPDATE webhooks SET created_at = ? WHERE id = ?", iso(40 * 24 * HOUR), zap.webhook.id);
-  for (const a of ctx.db.all<{ id: string; status: string; subject: string }>("SELECT id, status, COALESCE(json_extract(payload, '$.subject'), '') AS subject FROM approvals")) {
-    const created = a.status === "pending" ? iso(31 * 60_000) : a.subject.startsWith("AR") ? iso(50 * 60_000) : iso(44 * 60_000);
-    const decided = a.status === "pending" ? null : a.subject.startsWith("AR") ? iso(7 * 60_000) : iso(6 * 60_000);
-    ctx.db.run(
-      "UPDATE approvals SET created_at = ?, expires_at = ?, decided_at = ? WHERE id = ?",
-      created,
-      new Date(Date.parse(created) + 72 * HOUR).toISOString(),
-      decided,
-      a.id,
-    );
-  }
 });
 
 const webhooks = await api<Webhook[]>("GET", "/api/webhooks");

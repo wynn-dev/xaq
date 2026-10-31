@@ -40,7 +40,7 @@ const remote = (): Record<string, unknown> => ({
   slug: "demo",
   remote: { url: "https://mcp.demo.example/mcp", auth: { type: "mcp_oauth" } },
   setup: [{ id: "connect", title: "Connect", body: "Press Connect." }],
-  risk: { tools: { list_things: { class: "read" }, drop_thing: { class: "risky", target: "/id" } } },
+  risk: { tools: { list_things: { class: "read" }, drop_thing: { class: "risky" } } },
 });
 
 const code = (): Record<string, unknown> => ({
@@ -82,6 +82,12 @@ describe("validateManifest and the JSON Schema", () => {
   it.each(FIXTURE_EXTENSIONS)("the repo's %s manifest is valid, by both", (name) => {
     const m = fixtureManifest(name);
     expect(() => validateManifest(m)).not.toThrow();
+    expect(schemaValid(m), JSON.stringify(schemaValid.errors)).toBe(true);
+  });
+
+  it("an older manifest's risk-map target is accepted and dropped", () => {
+    const m = patch(remote(), "risk.tools.drop_thing.target", ["/ids", "/id"]);
+    expect(validateManifest(m).risk!.tools.drop_thing).toEqual({ class: "risky" });
     expect(schemaValid(m), JSON.stringify(schemaValid.errors)).toBe(true);
   });
 
@@ -127,8 +133,6 @@ describe("validateManifest and the JSON Schema", () => {
     ["a zero-day policy", "reconnectPolicy", { maxLifetimeDays: 0 }, /whole number of days/],
     ["a fractional policy", "reconnectPolicy", { tokenLifetimeCapDays: 1.5 }, /whole number of days/],
     ["an unknown risk class", "risk.tools.list_things", { class: "safe" }, /must be "read", "write" or "risky"/],
-    ["a target that isn't a pointer", "risk.tools.drop_thing.target", "id", /JSON Pointer/],
-    ["an empty target list", "risk.tools.drop_thing.target", [], /must not be empty/],
     ["a step without a body", "setup.0.body", undefined, /missing "body"/],
     ["an unknown when", "setup.0.when", "funnel", /when must be "webhookUrl"/],
     ["a non-https link", "setup.0.link", { label: "Open", url: "http://example.com" }, /https/],
@@ -218,7 +222,7 @@ describe("presetFromManifest", () => {
     expect(p.userServer).toBeUndefined();
     expect(p.createSource).toBeUndefined();
     expect(p.classify(tool("list_things"))).toEqual({ risky: false, read: true, source: "preset" });
-    expect(p.classify(tool("drop_thing", { id: {} }))).toEqual({ risky: true, read: false, source: "preset", targetPath: "/id" });
+    expect(p.classify(tool("drop_thing", { id: {} }))).toEqual({ risky: true, read: false, source: "preset" });
     expect(p.classify(tool("drop_thing", { other: {} }))).toEqual({ risky: true, read: false, source: "preset" });
     // Unlisted tools: null, so the generic rules (annotations, then the verb list) decide.
     for (const name of ["unknown_tool", "toString", "__proto__", "hasOwnProperty"]) expect(p.classify(tool(name))).toBeNull();
@@ -231,16 +235,6 @@ describe("presetFromManifest", () => {
     expect(p.classify(tool("w"))).toEqual({ risky: false, read: false, source: "preset" });
     expect(p.classify(tool("r"))).toEqual({ risky: false, read: true, source: "preset" });
     expect(p.classify(tool("x"))).toEqual({ risky: true, read: false, source: "preset" });
-  });
-
-  it("target candidates: the first pointer whose top-level argument the live schema declares", () => {
-    const m = patch(remote(), "risk.tools.drop_thing.target", ["/ids", "/thing~1id", "/id"]);
-    const p = presetFromManifest({ ...fixtureExtension("notion"), name: "demo", manifest: m });
-    expect(p.classify(tool("drop_thing", { id: {}, ids: {} }))?.targetPath).toBe("/ids");
-    expect(p.classify(tool("drop_thing", { id: {}, "thing/id": {} }))?.targetPath).toBe("/thing~1id");
-    expect(p.classify(tool("drop_thing", { id: {} }))?.targetPath).toBe("/id");
-    expect(p.classify(tool("drop_thing", {}))?.targetPath).toBeUndefined();
-    expect(p.classify({ name: "drop_thing", description: "", inputSchema: {} })?.targetPath).toBeUndefined();
   });
 
   it("header auth and a user-named server", () => {
@@ -396,7 +390,7 @@ describe("review rules (tier L)", () => {
         send_note: { class: "write" },
         list_notes: { class: "read" },
         wipe_cache: { class: "read" },
-        tidy: { class: "risky", target: "/id" },
+        tidy: { class: "risky" },
         archive_note: { class: "write" },
         notes_report: { class: "read" },
       }),
@@ -412,7 +406,7 @@ describe("review rules (tier L)", () => {
     expect(classifyTool(tool("notes_report", {}, { destructiveHint: true }), p)).toMatchObject({ risky: true, read: false });
     expect(classifyTool(tool("wipe_cache"), p)).toMatchObject({ risky: true, read: false });
     // Stricter: kept. A tool the generic rules call a write can be made risky; a plain read stays a read.
-    expect(classifyTool(tool("tidy", { id: {} }), p)).toEqual({ risky: true, read: false, source: "preset", targetPath: "/id" });
+    expect(classifyTool(tool("tidy", { id: {} }), p)).toEqual({ risky: true, read: false, source: "preset" });
     expect(classifyTool(tool("list_notes", {}, { readOnlyHint: true }), p)).toEqual({ risky: false, read: true, source: "preset" });
     expect(classifyTool(tool("archive_note", {}, { destructiveHint: true }), p)).toMatchObject({ risky: true });
     // A generic write the map calls a read stays a write: not listed at Read only (update_page, run_query, create_issue).

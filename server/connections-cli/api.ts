@@ -76,7 +76,7 @@ export class ConnectionsApi {
   kill(id: string): Promise<void> {
     return this.call("POST", `/api/connections/${enc(id)}/kill`, {});
   }
-  /** PATCH: a new slug renames the exposed tools (`<slug>__<tool>`); approval rules carry over. */
+  /** PATCH: a new slug renames the exposed tools (`<slug>__<tool>`). */
   update(id: string, patch: { slug?: string; name?: string }): Promise<ConnectionView> {
     return this.call("PATCH", `/api/connections/${enc(id)}`, patch);
   }

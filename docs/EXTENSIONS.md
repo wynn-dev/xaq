@@ -1,6 +1,6 @@
 # Extensions (DECIDED by Wynn, 2026-10-16)
 
-xaq's core stays lean. It holds the broker, agents and keys, approvals, the console, the audit log, and Gmail and
+xaq's core stays lean. It holds the broker, agents and keys, the console, the audit log, and Gmail and
 Calendar. Every pre-built connection (Notion, T3 Code, Brightspace, WHOOP, …) is an **extension**. Extensions are
 installed from the public repo [wynn-dev/xaq-extensions](https://github.com/wynn-dev/xaq-extensions) (MIT) or, behind
 a clear warning, from a third-party source.
@@ -63,7 +63,7 @@ It lives at the root of the extension's directory. Unknown keys are rejected (sc
 
   // The risk map: exact tool names. Anything not listed falls back to the generic rules (annotations + verbs).
   "risk": {
-    "tools": { "t3_project_delete": { "class": "risky", "target": "/projectId" }, "t3_project_list": { "class": "read" } },
+    "tools": { "t3_project_delete": { "class": "risky" }, "t3_project_list": { "class": "read" } },
     "nameCheckExempt": ["t3_thread_send"]
   }
 }
@@ -115,9 +115,8 @@ repo's `scripts/validate.mjs`) checks the shape; a few rules below are only the 
   `read = map read AND generic read` (a tool the generic rules call a write stays a write, so Read only never gains
   one), and its `nameCheckExempt` is ignored. The install warning says so, and the
   Add connection picker marks its preset "third-party" (`PresetView.official`).
-- **`risk.tools[name].target`:** a JSON Pointer, or an array of candidate pointers. The first candidate whose
-  top-level argument the tool's live `inputSchema` declares becomes the "always allow … for this target" path. If
-  none is declared, there is no target. Notion uses `["/page_ids", "/pages", "/page_id", "/ids", "/id"]`.
+- **`risk.tools[name].target`:** accepted and ignored (it named the target of approval rules, which are gone), so
+  older manifests still install.
 - **`risk.nameCheckExempt`:** each name must be listed in `risk.tools` and not be `risky` (validator only). The
   table's answer is final for those exact names. Official extensions only (ignored for third-party ones).
 - **`code`:** `entry` is a relative `.mjs` or `.js` path inside the extension. `events` are `<name>.<event>`, which
@@ -372,7 +371,7 @@ in. Core side: `server/extensions/google-auth.ts` (binding, connect, tokens, sta
   - *Clarified (B3):* a forced removal disables the connections. When an official extension is installed again,
     its connections (still bound) return to `active` if their credentials are still there, or to `needs_reauth`;
     no new sign-in is needed. A third-party one's connections were unbound, so they stay disabled;
-  - tokens, client records, grants, levels and always-allow rules are untouched: nobody re-authorizes.
+  - tokens, client records, grants and levels are untouched: nobody re-authorizes.
 - **Binding:** `connections.preset` holds the extension's name. That is the binding, with no extra column.
   `usedBy(name)` is the ids of the connections `WHERE preset = name` (`server/extensions/bootstrap.ts`).
 - **Reconnect before the install:** through the snapshot for notion and t3code. A bound connection with neither an

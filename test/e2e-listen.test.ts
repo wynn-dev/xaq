@@ -42,14 +42,12 @@ let email: string;
 let other: string;
 let account: Account;
 let otherAccount: Account;
-let scopeLabel: string;
 
 async function setup() {
   s = await startStack();
   email = mailbox("listen");
   other = mailbox("listen-other");
   [account, otherAccount] = (await s.bootstrap({ accounts: [email, other], pubsub: true })) as [Account, Account];
-  scopeLabel = s.fake.addLabel(email, "xaq");
   // Fast polling for the tests (the server exposes this for tests; production default is 3 s).
   await setAgentApiOptions(s, { intervalSeconds: 1 });
 }
@@ -69,7 +67,7 @@ describe.runIf(HAS_AGENT_API)("pairing (device flow)", () => {
   it("delivers the key exactly once after the admin approves the matching code", async () => {
     const stream = await s.admin.stream();
     try {
-      const start = await startPairing(s.url, { name: "Hermes on e2e", requested: { accounts: [email], capabilities: ["read"], reason: "triage" }, client: { tool: "hermes", hostname: "e2e-box", platform: "linux" } });
+      const start = await startPairing(s.url, { name: "Hermes on e2e", requested: { accounts: [email], reason: "triage" }, client: { tool: "hermes", hostname: "e2e-box", platform: "linux" } });
       expect(start.status).toBe(200);
       expect(start.body.userCode).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
       expect(start.body.verificationUrl).toContain(start.body.userCode);
@@ -101,7 +99,7 @@ describe.runIf(HAS_AGENT_API)("pairing (device flow)", () => {
 
       const me = await agentMe(s.url, apiKey);
       expect(me.status).toBe(200);
-      expect(me.body).toMatchObject({ id: agent.id, name: "Hermes on e2e", grants: [{ accountId: account.id, accountEmail: email, capabilities: ["read"] }] });
+      expect(me.body).toMatchObject({ id: agent.id, name: "Hermes on e2e", grants: [{ accountId: account.id, accountEmail: email, level: "read" }] });
 
       const audit = (await s.admin.get<Page<AuditEntry>>("/api/audit?limit=200")).items.filter((e) => e.target === req.id).map((e) => [e.action, e.outcome]);
       expect(audit).toEqual(expect.arrayContaining([["pairing.approved", "denied"], ["pairing.approved", "ok"], ["pairing.key_delivered", "ok"]]));
@@ -221,24 +219,22 @@ describe.runIf(HAS_AGENT_API)("listener stream (/agent/v1/events/stream)", () =>
     expect(capped.body.ackedSeq).toBe(ev3.seq);
   });
 
-  it("never streams events from ungranted accounts or out-of-scope labels", async () => {
-    const { apiKey } = await pairAgent(s, "Scoped listener", [grant(account.id, { labelScope: [scopeLabel] })]);
+  it("never streams events from ungranted accounts", async () => {
+    const { apiKey } = await pairAgent(s, "Account listener", [grant(account.id, {})]);
     const stream = await openAgentStream(s.url, apiKey, { consumer: "scoped" });
     const otherBox = deliver("Other mailbox", { to: other });
-    const outOfScope = deliver("No label");
-    const inScope = deliver("Labeled", { labelIds: ["INBOX", "UNREAD", scopeLabel] });
+    const mine = deliver("Mine");
     await eventFor(otherBox.id);
-    await eventFor(outOfScope.id);
-    await eventFor(inScope.id);
+    await eventFor(mine.id);
     await stream.next((e) => e.event === "mail");
-    await stays(() => stream.mail().length > 1, 300, "an out-of-scope event on the stream");
-    expect(stream.mail().map((p) => p.data.message?.subject)).toEqual(["Labeled"]);
+    await stays(() => stream.mail().length > 1, 300, "another account's event on the stream");
+    expect(stream.mail().map((p) => p.data.message?.subject)).toEqual(["Mine"]);
     stream.close();
 
     const backlog = await openAgentStream(s.url, apiKey, { consumer: "scoped-all", start: "beginning" });
     await backlog.next((e) => e.event === "mail");
-    await stays(() => backlog.mail().length > 1, 300, "an out-of-scope event in the backlog");
-    expect(backlog.mail().every((p) => p.data.accountId === account.id && p.data.message?.subject === "Labeled")).toBe(true);
+    await stays(() => backlog.mail().some((p) => p.data.accountId !== account.id), 300, "another account's event in the backlog");
+    expect(backlog.mail().every((p) => p.data.accountId === account.id)).toBe(true);
     backlog.close();
     expect(otherAccount.id).not.toBe(account.id);
   });

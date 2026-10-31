@@ -3,12 +3,12 @@
 // calendar_event_state up to date and records account calendar status (accounts.calendar_*).
 //
 // An account syncs only while it has every CALENDAR_SCOPES scope, isn't paused or needs_reauth, and some
-// enabled agent's grant on it has calendar.read: a mail-only install makes no Calendar API calls at all.
+// enabled agent has a grant on it: a mail-only install makes no Calendar API calls at all.
 
 import type { CalendarEventSummary, CalendarEventType } from "../../shared/types.ts";
 import type { BusEvents } from "../bus.ts";
 import type { AppContext } from "../context.ts";
-import { json, now } from "../db/index.ts";
+import { now } from "../db/index.ts";
 import { type AccountRow, accountScopes, getRow, updateRow } from "../google/accounts.ts";
 import { type CalendarClient, type CalendarDateTimeRaw, type CalendarEventRaw, classifyCalendarError } from "../google/calendar.ts";
 import { sleep } from "../google/http.ts";
@@ -66,23 +66,10 @@ export const MAX_POLL_BACKOFF_MS = 30 * 60_000;
 export const pollBackoffMs = (intervalMs: number, failures: number): number =>
   Math.max(intervalMs, Math.min(MAX_POLL_BACKOFF_MS, intervalMs * 2 ** failures));
 
-/**
- * Accounts some enabled agent reads calendars on (calendar.read), with the union of those grants' calendar
- * scopes, lowercased (null = every calendar).
- */
-function readers(ctx: Pick<AppContext, "db">): Map<string, Set<string> | null> {
-  const rows = ctx.db.all<{ account_id: string; calendar_scope: string | null }>(
-    `SELECT g.account_id, g.calendar_scope FROM grants g JOIN agents a ON a.id = g.agent_id
-     WHERE a.disabled = 0 AND EXISTS (SELECT 1 FROM json_each(g.capabilities) WHERE value = 'calendar.read')`,
-  );
-  const out = new Map<string, Set<string> | null>();
-  for (const r of rows) {
-    const scope = r.calendar_scope === null ? null : json.parse<string[]>(r.calendar_scope, []).map((id) => id.toLowerCase());
-    const prev = out.get(r.account_id);
-    if (prev === null || scope === null) out.set(r.account_id, null);
-    else out.set(r.account_id, new Set([...(prev ?? []), ...scope]));
-  }
-  return out;
+/** Accounts some enabled agent has a grant on (every grant reads calendars). */
+function readers(ctx: Pick<AppContext, "db">): Set<string> {
+  const rows = ctx.db.all<{ account_id: string }>("SELECT DISTINCT g.account_id FROM grants g JOIN agents a ON a.id = g.agent_id WHERE a.disabled = 0");
+  return new Set(rows.map((r) => r.account_id));
 }
 
 /** Calendar scopes granted and the account not paused or waiting for a reconnect. */
@@ -160,7 +147,7 @@ class Sync implements CalendarSync {
 
   kick(accountId?: string, calendarId?: string): void {
     if (!this.running) return;
-    const ids = accountId ? [accountId] : [...new Set([...readers(this.ctx).keys(), ...this.syncedAccounts()])];
+    const ids = accountId ? [accountId] : [...new Set([...readers(this.ctx), ...this.syncedAccounts()])];
     for (const id of ids) {
       this.schedule(id, { calendars: calendarId ? new Set([calendarId]) : null, refresh: !calendarId, force: true }).catch((err: unknown) =>
         this.log.debug("Calendar sync failed", { accountId: id, error: errorMessage(err) }),
@@ -219,7 +206,7 @@ class Sync implements CalendarSync {
   private async run(signal: AbortSignal): Promise<void> {
     while (!signal.aborted) {
       const t = Date.now();
-      for (const id of new Set([...readers(this.ctx).keys(), ...this.syncedAccounts()])) {
+      for (const id of new Set([...readers(this.ctx), ...this.syncedAccounts()])) {
         if (this.polling.has(id) || (this.health.get(id)?.nextAt ?? 0) > t) continue;
         this.polling.add(id);
         void this.schedule(id, { calendars: null, refresh: false, force: false })
@@ -266,13 +253,12 @@ class Sync implements CalendarSync {
   private async passOnce(accountId: string, p: Pass): Promise<void> {
     const row = getRow(this.ctx, accountId);
     if (!row) return;
-    const scope = readers(this.ctx).get(accountId);
-    if (scope === undefined) return this.forget(accountId);
+    if (!readers(this.ctx).has(accountId)) return this.forget(accountId);
     if (!syncable(row)) return;
     const client = this.ctx.google.calendar(accountId);
     try {
       const listed = this.listedAt.get(accountId);
-      if (p.refresh || listed === undefined || Date.now() - listed > LIST_REFRESH_MS) await this.refreshList(row, client, scope);
+      if (p.refresh || listed === undefined || Date.now() - listed > LIST_REFRESH_MS) await this.refreshList(row, client);
       const failures: unknown[] = [];
       for (const { calendar_id: calendarId } of syncRows(this.ctx.db, accountId)) {
         if (this.stopping) return;
@@ -285,7 +271,7 @@ class Sync implements CalendarSync {
         } catch (err) {
           if (err instanceof GoogleApiError && err.status === 404) {
             // Deleted or unshared since the list was read: re-read it now, which drops the calendar.
-            await this.refreshList(row, client, scope);
+            await this.refreshList(row, client);
             if (!getSyncRow(this.ctx.db, accountId, calendarId)) continue;
           }
           // Account-wide problems end the pass; others are recorded per calendar and the rest still sync.
@@ -302,10 +288,10 @@ class Sync implements CalendarSync {
     }
   }
 
-  /** Synced calendars: owner/writer entries of the calendar list that some reading grant's scope covers. */
-  private async refreshList(row: AccountRow, client: CalendarClient, scope: Set<string> | null): Promise<void> {
+  /** Synced calendars: owner/writer entries of the calendar list. */
+  private async refreshList(row: AccountRow, client: CalendarClient): Promise<void> {
     const entries = await client.listCalendars();
-    const wanted = entries.filter((e) => (e.accessRole === "owner" || e.accessRole === "writer") && (scope === null || scope.has(e.id.toLowerCase())));
+    const wanted = entries.filter((e) => e.accessRole === "owner" || e.accessRole === "writer");
     let changed = false;
     for (const e of wanted) {
       const name = cleanLine(e.summaryOverride || e.summary || e.id, 200);

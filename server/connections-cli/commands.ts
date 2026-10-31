@@ -62,7 +62,7 @@ export function registerConnectionsCommands(program: Command): void {
     .option("--url <address>", "t3code: your T3 Code server's address, e.g. http://100.101.102.103:3773 (asked when omitted)")
     .option("--slug <name>", "its short name: agents see its tools as <name>__<tool>")
     .option("--name <name>", "its display name (unique; default: the server's host, or the integration's name)")
-    .option("--access <level>", "full, ask (ask before risky actions; the default) or read")
+    .option("--access <level>", "full (the default) or read")
     .option("--agent <name>", 'an agent that gets it (repeatable; default: all agents; "all")', collect)
     .option("--header <name>", "header for a server that wants a static key (default Authorization)")
     .option("--account <email>", "a Google extension (google-workspace): the connected Google account it works as (asked when omitted)")
@@ -134,7 +134,7 @@ Examples:
       .requiredOption("--from <client>", "hermes, claude-code, cursor or codex"),
   )
     .option("--dry-run", "print exactly what would be created and changed, and change nothing")
-    .option("--access <level>", "for every imported connection: full, ask (the default) or read")
+    .option("--access <level>", "for every imported connection: full (the default) or read")
     .option("--agent <name>", 'an agent that gets them (repeatable; default: all agents; "all")', collect)
     .option("--profile <name>", "the agent profile setup-mcp uses for the single xaq entry (default \"default\")")
     .option("--allow-private <origin>", "allow this exact scheme://host:port on this machine or a private network without asking (repeatable; --yes never does)", collect)

@@ -1,7 +1,7 @@
 // A fake google-workspace extension for the smoke command's tests: the extension's tool names and argument shapes
 // (xaq-extensions ws/scaffold-drive-docs and ws/sheets-slides) over an in-memory Drive, served as an MCP upstream by
 // test/fake-mcp-upstream.ts. Risk follows the manifest: reads are readOnlyHint, drive_trash and slides_delete_slide
-// are destructiveHint (so "ask" holds them for approval). Every write is logged, so a test can prove existing files
+// are destructiveHint (so "full" holds them for approval). Every write is logged, so a test can prove existing files
 // were never touched. Faults are injected per tool.
 
 import type { FakeTool, FakeToolResult } from "./fake-mcp-upstream.ts";

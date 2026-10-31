@@ -239,7 +239,7 @@ export function createWebhooksService(ctx: AppContext, options: WebhooksOptions 
     for (const w of hooks) {
       if (!json.parse<EventType[]>(w.event_types, []).includes(event.type)) continue;
       if (!matchesFilter(json.parse<WebhookFilter>(w.filter, {}), event)) continue;
-      if (!ctx.policy.canSeeEvent(w.agent_id, event, "webhook")) continue;
+      if (!ctx.policy.canSeeEvent(w.agent_id, event)) continue;
       count += ctx.db.run(
         `INSERT INTO deliveries (id, webhook_id, event_seq, status, attempts, next_attempt_at, created_at, updated_at)
          VALUES (?, ?, ?, 'pending', 0, ?, ?, ?) ON CONFLICT(webhook_id, event_seq) DO NOTHING`,
@@ -419,8 +419,8 @@ export function createWebhooksService(ctx: AppContext, options: WebhooksOptions 
     const isTest = d.event_seq < 0;
     const event = eventBySeq(ctx.db, d.event_seq);
     if (!event) return record(d, isTest, fail("The event was removed by retention before it could be delivered"), true);
-    if (!isTest && !ctx.policy.canSeeEvent(d.agent_id, event, "webhook")) {
-      return record(d, isTest, fail("The webhook's agent can no longer see this event (grant or label scope changed)"), true);
+    if (!isTest && !ctx.policy.canSeeEvent(d.agent_id, event)) {
+      return record(d, isTest, fail("The webhook's agent can no longer see this event (its grant changed)"), true);
     }
 
     const signal = shutdown.signal;

@@ -43,7 +43,7 @@ describe.runIf(HAS_AGENTS)("attachment content over MCP", () => {
     s = await startStack();
     email = mailbox("attach-content");
     [account] = (await s.bootstrap({ accounts: [{ email, name: "Reader" }] })) as [Account];
-    const { apiKey } = await s.createAgent("reader", [grant(account.id, { capabilities: ["read"] })]);
+    const { apiKey } = await s.createAgent("reader", [grant(account.id, { level: "read" })]);
     mcp = await s.agent(apiKey);
   });
   afterAll(async () => {

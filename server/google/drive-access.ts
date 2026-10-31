@@ -15,7 +15,7 @@ export function agentCanReadDrive(ctx: Pick<AppContext, "db" | "settings">, agen
   const rows = ctx.db.all<{ connection_id: string; disabled: number }>(
     `SELECT g.connection_id, a.disabled FROM connection_grants g
        JOIN connections c ON c.id = g.connection_id JOIN agents a ON a.id = g.agent_id
-     WHERE g.agent_id = ? AND c.preset = ? AND c.status <> 'disabled' AND g.level IN ('read', 'ask', 'full')`,
+     WHERE g.agent_id = ? AND c.preset = ? AND c.status <> 'disabled' AND g.level IN ('read', 'full')`,
     agentId,
     GOOGLE_WORKSPACE_EXTENSION,
   );

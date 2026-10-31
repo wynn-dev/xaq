@@ -5,14 +5,11 @@ import type { SettingsStore } from "../../settings.ts";
 /** Above this many visible tools (native + broker), an agent gets search mode unless its setting says otherwise. */
 export const SEARCH_MODE_THRESHOLD = 30;
 
-/** Hot tools stay directly exposed in search mode: at most this many, get_call_status included. */
+/** Hot tools stay directly exposed in search mode: at most this many. */
 export const MAX_HOT_TOOLS = 5;
 
-/** Configured hot tools when an agent's setting names none (beyond get_call_status). */
+/** Configured hot tools when an agent's setting names none. */
 export const DEFAULT_HOT_TOOLS: readonly string[] = [];
-
-/** The broker's approval-status tool; directly exposed in search mode whenever the agent has broker tools. */
-export const CALL_STATUS_TOOL = "get_call_status";
 
 export type ToolMode = "direct" | "search";
 
@@ -88,8 +85,7 @@ export function chooseMode(m: ModeInput): ToolMode {
   return m.nativeCount + m.brokerCount > SEARCH_MODE_THRESHOLD ? "search" : "direct";
 }
 
-/** Directly exposed tools in search mode: get_call_status when the agent has broker tools, then the configured ones. */
-export function hotToolNames(brokerCount: number, configured: readonly string[]): string[] {
-  const names = brokerCount > 0 ? [CALL_STATUS_TOOL, ...configured] : [...configured];
-  return [...new Set(names)].slice(0, MAX_HOT_TOOLS);
+/** Directly exposed tools in search mode: the configured ones. */
+export function hotToolNames(configured: readonly string[]): string[] {
+  return [...new Set(configured)].slice(0, MAX_HOT_TOOLS);
 }

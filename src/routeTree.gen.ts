@@ -20,7 +20,6 @@ import { Route as AppEventsRouteImport } from './routes/_app/events'
 import { Route as AppExtensionsRouteImport } from './routes/_app/extensions'
 import { Route as AppGetStartedRouteImport } from './routes/_app/get-started'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
-import { Route as ApproveIdRouteImport } from './routes/approve.$id'
 import { Route as AppAgentsIndexRouteImport } from './routes/_app/agents/index'
 import { Route as AppAgentsAgentIdRouteImport } from './routes/_app/agents/$agentId'
 import { Route as AppConnectionsIndexRouteImport } from './routes/_app/connections/index'
@@ -82,11 +81,6 @@ const AppSettingsRoute = AppSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => AppRoute,
 } as any)
-const ApproveIdRoute = ApproveIdRouteImport.update({
-  id: '/approve/$id',
-  path: '/approve/$id',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const AppAgentsIndexRoute = AppAgentsIndexRouteImport.update({
   id: '/agents/',
   path: '/agents/',
@@ -130,7 +124,6 @@ export interface FileRoutesByFullPath {
   '/extensions': typeof AppExtensionsRoute
   '/get-started': typeof AppGetStartedRoute
   '/settings': typeof AppSettingsRoute
-  '/approve/$id': typeof ApproveIdRoute
   '/agents/$agentId': typeof AppAgentsAgentIdRoute
   '/connections/$connectionId': typeof AppConnectionsConnectionIdRoute
   '/webhooks/$webhookId': typeof AppWebhooksWebhookIdRoute
@@ -148,7 +141,6 @@ export interface FileRoutesByTo {
   '/extensions': typeof AppExtensionsRoute
   '/get-started': typeof AppGetStartedRoute
   '/settings': typeof AppSettingsRoute
-  '/approve/$id': typeof ApproveIdRoute
   '/': typeof AppIndexRoute
   '/agents/$agentId': typeof AppAgentsAgentIdRoute
   '/connections/$connectionId': typeof AppConnectionsConnectionIdRoute
@@ -169,7 +161,6 @@ export interface FileRoutesById {
   '/_app/extensions': typeof AppExtensionsRoute
   '/_app/get-started': typeof AppGetStartedRoute
   '/_app/settings': typeof AppSettingsRoute
-  '/approve/$id': typeof ApproveIdRoute
   '/_app/': typeof AppIndexRoute
   '/_app/agents/$agentId': typeof AppAgentsAgentIdRoute
   '/_app/connections/$connectionId': typeof AppConnectionsConnectionIdRoute
@@ -191,7 +182,6 @@ export interface FileRouteTypes {
     | '/extensions'
     | '/get-started'
     | '/settings'
-    | '/approve/$id'
     | '/agents/$agentId'
     | '/connections/$connectionId'
     | '/webhooks/$webhookId'
@@ -209,7 +199,6 @@ export interface FileRouteTypes {
     | '/extensions'
     | '/get-started'
     | '/settings'
-    | '/approve/$id'
     | '/'
     | '/agents/$agentId'
     | '/connections/$connectionId'
@@ -229,7 +218,6 @@ export interface FileRouteTypes {
     | '/_app/extensions'
     | '/_app/get-started'
     | '/_app/settings'
-    | '/approve/$id'
     | '/_app/'
     | '/_app/agents/$agentId'
     | '/_app/connections/$connectionId'
@@ -243,7 +231,6 @@ export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   LoginRoute: typeof LoginRoute
   SetupRoute: typeof SetupRoute
-  ApproveIdRoute: typeof ApproveIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -324,13 +311,6 @@ declare module '@tanstack/react-router' {
       fullPath: '/settings'
       preLoaderRoute: typeof AppSettingsRouteImport
       parentRoute: typeof AppRoute
-    }
-    '/approve/$id': {
-      id: '/approve/$id'
-      path: '/approve/$id'
-      fullPath: '/approve/$id'
-      preLoaderRoute: typeof ApproveIdRouteImport
-      parentRoute: typeof rootRouteImport
     }
     '/_app/agents/': {
       id: '/_app/agents/'
@@ -417,7 +397,6 @@ const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   LoginRoute: LoginRoute,
   SetupRoute: SetupRoute,
-  ApproveIdRoute: ApproveIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

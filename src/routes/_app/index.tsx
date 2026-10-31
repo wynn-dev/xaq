@@ -5,7 +5,7 @@ import { PageHeader, QueryError, StatCard } from "@/components/common";
 import { ConnectionsNotice } from "@/components/connections/connections-notice";
 import { CalendarNotice } from "@/components/google/calendar-notice";
 import { ActivityChart } from "@/components/overview/activity-chart";
-import { AccountsAttention, ApprovalsCallout, PairingCallout } from "@/components/overview/attention";
+import { AccountsAttention, PairingCallout } from "@/components/overview/attention";
 import { RecentEvents } from "@/components/overview/recent-events";
 import { SetupChecklist } from "@/components/overview/setup-checklist";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,13 +32,12 @@ function Parts({ items }: { items: (string | false | null | undefined | 0)[] }) 
 function Overview() {
   const stats = useQuery(queries.overview());
   const accounts = useQuery(queries.accounts());
-  const pending = useQuery(queries.approvals("pending"));
   const pairings = useQuery(queries.pairings("pending"));
   const agents = useQuery(queries.agents());
   const listening = agents.data?.filter((a) => a.listeners.some((l) => l.connected)).length ?? 0;
   const s = stats.data;
   const pairingCount = pairings.data?.length ?? 0;
-  const waiting = (s?.pendingApprovals ?? 0) + pairingCount;
+  const waiting = pairingCount;
   const loading = stats.isPending;
   const acc = s && accountsStat(s.accounts);
 
@@ -50,7 +49,6 @@ function Overview() {
       <ConnectionsNotice />
       <CalendarNotice />
       <PairingCallout pairings={pairings.data ?? []} />
-      <ApprovalsCallout approvals={pending.data ?? []} />
 
       {stats.isError ? (
         <QueryError error={stats.error} onRetry={() => void stats.refetch()} />
@@ -100,11 +98,7 @@ function Overview() {
             tone={waiting ? "warn" : undefined}
             loading={loading}
             value={fmtNumber(waiting)}
-            hint={
-              waiting
-                ? <Parts items={[s?.pendingApprovals && plural(s.pendingApprovals, "message"), pairingCount && plural(pairingCount, "agent")]} />
-                : "nothing waiting"
-            }
+            hint={waiting ? plural(pairingCount, "agent") : "nothing waiting"}
           />
         </div>
       )}

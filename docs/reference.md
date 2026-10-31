@@ -28,13 +28,13 @@ running xaq in production, scripting it, and understanding what it does.
   Gmail push via a Pub/Sub *pull* subscription (no public URL needed), or within the poll interval (30 seconds by
   default) by polling with zero extra setup.
   [`xaq listen`](listen.md) wakes agents on a laptop behind NAT. Google Calendar invitations and changes arrive
-  the same way (polled every 60 seconds by default) for agents with `calendar.read`.
+  the same way (polled every 60 seconds by default) for agents with a grant on the account.
 - **Webhooks.** Filter by account, label, sender, recipient, subject, attachments or calendar. Payloads are signed per
   [Standard Webhooks](https://www.standardwebhooks.com), retried with backoff, logged, and replayable.
-- **Guardrails that don't degrade content.** Per agent and mailbox: capabilities, label scope, send mode (direct,
-  draft-only or human approval), recipient allowlists, reply-only and send caps. Email content is cleaned, not censored.
-- **A web console.** Guided Google setup, connect snippets for Claude Code, Codex, Cursor and Hermes, an approvals inbox,
-  live events, delivery logs and the audit trail.
+- **Guardrails that don't degrade content.** Per agent and mailbox: full access or read only, and a recipient
+  allowlist. Email content is cleaned, not censored.
+- **A web console.** Guided Google setup, connect snippets for Claude Code, Codex, Cursor and Hermes, pairing
+  approvals, live events, delivery logs and the audit trail.
 - **A ready-made agent skill.** `SKILL.md` teaches agents to use the tools well and to treat email as data.
 
 ## Connections (MCP broker)
@@ -70,9 +70,9 @@ key; the broker holds every upstream credential and lists only the tools the age
     `t3-<host>`. T3's sign-in lasts 30 days and can't be refreshed: xaq warns 7 days and 1 day before
     (`connection.expiring`, with a Reconnect link), and once it expires agents get "The T3 Code connection '<name>'
     expired; ask your user to reconnect it in xaq at <link>" instead of a failure. Reconnect takes a new pairing code
-    and keeps the name, agents and access levels. Asks before (at "Ask before risky actions"): deleting a project or
-    scheduled task, project and environment settings, schedules, and running JavaScript in or uploading local files
-    to a page in T3's browser preview; starting, messaging and stopping threads go straight through. T3's browser
+    and keeps the name, agents and access levels. Risky (hidden at Read only): deleting a project or scheduled task,
+    project and environment settings, schedules, and running JavaScript in or uploading local files to a page in
+    T3's browser preview. T3's browser
     preview runs in your browser profile on T3's machine, with its saved logins: an agent that can use it browses
     websites as you.
 
@@ -83,19 +83,15 @@ key; the broker holds every upstream credential and lists only the tools the age
   "Expires in N days" from 7 days before, and `connection.expiring` events go to webhooks and listeners at 7 days and
   1 day, with `reconnectUrl`. Past it the connection is Expired (`expired: true`; status `needs_reauth`), as it is
   after a 401 when there's no refresh token; agents are told to ask you to reconnect, with the link.
-- **One choice per connection**: Full access, Ask before risky actions (default), or Read only, for all agents or
-  chosen ones; each agent's page can change it. Risky means irreversible: deleting, sending, publishing or sharing
-  outside, payments. Everything else goes straight through.
-- **Approvals**: a risky call returns `pending_approval` at once with a link to a one-tap approve page; the agent
-  checks back with `get_call_status`. "Always allow this" (for that agent and tool, optionally only that target)
-  means it never asks twice; the rules are listed on the agent's page.
+- **One choice per connection**: Full access (default) or Read only, for all agents or chosen ones; each agent's page
+  can change it. Read only lists only the tools that read; risky ones (deleting, sending, publishing or sharing
+  outside, payments) never count as reads.
 - **Tool changes**: if a server later changes or adds a tool, agents simply use the new definition under the same
-  name: nothing is held and nothing asks you. Access levels, approvals and "always allow" rules apply as usual (a
-  change that makes a tool risky makes it ask). The audit log records each change (`connection.tool_changed`, with
-  the old and new definition hash).
+  name: nothing is held. Access levels apply as usual (a change that makes a tool risky takes it off Read only). The
+  audit log records each change (`connection.tool_changed`, with the old and new definition hash).
 - **Tool names**: `<connection>__<tool>`, e.g. `notion__notion-search`. To change a connection's short name: the
   connection's page → Change short name, or `npx xaq-cli connections rename <name> --slug <new> [--name <display
-  name>]`. The exposed tool names follow at once and approval rules carry over, but anything that calls the old
+  name>]`. The exposed tool names follow at once, but anything that calls the old
   `<old>__<tool>` names stops working until it uses the new ones.
 - **Prompts and resources**: `/mcp` also passes each connection's prompts and resources through, in both tool-list
   modes. Prompts are `<connection>__<prompt>`. Resources are `xaq://<connection>/<the original URI, percent-encoded>`,
@@ -115,8 +111,8 @@ key; the broker holds every upstream credential and lists only the tools the age
   release (22.23.4, 24.22.1, 26.12.1) is recommended: it fixes a permission-model bypass (`fs.realpathSync`) and
   high-severity issues in Node itself (a Brotli decoder out-of-bounds write, TLS hostname checks, `dns.resolve`).
   Below it xaq still runs, and warns (see "Which Node.js the service runs").
-- **Search mode**: the tool list shows only `search_tools`, `call_read_tool`, `call_write_tool` and `get_call_status`;
-  the agent finds the rest by searching. Calling a tool by its name still works, with the same access, approvals and
+- **Search mode**: the tool list shows only `search_tools`, `call_read_tool` and `call_write_tool`;
+  the agent finds the rest by searching. Calling a tool by its name still works, with the same access and
   audit. A new agent gets search mode if it has more than about 30 tools the first time it connects. After that its
   mode changes only when you change it (agent page → Tool list), never because a connection added tools. Agents
   created before search mode keep every tool listed. Any agent can ask for it with `/mcp?mode=search`.
@@ -337,7 +333,7 @@ xaq connect <url> … / setup-mcp / listen …   # on agent machines, see listen
 | | `XAQ_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `--url` | `XAQ_URL` | the xaq running on this machine, else `http://localhost:8425` | `skill` commands only: the server URL written into SKILL.md |
 
-Everything else (public URL, ingest mode, poll interval, body size limit, retention, approval expiry, webhook allowlist,
+Everything else (public URL, ingest mode, poll interval, body size limit, retention, webhook allowlist,
 agent pairing, the directories agents may attach files from, the folder for saved attachments) is set in the console
 under **Settings**.
 
@@ -419,9 +415,8 @@ so subscribe to one or the other, not both.
 
 **Calendar events:** `calendar.invitation_received` (someone invited the account), `calendar.event_created`,
 `calendar.event_updated` (`detail.changes` lists what changed, or is `null` when the previous version wasn't seen) and
-`calendar.event_cancelled`. They come from the calendars the account owns or can edit, and only reach agents with
-`calendar.read` on that account, for the calendars their grant covers; mail `read` alone doesn't see them, and
-`calendar.read` alone doesn't see mail. They use the same envelope with `message: null` and `calendarEvent` set:
+`calendar.event_cancelled`. They come from the calendars the account owns or can edit, and reach agents with a grant
+on that account, like its mail events. They use the same envelope with `message: null` and `calendarEvent` set:
 calendar and event id, title, start and end, location, organizer, attendees and their responses, the account's own
 response and https links. No description is stored; a webhook with "include body" fetches it when it delivers and puts
 the cleaned text in `content` (not on cancellations).
@@ -612,20 +607,20 @@ external-sender flag, whether hidden content was removed, and phrases typical of
 informational; nothing is withheld because of them. Very long bodies are cut at 20,000 characters by default
 (Settings), with a note saying so.
 
-**Actions are strictly controlled.** A new agent can do nothing. Each grant (agent × mailbox) sets:
+**Actions are strictly controlled.** A new agent can do nothing. Each grant (agent × mailbox) is one of two levels,
+and the same two levels apply to connections:
 
-| Control | |
+| Level | |
 |---|---|
-| Capabilities | `read` (search, read, attachments, events), `draft`, `send`, `organize` (labels, archive, read state), `trash` |
-| Label scope | Confine the agent to threads carrying certain labels. Searches are rewritten and fetches by id are checked; anything outside looks "not found". |
-| Send mode | `draft_only` (default: a Gmail draft for a human to send), `approval` (queued in the console; approving sends it) or `direct` |
-| Allowed recipients | Exact addresses or globs such as `*@example.com` |
-| Reply only | No new messages or forwards; replies only, inside threads the agent can see, to people already in the conversation. The reply goes to the message's Reply-To or From, which the sender chooses: use Allowed recipients to limit who can be written to. |
-| Send caps | Per rolling hour and 24 hours, counting sends that became drafts or approvals too |
+| Read only | Search and read mail, labels and attachments, read calendars, and receive the account's events |
+| Full access | Also organize, trash, draft and send mail, and change calendar events. Sends and changes go out at once |
 
-**A send whose outcome is unknown counts as sent.** When Gmail answers a send with a 5xx, times out or resets the
-connection, the message may have gone out: the tool fails with `send_uncertain`, the attempt counts toward the send
-caps, and the agent is told to look in `in:sent` (or `in:drafts`) before retrying. A request that never reached Google,
+Full access can be limited to **allowed recipients**: exact addresses or globs such as `*@example.com`. Every to, cc
+and bcc address must match, and so must every guest of a calendar change.
+
+**A send whose outcome is unknown is reported as such.** When Gmail answers a send with a 5xx, times out or resets the
+connection, the message may have gone out: the tool fails with `send_uncertain`, and the agent is told to look in
+`in:sent` before retrying. A request that never reached Google,
 a rate limit and any other error Google answers with (a 4xx) are clean failures, safe to retry.
 
 **Everything is audited.** Every tool call and every console change is recorded with its outcome, and denials name the
@@ -646,8 +641,8 @@ network isn't restricted, and only OS-level isolation (a separate user or contai
 They need a patched Node (≥ 22.23.2, 24.18.1 or 26.5.1). Install third-party code extensions only from people you
 trust.
 
-Recommendations: split agents that read untrusted mail from agents that can send; prefer `draft_only` or `approval`;
-use allowlists for anything that sends directly.
+Recommendations: split agents that read untrusted mail from agents that can send; give read only where it's enough,
+and an allowlist to anything with full access.
 
 ### Attachments
 
@@ -658,7 +653,7 @@ of four sources:
 |---|---|
 | `{content_base64, filename, mime_type?}` | The bytes, base64-encoded inside the MCP tool call |
 | `{path, filename?, mime_type?}` | A file on xaq's own machine, inside a directory the owner allowed (below). Off by default |
-| `{message_id, attachment_id}` | An attachment of another message in the same account, with the ids `get_message` / `get_thread` show. Needs `read` on the grant, and the message must be in its label scope |
+| `{message_id, attachment_id}` | An attachment of another message in the same account, with the ids `get_message` / `get_thread` show |
 | `{drive_file_id, export_as?}` | A Google Drive file of the account. Google Docs, Sheets, Slides and Drawings are exported, as PDF unless `export_as` says otherwise (Docs: `pdf`, `docx`, `txt`, `md`; Sheets: `pdf`, `xlsx`, `csv` (first sheet); Slides: `pdf`, `pptx`, `txt`; Drawings: `pdf`); other files are attached as they are. Needs two things. First, the agent's own grant (any level) on a Google Workspace connection bound to the same Google account; mail access alone isn't enough, or any agent that can send could mail out any Drive file. Without it: "This agent has no access to Google Drive for <account>: grant it the Google Workspace connection." Second, the account's Drive read access (`drive.readonly`, through the Google Workspace extension's Drive opt-in); without it: "Drive isn't enabled for <account>: install the google-workspace extension and enable Drive in xaq (Connections → Google Workspace)". The connection is bound by its Google setup (the account it works as). Drive is read with an access token limited to `drive.readonly`, never the account's full token |
 
 `forward` keeps `include_attachments` (the original's files) and can add new ones next to them. Every file is checked
@@ -700,11 +695,10 @@ files.
 - Errors name the path the agent gave and sizes, never contents. They never say where a symlink leads: anything
   refused through a symlink, including a missing target, gets the same answer.
 
-The grant applies unchanged: a draft needs `draft`, a send needs `send` and goes through its send mode, recipient
-allowlist, reply-only rule and caps. An approval card lists each file's name, type, size and source (the path that was
-read, the source message, or the Drive file's name and id and the export format), and approving sends the draft that
-carries them. The audit log records the same plus each file's SHA-256, never its content; a refused attempt records
-what was asked for (the path, message or Drive id).
+The grant applies unchanged: drafts and sends need full access and the recipient allowlist. The audit log records each
+file's name, type, size, source (the path that was read, the source message, or the Drive file's name and id and the
+export format) and SHA-256, never its content; a refused attempt records what was asked for (the path, message or
+Drive id).
 
 Messages whose raw form is over 512 KB are sent to Gmail through its `/upload/` endpoint (`uploadType=media`, or
 `multipart` with the `threadId` for replies), since Google documents no size limit for the JSON `raw` field and has
@@ -807,7 +801,7 @@ Everything lives in the data directory (`~/.xaq` by default):
 
 | File | |
 |---|---|
-| `xaq.db` | SQLite database (plus `-wal` and `-shm` files): accounts, encrypted tokens, agents, grants, events, deliveries, approvals, audit log |
+| `xaq.db` | SQLite database (plus `-wal` and `-shm` files): accounts, encrypted tokens, agents, grants, events, deliveries, audit log |
 | `master.key` | Encrypts Google tokens, webhook secrets and the OAuth client secret (mode 0600) |
 | `setup-token` | The one-time setup token, until the instance is claimed |
 | `xaq.lock` | Marks the running instance (pid and port) |
@@ -830,9 +824,8 @@ it first (`systemctl --user stop xaq`), or take a consistent copy with
 `sqlite3 ~/.xaq/xaq.db ".backup /path/to/backup.db"`.
 
 Received mail bodies are never stored; xaq keeps metadata (ids, headers, labels, snippets) and fetches content
-from Gmail on demand. The only bodies in the database are those of sends queued for approval. Events, deliveries,
-audit entries and decided approvals (with their bodies) are pruned after the retention period set in **Settings** (30
-days by default).
+from Gmail on demand. Events, deliveries and audit entries are pruned after the retention period set in **Settings**
+(30 days by default).
 
 ## Release channel
 

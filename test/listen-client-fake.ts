@@ -79,7 +79,7 @@ export class FakeAgentApi {
   /** Reversible refusal: the stream answers 403 with this code. */
   blockedCode: string | null = null;
   /** What GET /me reports as the agent's grants (the console's choice at approval). */
-  grants: AgentSelf["grants"] = [{ accountId: "acc_1", accountEmail: "me@example.com", capabilities: ["read", "draft"], labelScope: null, sendMode: "draft_only" }];
+  grants: AgentSelf["grants"] = [{ accountId: "acc_1", accountEmail: "me@example.com", level: "read", allowTo: [] }];
   /** What GET /me reports as the agent's broker connections (undefined: an older daemon, no field). */
   connections: AgentSelf["connections"] = undefined;
   /** Consumers as GET /me reports them (created on first stream connection, like the daemon). */

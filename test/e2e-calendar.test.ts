@@ -1,14 +1,14 @@
 // E2E: Google Calendar through the real app (docs/calendar.md, workstream G). The fake Calendar API
 // (test/fake-google.ts) stands in for Google; everything else is the real server driven over HTTP:
-// syncToken sync → events, MCP calendar tools (read, direct and approval writes, allowTo), console
-// approvals, webhook calendarIds filters, calendar.read listener streams, and the upgrade of a
+// syncToken sync → events, MCP calendar tools (read, writes, allowTo), webhook calendarIds filters,
+// listener streams, and the upgrade of a
 // pre-calendar install (migrations 1–6, two Gmail accounts, Pub/Sub) with mail flowing throughout.
 
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MIGRATIONS } from "../server/db/schema.ts";
-import type { Account, Approval, CalendarSetupState, ConnectAccountResponse, MailEvent, WebhookWithSecret } from "../shared/types.ts";
+import type { Account, CalendarSetupState, ConnectAccountResponse, MailEvent, WebhookWithSecret } from "../shared/types.ts";
 import { grant, mailbox, type Stack, startStack } from "./e2e/harness.ts";
 import { openAgentStream } from "./e2e/listen.ts";
 import { type Agent, MCP_TEXT } from "./e2e/mcp.ts";
@@ -25,9 +25,8 @@ function slot(days: number, hours = 1) {
 const raw = (s: { start: string; end: string }) => ({ start: { dateTime: s.start }, end: { dateTime: s.end } });
 
 interface WriteResult {
-  status: "applied" | "deleted" | "pending_approval";
+  status: "applied" | "deleted";
   eventId?: string;
-  approvalId?: string;
 }
 
 let s: Stack;
@@ -60,7 +59,7 @@ beforeAll(async () => {
   [account] = (await s.bootstrap({ accounts: [email] })) as [Account];
   expect(account.calendar).toMatchObject({ status: "active", missingScopes: [] });
   // Sync starts once an enabled agent has calendar.read on the account; the baseline emits nothing.
-  const created = await s.createAgent("cal-reader", [grant(account.id, { capabilities: ["calendar.read"] })]);
+  const created = await s.createAgent("cal-reader", [grant(account.id, { level: "read" })]);
   reader = { id: created.agent.id, apiKey: created.apiKey };
   await baselined(s, account);
   readerMcp = await s.agent(reader.apiKey);
@@ -125,7 +124,7 @@ describe("write (direct)", () => {
   let writer: Agent;
   beforeAll(async () => {
     const created = await s.createAgent("cal-writer", [
-      grant(account.id, { capabilities: ["calendar.read", "calendar.write"], calendarWriteMode: "direct", allowTo: ["*@acme.test"] }),
+      grant(account.id, { level: "full", allowTo: ["*@acme.test"] }),
     ]);
     writer = await s.agent(created.apiKey);
   });
@@ -154,9 +153,9 @@ describe("write (direct)", () => {
     expect(s.fake.calendar.events(email, email)).toHaveLength(before);
   });
 
-  it("without calendar.write the write tools are not offered and calls are refused", async () => {
-    const mailOnly = await s.createAgent("mail-only", [grant(account.id, { capabilities: ["read"] })]);
-    for (const key of [mailOnly.apiKey, reader.apiKey]) {
+  it("read-only agents aren't offered the write tools and their calls are refused", async () => {
+    const other = await s.createAgent("read-only", [grant(account.id, { level: "read" })]);
+    for (const key of [other.apiKey, reader.apiKey]) {
       const mcp = key === reader.apiKey ? readerMcp : await s.agent(key);
       try {
         const tools = await mcp.tools();
@@ -172,63 +171,8 @@ describe("write (direct)", () => {
   });
 });
 
-describe("write (approval)", () => {
-  let approver: Agent;
-  beforeAll(async () => {
-    const created = await s.createAgent("cal-approver", [grant(account.id, { capabilities: ["calendar.read", "calendar.write"], calendarWriteMode: "approval" })]);
-    approver = await s.agent(created.apiKey);
-  });
-  afterAll(() => approver?.close());
-
-  const pending = async (id: string) => (await s.admin.get<Approval[]>("/api/approvals?status=pending")).find((a) => a.id === id);
-
-  it("queues a create; approving in the console creates it under the id chosen when queued", async () => {
-    const when = slot(6);
-    const q = await approver.json<WriteResult>("create_calendar_event", { summary: "Board prep", start: when.start, end: when.end });
-    expect(q.status).toBe("pending_approval");
-    expect(s.fake.calendar.events(email, email).some((e) => e.summary === "Board prep")).toBe(false);
-    const queued = await pending(q.approvalId!);
-    expect(queued).toMatchObject({ kind: "calendar.create", calendar: { calendarId: email, change: { summary: "Board prep" } } });
-    const eventId = queued!.calendar!.eventId!;
-    expect(eventId).toMatch(/^[a-v0-9]{5,}$/);
-
-    const done = await s.admin.post<Approval>(`/api/approvals/${q.approvalId}/approve`);
-    expect(done).toMatchObject({ status: "sent", sentMessageId: eventId });
-    expect(s.fake.calendar.event(email, email, eventId)).toMatchObject({ summary: "Board prep", status: "confirmed" });
-    expect(s.fake.calendar.events(email, email).filter((e) => e.summary === "Board prep")).toHaveLength(1);
-    expect(await approver.ok("get_send_status", { approval_id: q.approvalId })).toMatch(/sent|applied/);
-  });
-
-  it("an update sends If-Match: a change made in Google since it was queued is not overwritten; an unchanged event is updated", async () => {
-    const when = slot(7);
-    const ev = s.fake.calendar.putEvent(email, email, { summary: "Design review", ...raw(when) });
-
-    const q1 = await approver.json<WriteResult>("update_calendar_event", { event_id: ev.id, summary: "Design review (agent)" });
-    expect(q1.status).toBe("pending_approval");
-    // A human edits the event in Google Calendar before the approval.
-    s.fake.calendar.putEvent(email, email, { id: ev.id, location: "Room 9" });
-    await s.admin.post<Approval>(`/api/approvals/${q1.approvalId}/approve`).catch(() => {});
-    const failed = await s.admin.get<Approval>(`/api/approvals/${q1.approvalId}`);
-    expect(failed.status).toBe("failed");
-    expect(failed.error).toMatch(/changed in Google Calendar since/);
-    expect(s.fake.calendar.event(email, email, ev.id)).toMatchObject({ summary: "Design review", location: "Room 9" });
-
-    const q2 = await approver.json<WriteResult>("update_calendar_event", { event_id: ev.id, summary: "Design review (agent)" });
-    expect(await s.admin.post<Approval>(`/api/approvals/${q2.approvalId}/approve`)).toMatchObject({ status: "sent", sentMessageId: ev.id });
-    expect(s.fake.calendar.event(email, email, ev.id)).toMatchObject({ summary: "Design review (agent)", location: "Room 9" });
-  });
-
-  it("rejecting discards the change", async () => {
-    const ev = s.fake.calendar.putEvent(email, email, { summary: "Keep me", ...raw(slot(8)) });
-    const q = await approver.json<WriteResult>("delete_calendar_event", { event_id: ev.id });
-    expect(q.status).toBe("pending_approval");
-    expect(await s.admin.post<Approval>(`/api/approvals/${q.approvalId}/reject`, { note: "no" })).toMatchObject({ status: "rejected" });
-    expect(s.fake.calendar.event(email, email, ev.id)).toMatchObject({ summary: "Keep me", status: "confirmed" });
-  });
-});
-
 describe("delivery", () => {
-  it("a calendar event reaches a webhook filtered by calendarIds and a calendar.read listener stream, and nothing else", async () => {
+  it("a calendar event reaches a webhook filtered by calendarIds and a listener stream, and nothing else", async () => {
     const hook = (path: string, patch: Record<string, unknown>) =>
       s.admin.post<WebhookWithSecret>("/api/webhooks", { agentId: reader.id, name: path, url: `${rx.url}${path}`, includeBody: true, enabled: true, ...patch });
     await hook("/hooks/cal", { eventTypes: ["calendar.invitation_received"], filter: { calendarIds: [email] } });
@@ -288,29 +232,38 @@ function rewindToPreCalendar(path: string): void {
   const refIndexes = new Set(ddl.filter((d) => d.type === "index").map((d) => d.sql));
   const indexes = db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL").all() as { name: string; sql: string }[];
   for (const { name, sql } of indexes) if (!refIndexes.has(sql)) db.exec(`DROP INDEX "${name}"`);
-  for (const [table, cols] of columns(db)) {
+  const now = columns(db);
+  for (const [table, cols] of now) {
     const keep = want.get(table);
     if (!keep) {
       db.exec(`DROP TABLE "${table}"`);
       continue;
     }
     const extra = cols.filter((col) => !keep.includes(col));
-    if (!extra.length) continue;
+    // Columns a later migration dropped (migration 13's grants.capabilities…) come back as '[]'.
+    const missing = keep.filter((col) => !cols.includes(col));
+    if (!extra.length && !missing.length) continue;
     try {
+      if (missing.length) throw new Error("rebuild");
       db.exec("SAVEPOINT rewind");
       for (const col of extra) db.exec(`ALTER TABLE "${table}" DROP COLUMN "${col}"`);
       db.exec("RELEASE rewind");
     } catch {
-      // DROP COLUMN can't remove an indexed or foreign-key column (migration 8's approvals.connection_id):
-      // rebuild the table from its 1–6 definition, keeping its rows and rowids.
-      db.exec("ROLLBACK TO rewind; RELEASE rewind");
+      // DROP COLUMN can't remove an indexed or foreign-key column (migration 8's approvals.connection_id), and can't
+      // add one back: rebuild the table from its 1–6 definition, keeping its rows and rowids.
+      if (!missing.length) db.exec("ROLLBACK TO rewind; RELEASE rewind");
       const list = keep.map((c) => `"${c}"`).join(", ");
+      const values = keep.map((c) => (missing.includes(c) ? "'[]'" : `"${c}"`)).join(", ");
       db.exec(`ALTER TABLE "${table}" RENAME TO "_rewind"`);
       for (const d of ddl) if (d.type === "table" && d.tbl_name === table) db.exec(d.sql);
-      db.exec(`INSERT INTO "${table}" (rowid, ${list}) SELECT rowid, ${list} FROM "_rewind"; DROP TABLE "_rewind";`);
+      db.exec(`INSERT INTO "${table}" (rowid, ${list}) SELECT rowid, ${values} FROM "_rewind"; DROP TABLE "_rewind";`);
       for (const d of ddl) if (d.type === "index" && d.tbl_name === table) db.exec(d.sql);
     }
   }
+  // Tables a later migration dropped (migration 13's approvals) come back empty.
+  const gone = (d: { tbl_name: string }) => !now.has(d.tbl_name) && !d.tbl_name.startsWith("sqlite_");
+  for (const d of ddl) if (d.type === "table" && gone(d)) db.exec(d.sql);
+  for (const d of ddl) if (d.type === "index" && gone(d)) db.exec(d.sql);
   db.exec("DELETE FROM settings WHERE key LIKE 'calendar.%'; DELETE FROM _migrations WHERE version > 6;");
   expect(columns(db)).toEqual(want);
   db.close();
@@ -325,7 +278,7 @@ describe("upgrading a pre-calendar install (2 Gmail accounts, Pub/Sub) with mail
     const addresses = [mailbox("upgrade-a"), mailbox("upgrade-b")] as const;
     // Before Google Calendar, accounts connected with mail scopes only.
     const accounts = (await u.bootstrap({ accounts: [...addresses], pubsub: true, calendar: false })) as [Account, Account];
-    const hermes = await u.createAgent("Hermes", accounts.map((a) => grant(a.id, { capabilities: ["read"] })));
+    const hermes = await u.createAgent("Hermes", accounts.map((a) => grant(a.id, { level: "read" })));
     const delivered = new Map<string, string[]>(addresses.map((a) => [a, []]));
     const deliver = (to: string, subject: string) => {
       const m = u.fake.deliver(to, { from: "Sender <sender@else.test>", subject, text: subject });
@@ -349,9 +302,9 @@ describe("upgrading a pre-calendar install (2 Gmail accounts, Pub/Sub) with mail
     } finally {
       migrated.close();
     }
-    // Existing installs add Calendar explicitly; grants stay mail-only.
+    // Existing installs add Calendar explicitly; the grants come through as read only.
     expect(await u.admin.get<CalendarSetupState>("/api/google/calendar")).toMatchObject({ enabled: false, step: "off" });
-    expect((await u.admin.get<{ grants: { capabilities: string[] }[] }>(`/api/agents/${hermes.agent.id}`)).grants.map((g) => g.capabilities)).toEqual([["read"], ["read"]]);
+    expect((await u.admin.get<{ grants: { level: string }[] }>(`/api/agents/${hermes.agent.id}`)).grants.map((g) => g.level)).toEqual(["read", "read"]);
 
     const on = await u.admin.patch<CalendarSetupState>("/api/google/calendar", { enabled: true });
     expect(on.accounts.map((a) => a.status)).toEqual(["not_granted", "not_granted"]);
@@ -386,9 +339,9 @@ describe("upgrading a pre-calendar install (2 Gmail accounts, Pub/Sub) with mail
     }
     expect(events.filter((e) => e.type === "sync.gap")).toEqual([]);
 
-    // Done: granting calendar.read starts the sync, and invitations arrive while mail keeps flowing.
+    // Done: the grant reads calendars once Calendar is added, and invitations arrive while mail keeps flowing.
     const [first] = accounts;
-    await u.admin.put(`/api/agents/${hermes.agent.id}/grants/${first.id}`, grant(first.id, { capabilities: ["read", "calendar.read"] }));
+    await u.admin.put(`/api/agents/${hermes.agent.id}/grants/${first.id}`, grant(first.id, { level: "read" }));
     await baselined(u, (await u.admin.get<Account[]>("/api/accounts")).find((a) => a.id === first.id)!);
     const invite = u.fake.calendar.invite(ORGANIZER, [addresses[0]], { summary: "After the upgrade", ...raw(slot(2)) });
     const last = deliver(addresses[0], "Mail after Calendar");

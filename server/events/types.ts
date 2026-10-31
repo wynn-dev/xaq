@@ -9,18 +9,17 @@ export interface NewEvent {
   type: EventType;
   /** Account events. Connection events (isConnectionEventType) pass connectionId instead. */
   accountId?: string;
-  /** Connection events (`connection.*`, `approval.requested`, `<preset>.*`): events.connection_id (account_id ''). */
+  /** Connection events (`connection.*`, `<preset>.*`): events.connection_id (account_id ''). */
   connectionId?: string;
   message?: MessageSummary | null;
   /**
-   * Union of label ids across the message's whole thread at event time. Label-scoped grants see an
-   * event when any of these is in scope (scope is thread-level). Defaults to message.labelIds.
-   * Stored in events.label_ids.
+   * Union of label ids across the message's whole thread at event time (label filters match them).
+   * Defaults to message.labelIds. Stored in events.label_ids.
    */
   threadLabelIds?: string[];
   /** For label.added / label.removed: the labels that changed. */
   labelIds?: string[];
-  /** calendar.* events: the event (its calendarId drives calendar scopes and webhook calendarIds filters). */
+  /** calendar.* events: the event (its calendarId drives webhook calendarIds filters). */
   calendarEvent?: CalendarEventSummary | null;
   detail?: Record<string, unknown>;
   /**

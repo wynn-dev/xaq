@@ -22,14 +22,12 @@ export interface Ledger {
   /** Files a create call reported that turned out NOT to be in the scratch folder: never written to again, reported. */
   strays: Map<string, { kind: string; name: string }>;
   drafts: Map<string, { deleted: boolean }>;
-  /** mcp.call approvals the run approved (its own calls only). */
-  approvals: string[];
   agent: { id: string; name: string } | null;
   tempDir: string | null;
 }
 
 export function newLedger(marker: string): Ledger {
-  return { marker, folder: null, files: new Map(), strays: new Map(), drafts: new Map(), approvals: [], agent: null, tempDir: null };
+  return { marker, folder: null, files: new Map(), strays: new Map(), drafts: new Map(), agent: null, tempDir: null };
 }
 
 /**

@@ -24,11 +24,11 @@
 //                                            key_rotated and agent_deleted)
 //
 // Pairing (approved design): the CLI starts a pairing and shows `userCode` + `verificationUrl`; a human
-// approves that exact code in the console (choosing the grant, draft_only by default). Only then is
+// approves that exact code in the console (choosing the access, read by default). Only then is
 // the API key generated; it is handed to the polling CLI exactly once and written to a 0600 file.
 // Codes are short-lived and single-use; requests, approvals, denials, expiry and key delivery are audited.
 
-import type { CalendarWriteMode, Capability, EventType, SendMode, WebhookFilter } from "./types.ts";
+import type { AccessLevel, EventType, WebhookFilter } from "./types.ts";
 
 export type AgentTool = "claude-code" | "codex" | "cursor" | "hermes" | "other";
 
@@ -36,13 +36,9 @@ export interface PairingStartInput {
   /** Human-readable agent name, e.g. "Hermes on wynn-mbp". */
   name: string;
   description?: string | null;
-  /** What the agent asks for. The human decides in the console; send mode defaults to draft_only. */
+  /** What the agent asks for. The human decides in the console. */
   requested?: {
     accounts?: string[]; // account emails
-    capabilities?: Capability[];
-    sendMode?: SendMode;
-    /** How calendar writes should run if calendar.write is granted; the human decides (default "approval"). */
-    calendarWriteMode?: CalendarWriteMode;
     reason?: string;
   };
   client?: { hostname?: string; platform?: string; tool?: AgentTool; version?: string };
@@ -85,18 +81,9 @@ export interface AgentSelf {
   grants: {
     accountId: string;
     accountEmail: string;
-    capabilities: Capability[];
-    labelScope: string[] | null;
-    sendMode: SendMode;
-    /** Send restrictions (absent from older daemons). */
-    allowTo?: string[];
-    replyOnly?: boolean;
-    maxSendsPerHour?: number | null;
-    maxSendsPerDay?: number | null;
-    /** Calendar ids the grant covers, null = every calendar (absent from older daemons). */
-    calendarScope?: string[] | null;
-    /** How calendar.write changes execute (absent from older daemons). */
-    calendarWriteMode?: CalendarWriteMode;
+    level: AccessLevel;
+    /** Recipient allowlist for sends and calendar attendees; empty = anyone. */
+    allowTo: string[];
   }[];
   /**
    * This agent's listener consumers (absent from older daemons). `startSeq`: where the cursor started
@@ -108,7 +95,7 @@ export interface AgentSelf {
    * MCP broker connections this agent may use (absent from older daemons and while the broker is off): the
    * connection's name, its tool prefix (`<slug>__`) and this agent's level. Nothing else about the connection.
    */
-  connections?: { name: string; slug: string; level: "full" | "ask" | "read" }[];
+  connections?: { name: string; slug: string; level: AccessLevel }[];
   mcpUrl: string;
   skillUrl: string;
   /** Newest event seq this agent can see: where a new consumer starts ("from now on"). */

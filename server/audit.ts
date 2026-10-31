@@ -10,7 +10,7 @@ export interface AuditInput {
   accountId?: string | null;
   target?: string | null;
   outcome: AuditOutcome;
-  /** Required for denials: the guardrail that blocked it ("allow_to", "label_scope", "rate_limit", …). */
+  /** Required for denials: the guardrail that blocked it ("allow_to", "read_only", …). */
   reason?: string | null;
   durationMs?: number | null;
   /** Small, non-sensitive context. Never message bodies, keys or tokens. */

@@ -26,7 +26,7 @@ export function PairingNotifier() {
     toast(`${msg.data.name} is asking for access`, {
       description: msg.data.client.hostname ? `From ${msg.data.client.hostname}. Approve it with the code in its terminal.` : "Approve it with the code in its terminal.",
       duration: 15_000,
-      action: { label: "Review", onClick: () => void navigate({ to: "/approvals", search: { tab: "access" } }) },
+      action: { label: "Review", onClick: () => void navigate({ to: "/approvals" }) },
     });
   });
   return null;

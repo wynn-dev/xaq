@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import type { CalendarEventSummary, MessageContent, WebhookPayload } from "../shared/types.ts";
-import { accessProblem, newestGrantedSeq, newestVisibleSeq } from "../server/agentapi/listeners.ts";
+import { accessProblem, newestGrantedSeq } from "../server/agentapi/listeners.ts";
 import { summarizeEvent } from "../server/calendar/summary.ts";
 import type { CalendarService } from "../server/calendar/types.ts";
 import type { StoredEvent } from "../server/events/types.ts";
@@ -131,41 +131,34 @@ describe("webhook bodies for calendar events", () => {
     expect([data.content, data.contentError]).toEqual([undefined, undefined]);
   });
 
-  it("re-checks calendar.read and the calendar scope before fetching the description", async () => {
+  it("re-checks the grant before fetching the description", async () => {
     const { ctx, calls } = setup(description("Agenda"));
-    const scoped = ctx.policy.createAgent({ name: "scoped", grants: [grantInput("acc_1", { capabilities: ["calendar.read"], calendarScope: [TEAM] })] }).agent.id;
-    const mailOnly = ctx.policy.createAgent({ name: "mail", grants: [grantInput("acc_1")] }).agent.id;
-    const all = ctx.policy.createAgent({ name: "all", grants: [grantInput("acc_1", { capabilities: ["calendar.read"] })] }).agent.id;
+    const reader = ctx.policy.createAgent({ name: "reader", grants: [grantInput("acc_1")] }).agent.id;
+    const none = ctx.policy.createAgent({ name: "none" }).agent.id;
     const body = async (agentId: string, ev: StoredEvent) => (await buildPayload(ctx, ev, true, { bodyCheck: scopeBodyCheck(ctx, agentId, ev) })).data;
 
-    expect(await body(scoped, stored())).toMatchObject({ contentError: "Event description unavailable: not accessible" });
-    expect(await body(mailOnly, stored())).toMatchObject({ contentError: "Event description unavailable: not accessible" });
+    expect(await body(none, stored())).toMatchObject({ contentError: "Event description unavailable: not accessible" });
     expect(calls).toEqual([]);
-    expect((await body(scoped, stored({ calendarEvent: calEvent(TEAM) }))).content?.body).toBe("Agenda");
-    expect((await body(all, stored())).content?.body).toBe("Agenda");
+    expect((await body(reader, stored())).content?.body).toBe("Agenda");
   });
 });
 
 describe("listener streams for calendar.read", () => {
-  it("lets an agent with only calendar.read stream, and counts its calendar events for cursors", () => {
+  it("lets any grant stream, and caps cursors at its accounts' newest event", () => {
     const t = testContext();
     dispose = t.dispose;
     const { ctx } = t;
     ctx.db.run("INSERT INTO accounts (id, email, refresh_token_enc, created_at) VALUES ('acc_1', ?, 'x', ?)", ME, new Date().toISOString());
-    const cal = ctx.policy.createAgent({ name: "cal", grants: [grantInput("acc_1", { capabilities: ["calendar.read"], calendarScope: [ME] })] }).agent.id;
-    const none = ctx.policy.createAgent({ name: "none", grants: [grantInput("acc_1", { capabilities: ["calendar.write"] })] }).agent.id;
+    const cal = ctx.policy.createAgent({ name: "cal", grants: [grantInput("acc_1", { level: "read" })] }).agent.id;
+    const none = ctx.policy.createAgent({ name: "none" }).agent.id;
     const hash = (id: string) => ctx.db.get<{ key_hash: string }>("SELECT key_hash FROM agents WHERE id = ?", id)!.key_hash;
     expect(accessProblem(ctx.db, cal, hash(cal))).toBeNull();
     expect(accessProblem(ctx.db, none, hash(none))).toBe("no_read_grant");
 
-    const mine = ctx.events.emit({ type: "calendar.event_created", accountId: "acc_1", calendarEvent: calEvent(ME), dedupeKey: "k1" })!;
-    const mail = ctx.events.emit({ type: "message.received", accountId: "acc_1", message: makeEvent(1).data.message, dedupeKey: "k2" })!;
+    ctx.events.emit({ type: "calendar.event_created", accountId: "acc_1", calendarEvent: calEvent(ME), dedupeKey: "k1" });
     const other = ctx.events.emit({ type: "calendar.event_created", accountId: "acc_1", calendarEvent: calEvent(TEAM), dedupeKey: "k3" })!;
     expect(newestGrantedSeq(ctx, cal)).toBe(other.seq);
-    // Neither the mail nor the out-of-scope calendar's event is visible.
-    expect(newestVisibleSeq(ctx, cal)).toBe(mine.seq);
-    expect(mail.seq).toBeGreaterThan(mine.seq);
-    expect([newestGrantedSeq(ctx, none), newestVisibleSeq(ctx, none)]).toEqual([0, 0]);
+    expect(newestGrantedSeq(ctx, none)).toBe(0);
   });
 });
 

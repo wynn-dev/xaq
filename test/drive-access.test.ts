@@ -21,7 +21,7 @@ describe("agentCanReadDrive", () => {
     for (const [id, email] of [["acc_x", "x@example.com"], ["acc_y", "y@example.com"]] as const) {
       ctx.db.run("INSERT INTO accounts (id, email, display_name, status, refresh_token_enc, created_at) VALUES (?, ?, 'X', 'active', 'x', ?)", id, email, now);
     }
-    const { agent } = ctx.policy.createAgent({ name: "drive-agent", grants: [grantInput("acc_x", { capabilities: ["read", "send"] })] });
+    const { agent } = ctx.policy.createAgent({ name: "drive-agent", grants: [grantInput("acc_x", { level: "full" })] });
     const connection = (id: string, preset: string, accountId: string | null, slug: string) => {
       ctx.db.run(
         `INSERT INTO connections (id, kind, preset, slug, name, url, auth_type, level_default, status, google_account_id, created_at, updated_at)

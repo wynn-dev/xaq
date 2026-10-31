@@ -42,7 +42,7 @@ async function connectWith(address: string, scopes: string[]): Promise<Account> 
 }
 
 async function agentWith(name: string, workspaceLevel: "read" | null) {
-  const body = { name, grants: [grant(account.id, { capabilities: ["read", "send"], sendMode: "direct" })] };
+  const body = { name, grants: [grant(account.id, { level: "full" })] };
   const { agent, apiKey }: AgentWithKey = await s.admin.post<AgentWithKey>("/api/agents", body);
   if (workspaceLevel) {
     // The console's connection access: PUT replaces the connection's grants, so keep the others.

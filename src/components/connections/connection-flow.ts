@@ -23,20 +23,16 @@ const DAY = 86_400_000;
 
 // ───────────── Access levels ─────────────
 
-export const ACCESS_LEVELS = ["full", "ask", "read"] as const satisfies readonly AccessLevel[];
-export const DEFAULT_LEVEL: AccessLevel = "ask";
+export const ACCESS_LEVELS = ["full", "read"] as const satisfies readonly AccessLevel[];
+export const DEFAULT_LEVEL: AccessLevel = "full";
 
 export const LEVEL_INFO: Record<AgentLevel, { label: string; description: string }> = {
-  full: { label: "Full access", description: "Agents use every tool without asking you." },
-  ask: {
-    label: "Ask before risky actions",
-    description: "Reading, creating and editing go straight through. Deleting, sending, sharing outside and payments wait for your approval.",
-  },
+  full: { label: "Full access", description: "Agents use every tool." },
   read: { label: "Read only", description: "Agents can only look things up. Tools that change anything are hidden." },
   none: { label: "No access", description: "This agent doesn't see this connection's tools." },
 };
 
-export const AGENT_LEVELS = ["full", "ask", "read", "none"] as const satisfies readonly AgentLevel[];
+export const AGENT_LEVELS = ["full", "read", "none"] as const satisfies readonly AgentLevel[];
 
 // ───────────── Status ─────────────
 

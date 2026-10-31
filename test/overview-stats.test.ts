@@ -60,18 +60,12 @@ describe("overview", () => {
     delivery("d5", "pending", ago(HOUR), 0);
     db.run("INSERT INTO deliveries (id, webhook_id, event_seq, status, attempts, created_at, updated_at) VALUES ('t1', 'w', -1, 'succeeded', 1, ?, ?)", ago(HOUR), ago(HOUR)); // test delivery
 
-    const approval = (id: string, status: string, expiresAt: string) =>
-      db.run("INSERT INTO approvals (id, agent_id, account_id, kind, status, draft_id, payload, created_at, expires_at) VALUES (?, 'g1', 'a1', 'send', ?, 'd', '{}', ?, ?)", id, status, ago(0), expiresAt);
-    approval("p1", "pending", ago(-HOUR));
-    approval("p2", "pending", ago(HOUR)); // overdue, about to expire
-    approval("p3", "sent", ago(-HOUR));
 
     const s = overviewStats(t.ctx, at);
     expect(s.accounts).toEqual({ total: 3, active: 1, needsAttention: 1 });
     expect(s.agents).toEqual({ total: 2, activeLast24h: 1 });
     expect(s.events24h).toBe(4);
     expect(s.deliveries24h).toEqual({ succeeded: 1, failed: 2 });
-    expect(s.pendingApprovals).toBe(1);
     expect(s.toolCalls24h).toBe(3);
     expect(s.denied24h).toBe(1);
 

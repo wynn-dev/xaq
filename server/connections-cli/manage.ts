@@ -486,7 +486,7 @@ export async function reconnectConnection(slug: string, flags: { paste?: boolean
 export async function disableConnection(slug: string, deps: ManageDeps): Promise<number> {
   const { api, prompter: p } = deps;
   const c = await api.bySlug(slug);
-  if (!(await p.confirm(`Disable "${slug}"? Agents lose its tools at once, its pending approvals are cancelled and its stored credentials are deleted.`, false))) return 0;
+  if (!(await p.confirm(`Disable "${slug}"? Agents lose its tools at once and its stored credentials are deleted.`, false))) return 0;
   await api.kill(c.id);
   p.print(`${pc.green("✔")} Disabled "${slug}". To use it again, turn it on in the console's Connections page and reconnect.`);
   return 0;

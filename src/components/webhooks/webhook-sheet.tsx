@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { InfoIcon, SparklesIcon } from "lucide-react";
 import { useState } from "react";
-import { useCalendarNames } from "@/components/agents/calendar-scope-picker";
+import { useCalendarNames } from "@/components/webhooks/calendar-list";
 import { ErrorAlert, SectionLabel } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
@@ -200,11 +200,11 @@ function WebhookForm({
 
           <Separator />
           <EventTypePicker value={draft.eventTypes} onChange={(eventTypes) => set({ eventTypes })} invalid={touched && errors.events} />
-          {calendar && agent && !agent.grants.some((g) => g.capabilities.includes("calendar.read")) && (
+          {calendar && agent && !agent.grants.length && (
             <p className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs">
               <InfoIcon className="mt-px size-3.5 shrink-0 text-warning" />
               <span>
-                {agent.name} can't read any calendar, so calendar events never reach this webhook. Give it Calendar: read on its{" "}
+                {agent.name} has no account, so calendar events never reach this webhook. Give it access on its{" "}
                 <Link to="/agents/$agentId" params={{ agentId: agent.id }} className="underline underline-offset-4">
                   agent page
                 </Link>

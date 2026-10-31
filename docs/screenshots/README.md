@@ -20,11 +20,10 @@ Taken from demos against a fake Google (`scripts/demo/seed.ts`) by `scripts/demo
 | `accounts.png` | Gmail accounts with their Calendar status, one needing reconnect, with the agents using each |
 | `agents.png` | Agents list with the "Connect an agent" entry point and a pending access request |
 | `connect-agent.png` | Connect an agent: the `connect` command per tool and a waiting request to approve |
-| `agent-grant-editor.png` | Agent detail: grant editor (capabilities, thread-level label scope, send mode, recipients, caps) |
+| `agent-grant-editor.png` | Agent detail: grant editor (full access or read only, allowed recipients) |
 | `agent-listeners.png` | Agent detail: MCP setup commands and connected listeners |
-| `pairing-request.png` | Approvals, Agent access: a request opened from the terminal's link |
+| `pairing-request.png` | Approvals: a request opened from the terminal's link |
 | `pairing-approve.png` | Approving a request: type the terminal's code, choose access (starts at read-only) |
-| `approvals.png` | Approvals: a reply waiting for review, with the agent's reason |
 | `webhook-deliveries.png` | Webhook detail: plain-language summary and delivery log with a failed attempt expanded |
 | `events.png` | Live events feed |
 | `audit.png` | Audit log with a guardrail denial expanded |

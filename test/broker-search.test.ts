@@ -39,7 +39,7 @@ function registered(n: number): RegisteredTool[] {
       slug,
       def: { name, description: t.description, inputSchema: t.inputSchema },
       cls: { risky: t.risky, read: t.read, source: "heuristic" },
-      level: "ask",
+      level: "full",
       pinHash: "h",
     };
   });
@@ -47,7 +47,7 @@ function registered(n: number): RegisteredTool[] {
 
 /**
  * Stubs the broker's view and BrokerCalls on ctx.broker (the real /mcp seam, registerBrokerTools, stays). Like the real
- * BrokerCalls, `call` audits under the real name; risky tools come back pending_approval at once. The real wiring is
+ * BrokerCalls, `call` audits under the real name. The real wiring is
  * exercised end to end in the last test.
  */
 function fakeBroker(ctx: AppContext, tools: RegisteredTool[]) {
@@ -55,16 +55,11 @@ function fakeBroker(ctx: AppContext, tools: RegisteredTool[]) {
   const slugs = [...new Set(tools.map((t) => t.slug))];
   ctx.broker.view = () =>
     ctx.settings.get().brokerUpstreams
-      ? { connections: slugs.map((slug) => ({ connectionId: `con_${slug}`, slug, name: slug, level: "ask" as const })), tools }
+      ? { connections: slugs.map((slug) => ({ connectionId: `con_${slug}`, slug, name: slug, level: "full" as const })), tools }
       : null;
   const brokerCalls: BrokerCalls = {
     async call(agentId, name, args, signal): Promise<ToolResult> {
       calls.push({ agentId, name, args, signal });
-      const tool = tools.find((t) => t.exposedName === name)!;
-      if (tool.cls.risky) {
-        ctx.audit.record({ actorType: "agent", actorId: agentId, action: name, outcome: "ok", reason: "pending_approval" });
-        return { content: [{ type: "text", text: JSON.stringify({ status: "pending_approval", approval_id: "apr_1" }) }] };
-      }
       ctx.audit.record({ actorType: "agent", actorId: agentId, action: name, outcome: "ok" });
       return { content: [{ type: "text", text: `ran ${name}` }] };
     },
@@ -86,7 +81,7 @@ function setup() {
     subject: "Hi",
     text: "Hello",
   });
-  const reader = t.addAgent("reader", [grantInput("acc_a", { capabilities: ["read"] })]);
+  const reader = t.addAgent("reader", [grantInput("acc_a", { level: "read" })]);
   const connect = async (opts: BuildOptions = {}, agentId = reader.agent.id) => {
     const server = buildMcpServer(t.ctx, { agentId, name: "reader" }, opts);
     const client = new Client({ name: "test", version: "1" });
@@ -115,9 +110,8 @@ describe("search mode: when it applies", () => {
     expect(chooseMode({ ...base, brokerCount: 100, preference: "direct" })).toBe("direct");
     expect(chooseMode({ ...base, brokerCount: 100, preference: "direct", query: "search" })).toBe("search");
     expect(chooseMode({ ...base, brokerCount: 0, query: "other" })).toBe("direct");
-    expect(hotToolNames(0, [])).toEqual([]);
-    expect(hotToolNames(3, [])).toEqual(["get_call_status"]);
-    expect(hotToolNames(3, ["a", "b", "c", "d", "e"])).toEqual(["get_call_status", "a", "b", "c", "d"]);
+    expect(hotToolNames([])).toEqual([]);
+    expect(hotToolNames(["a", "b", "c", "d", "e", "f"])).toEqual(["a", "b", "c", "d", "e"]);
   });
 
   it("changes nothing while brokerUpstreams is off, even with ?mode=search and 100 broker tools", async () => {
@@ -162,21 +156,21 @@ describe("search mode: when it applies", () => {
     expect(await (await connect()).names()).toEqual(META);
     setAgentSearchSettings(ctx.db, reader.agent.id, { mode: "direct" });
     fakeBroker(ctx, registered(60));
-    expect(await (await connect()).names()).toEqual([...READER_TOOLS, "get_call_status", ...registered(60).map((t) => t.exposedName)].sort());
+    expect(await (await connect()).names()).toEqual([...READER_TOOLS, ...registered(60).map((t) => t.exposedName)].sort());
   });
 
-  it("turns on above SEARCH_MODE_THRESHOLD visible tools (native + broker), with get_call_status and the configured hot tools exposed", async () => {
+  it("turns on above SEARCH_MODE_THRESHOLD visible tools (native + broker), with the configured hot tools exposed", async () => {
     const { ctx, connect, reader } = setup();
     enableBroker(ctx);
     fakeBroker(ctx, registered(SEARCH_MODE_THRESHOLD - READER_TOOLS.length));
-    expect(await (await connect()).names()).toHaveLength(SEARCH_MODE_THRESHOLD + 1); // + get_call_status
+    expect(await (await connect()).names()).toHaveLength(SEARCH_MODE_THRESHOLD);
 
     fakeBroker(ctx, registered(SEARCH_MODE_THRESHOLD - READER_TOOLS.length + 1));
     const c = await connect();
-    expect(await c.names()).toEqual([...META, "get_call_status"].sort());
+    expect(await c.names()).toEqual([...META].sort());
 
     setAgentSearchSettings(ctx.db, reader.agent.id, { hot: ["list_accounts", "notion__search"] });
-    expect(await (await connect()).names()).toEqual([...META, "get_call_status", "list_accounts", "notion__search"].sort());
+    expect(await (await connect()).names()).toEqual([...META, "list_accounts", "notion__search"].sort());
   });
 });
 
@@ -226,7 +220,7 @@ describe("search mode: the meta-tools", () => {
     ]);
   });
 
-  it("runs broker tools through BrokerCalls under the real name: a risky call still waits for approval", async () => {
+  it("runs broker tools through BrokerCalls under the real name", async () => {
     const { ctx, connect, reader } = setup();
     enableBroker(ctx);
     const f = fakeBroker(ctx, registered(100));
@@ -235,7 +229,7 @@ describe("search mode: the meta-tools", () => {
     const args = { channel_id: "C1", text: "Ship it" };
     const r = await c.call("call_write_tool", { name: "slack__post_message", arguments: args });
     expect(r.isError).toBe(false);
-    expect(JSON.parse(r.text)).toEqual({ status: "pending_approval", approval_id: "apr_1" });
+    expect(r.text).toBe("ran slack__post_message");
     expect(f.calls).toHaveLength(1);
     expect(f.calls[0]).toMatchObject({ agentId: reader.agent.id, name: "slack__post_message", args });
 
@@ -302,7 +296,7 @@ describe("search mode: calling a tool by name", () => {
 
     setAgentSearchSettings(ctx.db, reader.agent.id, { mode: "search" });
     const search = await connect();
-    expect(await search.names()).toEqual([...META, "get_call_status"].sort());
+    expect(await search.names()).toEqual([...META].sort());
     const s = [];
     for (const n of names) s.push(await outcome(search, n, args[n]));
 
@@ -315,7 +309,7 @@ describe("search mode: calling a tool by name", () => {
     expect(f.calls).toEqual([]);
   });
 
-  it("runs a broker tool called by name through BrokerCalls: a risky one is still pending approval", async () => {
+  it("runs a broker tool called by name through BrokerCalls", async () => {
     const { ctx, connect, reader } = setup();
     enableBroker(ctx);
     const f = fakeBroker(ctx, registered(100));
@@ -324,7 +318,7 @@ describe("search mode: calling a tool by name", () => {
     expect(await c.names()).not.toContain("slack__post_message");
 
     const r = await c.call("slack__post_message", { channel_id: "C1", text: "Ship it" });
-    expect(JSON.parse(r.text)).toEqual({ status: "pending_approval", approval_id: "apr_1" });
+    expect(r.text).toBe("ran slack__post_message");
     expect((await c.call("notion__search", { query: "roadmap" })).text).toBe("ran notion__search");
     expect(f.calls.map((x) => [x.agentId, x.name])).toEqual([
       [reader.agent.id, "slack__post_message"],
@@ -355,7 +349,7 @@ describe("search mode: agents keep their mode", () => {
     enableBroker(ctx);
     // Hermes before the upgrade: no setting, 9 native + 40 broker tools, over the threshold.
     fakeBroker(ctx, registered(40));
-    const explicit = addAgent("explicit", [grantInput("acc_a", { capabilities: ["read"] })]);
+    const explicit = addAgent("explicit", [grantInput("acc_a", { level: "read" })]);
     setAgentSearchSettings(ctx.db, explicit.agent.id, { mode: "search" });
     // The marker is unset, as on an install upgrading to this release.
     expect(ctx.settings.getState("broker.searchDirectPinned")).toBeNull();
@@ -368,20 +362,20 @@ describe("search mode: agents keep their mode", () => {
     const hermes = await viaHttp(ctx, reader.apiKey);
     const listed = await hermes.names();
     expect(listed).toContain("search_threads");
-    expect(listed).toHaveLength(READER_TOOLS.length + 40 + 1);
+    expect(listed).toHaveLength(READER_TOOLS.length + 40);
     const r = await hermes.call("search_threads", { query: "" });
     expect(r.isError).toBeFalsy();
     expect((r.content as { text: string }[])[0]!.text).toContain("Hi");
-    expect(await (await viaHttp(ctx, explicit.apiKey)).names()).toEqual([...META, "get_call_status"].sort());
+    expect(await (await viaHttp(ctx, explicit.apiKey)).names()).toEqual([...META].sort());
 
     // Running the step again (every later start) changes nothing.
     expect(pinExistingAgentsDirect(ctx.db, ctx.settings)).toBe(0);
     expect(ctx.db.all("SELECT key, value FROM settings WHERE key LIKE 'broker.search:%' ORDER BY key")).toEqual(before);
 
     // An agent created after the upgrade: auto, so above the threshold it starts in search mode (and keeps it).
-    const fresh = addAgent("fresh", [grantInput("acc_a", { capabilities: ["read"] })]);
+    const fresh = addAgent("fresh", [grantInput("acc_a", { level: "read" })]);
     expect(agentSearchSettings(ctx.db, fresh.agent.id).mode).toBe("auto");
-    expect(await (await viaHttp(ctx, fresh.apiKey)).names()).toEqual([...META, "get_call_status"].sort());
+    expect(await (await viaHttp(ctx, fresh.apiKey)).names()).toEqual([...META].sort());
     expect(agentSearchSettings(ctx.db, fresh.agent.id).mode).toBe("search");
   });
 
@@ -412,12 +406,12 @@ describe("search mode: agents keep their mode", () => {
     // A big connection later: still every tool, and the agent page has what it needs for its hint.
     fakeBroker(ctx, registered(80));
     const names = await (await viaHttp(ctx, reader.apiKey)).names();
-    expect(names).toHaveLength(READER_TOOLS.length + 80 + 1);
+    expect(names).toHaveLength(READER_TOOLS.length + 80);
     expect(agentToolMode(ctx, reader.agent.id)).toEqual({ setting: "direct", mode: "direct", tools: READER_TOOLS.length + 80, threshold: SEARCH_MODE_THRESHOLD });
 
     // Search mode only when the user turns it on.
     setAgentSearchSettings(ctx.db, reader.agent.id, { mode: "search" });
-    expect(await (await viaHttp(ctx, reader.apiKey)).names()).toEqual([...META, "get_call_status"].sort());
+    expect(await (await viaHttp(ctx, reader.apiKey)).names()).toEqual([...META].sort());
   });
 });
 

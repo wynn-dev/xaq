@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { CheckCheckIcon, PlusIcon, Trash2Icon } from "lucide-react";
-import { QueryError, TimeAgo, ToneBadge } from "@/components/common";
+import { PlusIcon } from "lucide-react";
+import { QueryError, ToneBadge } from "@/components/common";
 import { openAddConnection } from "@/components/connections/add-connection";
 import { AGENT_LEVELS, connectionStatusView, grantsWith, LEVEL_INFO } from "@/components/connections/connection-flow";
 import { Button } from "@/components/ui/button";
@@ -11,15 +11,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useNow } from "@/hooks/use-now";
 import { api } from "@/lib/api";
 import { useApiMutation } from "@/lib/mutations";
-import type { ApprovalRule, ConnectionGrant } from "@shared/types";
+import type { ConnectionGrant } from "@shared/types";
 import type { AgentConnection, AgentLevel } from "@/lib/broker-dto";
 import { keys, queries } from "@/lib/queries";
-import { escapeInvisible } from "@/components/approvals/mcp-call";
 
-/** The agent's level on each connection (Full / Ask / Read only / No access) and its "Always allowed" rules. */
+/** The agent's level on each connection (Full / Read only / No access). */
 export function AgentConnections({ agentId }: { agentId: string }) {
   const list = useQuery(queries.agentConnections(agentId));
-  const rules = useQuery(queries.approvalRules(agentId));
   return (
     <section className="space-y-3" aria-labelledby="connections-heading">
       <div className="flex flex-wrap items-end justify-between gap-2">
@@ -53,27 +51,6 @@ export function AgentConnections({ agentId }: { agentId: string }) {
         </Card>
       )}
 
-      <div className="space-y-2 pt-2">
-        <h3 className="flex items-center gap-1.5 text-sm font-semibold">
-          <CheckCheckIcon className="size-4 text-muted-foreground" /> Always allowed
-        </h3>
-        <p className="text-sm text-muted-foreground">Calls you chose “Always allow this” for. They run without asking. Remove one to be asked again.</p>
-        {rules.isPending ? (
-          <Skeleton className="h-12 rounded-xl" />
-        ) : rules.isError ? (
-          <QueryError error={rules.error} onRetry={() => void rules.refetch()} />
-        ) : rules.data.length === 0 ? (
-          <p className="text-sm text-muted-foreground italic">Nothing yet.</p>
-        ) : (
-          <Card className="gap-0 py-0">
-            <ul className="divide-y">
-              {rules.data.map((r) => (
-                <RuleRow key={r.id} r={r} connectionName={list.data?.find((c) => c.connectionId === r.connectionId)?.name ?? "a connection"} />
-              ))}
-            </ul>
-          </Card>
-        )}
-      </div>
     </section>
   );
 }
@@ -88,8 +65,7 @@ function ConnectionLevelRow({ agentId, c }: { agentId: string; c: AgentConnectio
       const grants = await api<ConnectionGrant[]>(base);
       return api<ConnectionGrant[]>(base, { method: "PUT", body: grantsWith(grants, agentId, level) });
     },
-    // No access deletes the agent's "always allow" rules on it (the policy does): refresh that list too.
-    invalidate: [keys.agentConnections(agentId), keys.connections, keys.approvalRules],
+    invalidate: [keys.agentConnections(agentId), keys.connections],
     success: (_, level) => `${c.name}: ${LEVEL_INFO[level].label.toLowerCase()}`,
     errorTitle: "Couldn't change the access",
   });
@@ -116,37 +92,6 @@ function ConnectionLevelRow({ agentId, c }: { agentId: string; c: AgentConnectio
           ))}
         </SelectContent>
       </Select>
-    </li>
-  );
-}
-
-function RuleRow({ r, connectionName }: { r: ApprovalRule; connectionName: string }) {
-  const remove = useApiMutation({
-    mutationFn: () => api(`/api/approval-rules/${encodeURIComponent(r.id)}`, { method: "DELETE" }),
-    invalidate: [keys.approvalRules],
-    success: "Removed. It asks again next time.",
-    errorTitle: "Couldn't remove the rule",
-  });
-  return (
-    <li className="flex items-center gap-3 px-4 py-3">
-      <div className="min-w-0 flex-1 text-sm">
-        <div className="break-all">
-          <span className="font-mono font-medium">{escapeInvisible(r.tool, true)}</span> <span className="text-muted-foreground">on {connectionName}</span>
-        </div>
-        <div className="text-xs break-all text-muted-foreground">
-          {r.targetPath ? (
-            <>
-              Only for <span className="font-mono">{escapeInvisible(r.targetPath, true)}</span> = <span className="font-mono text-foreground">{escapeInvisible(r.targetValue ?? "", true)}</span>
-            </>
-          ) : (
-            "Any target"
-          )}{" "}
-          · added <TimeAgo date={r.createdAt} />
-        </div>
-      </div>
-      <Button variant="ghost" size="icon-sm" aria-label={`Remove the rule for ${r.tool}`} disabled={remove.isPending} onClick={() => remove.mutate()}>
-        <Trash2Icon />
-      </Button>
     </li>
   );
 }

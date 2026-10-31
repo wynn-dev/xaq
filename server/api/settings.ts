@@ -12,7 +12,6 @@ const SettingsPatch = z
     pollIntervalSeconds: z.number(),
     maxBodyChars: z.number(),
     retentionDays: z.number(),
-    approvalTtlHours: z.number(),
     webhookAllowlist: z.array(z.string()),
     brokerUpstreams: z.boolean(),
     attachmentDirs: z.array(z.string()),

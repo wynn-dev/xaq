@@ -2,8 +2,6 @@ import type {
   Account,
   Agent,
   AgentToolMode,
-  Approval,
-  ApprovalStatus,
   AuditEntry,
   AuditOutcome,
   CalendarInfo,
@@ -28,7 +26,7 @@ import type {
 } from "@shared/types";
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 import { apiGet } from "./api";
-import type { ApprovalRule, ConnectionGrant, ConnectionView, McpCallApprovalView, PresetView } from "@shared/types";
+import type { ConnectionGrant, ConnectionView, PresetView } from "@shared/types";
 import { agentConnections } from "../components/connections/connection-flow";
 import type { ExtensionRegistryEntryView, ExtensionView } from "@shared/extensions";
 
@@ -52,7 +50,6 @@ export const keys = {
   webhooks: ["webhooks"] as const,
   deliveries: ["deliveries"] as const,
   events: ["events"] as const,
-  approvals: ["approvals"] as const,
   audit: ["audit"] as const,
   overview: ["overview"] as const,
   pairings: ["pairings"] as const,
@@ -64,7 +61,6 @@ export const keys = {
   connection: (id: string) => ["connections", id] as const,
   presets: ["connection-presets"] as const,
   agentConnections: (agentId: string) => ["agent-connections", agentId] as const,
-  approvalRules: ["approval-rules"] as const,
   // Extensions (docs/EXTENSIONS.md).
   extensions: ["extensions"] as const,
   extensionRegistry: ["extension-registry"] as const,
@@ -105,7 +101,7 @@ export const queries = {
   /** The install's "Add Google Calendar" state (API, scopes, per-account status). */
   calendarSetup: () => queryOptions({ queryKey: keys.calendarSetup, queryFn: () => apiGet<CalendarSetupState>("/api/google/calendar") }),
   /**
-   * The account's calendar list (live from Google), for the grant editor's calendar scope. Fails with 409
+   * The account's calendar list (live from Google), for webhook calendar filters. Fails with 409
    * calendar_not_granted / calendar_api_disabled / needs_reauth while the account can't read it: no retry.
    */
   accountCalendars: (accountId: string) =>
@@ -124,12 +120,6 @@ export const queries = {
     queryOptions({
       queryKey: [...keys.webhooks, { agentId: agentId ?? null }],
       queryFn: () => apiGet<Webhook[]>("/api/webhooks", { agentId }),
-    }),
-  approvals: (status?: ApprovalStatus) =>
-    queryOptions({
-      queryKey: [...keys.approvals, status ?? "all"],
-      queryFn: () => apiGet<Approval[]>("/api/approvals", { status }),
-      refetchInterval: 60_000,
     }),
   pairings: (status?: PairingStatus) =>
     queryOptions({
@@ -187,15 +177,6 @@ export const queries = {
         const grants = await Promise.all(list.map((c) => apiGet<ConnectionGrant[]>(`/api/connections/${encodeURIComponent(c.id)}/grants`)));
         return agentConnections(agentId, list, Object.fromEntries(list.map((c, i) => [c.id, grants[i]!])));
       },
-    }),
-  approvalRules: (agentId: string) =>
-    queryOptions({ queryKey: [...keys.approvalRules, agentId], queryFn: () => apiGet<ApprovalRule[]>("/api/approval-rules", { agentId }) }),
-  /** One approval: an mcp.call answers with its card (McpCallApprovalView), mail and calendar kinds with the Approval. */
-  approval: (id: string) =>
-    queryOptions({
-      queryKey: [...keys.approvals, "one", id],
-      queryFn: () => apiGet<McpCallApprovalView | Approval>(`/api/approvals/${encodeURIComponent(id)}`),
-      retry: false,
     }),
   /** Installed extensions, with the connections using each. */
   extensions: () => queryOptions({ queryKey: keys.extensions, queryFn: () => apiGet<ExtensionView[]>("/api/extensions") }),

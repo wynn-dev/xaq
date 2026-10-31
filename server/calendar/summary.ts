@@ -1,4 +1,4 @@
-// Raw Google event → CalendarEventSummary, shared by sync (A), agent tools (B, C) and approvals.
+// Raw Google event → CalendarEventSummary, shared by sync and the agent tools.
 // Owned by workstream A.
 
 import type { CalendarAttendee, CalendarEventSummary } from "../../shared/types.ts";

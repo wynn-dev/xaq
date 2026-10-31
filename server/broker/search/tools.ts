@@ -1,6 +1,6 @@
 // Search mode's meta-tools: search_tools, call_read_tool, call_write_tool (docs/MCP-BROKER.md, "One endpoint
 // with 100+ tools"). Inner calls run under their real names: native tools through their registered (audited)
-// handler, broker tools through BrokerCalls.call, so policy, approvals and audit see the real tool.
+// handler, broker tools through BrokerCalls.call, so policy and audit see the real tool.
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, RequestId } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -23,8 +23,8 @@ export const SEARCH_LIMIT_MAX = 10;
 
 /** Appended to the server instructions in search mode: the flow in three lines. */
 export const SEARCH_INSTRUCTIONS = `Search mode: most tools aren't listed; find them with search_tools. A tool you already know by name can still be called directly.
-- search_tools(query) returns the best-matching tools with their full input schemas, each marked read or write (risky ones may need human approval).
-- Run a read tool with call_read_tool(name, arguments) and any other with call_write_tool(name, arguments); limits, approvals and the audit apply exactly as for a direct call.`;
+- search_tools(query) returns the best-matching tools with their full input schemas, each marked read or write.
+- Run a read tool with call_read_tool(name, arguments) and any other with call_write_tool(name, arguments); access and the audit apply exactly as for a direct call.`;
 
 type Extra = { signal: AbortSignal; requestId: RequestId };
 
@@ -152,7 +152,7 @@ export function registerSearchTools(server: McpServer, deps: SearchDeps): void {
       return native.run(parsed.data, extra);
     }
 
-    // Broker tools: BrokerCalls resolves, decides (levels, approvals, caps) and audits under the real name, once.
+    // Broker tools: BrokerCalls resolves, decides (levels) and audits under the real name, once.
     // Same handling as a direct call (server/mcp/broker.ts).
     const started = Date.now();
     const signal = deps.signal ? AbortSignal.any([extra.signal, deps.signal]) : extra.signal;
@@ -181,7 +181,7 @@ export function registerSearchTools(server: McpServer, deps: SearchDeps): void {
     {
       title: "Call a write tool",
       description:
-        "Run a tool that changes something, found with search_tools (kind \"write\"). Risky ones may wait for human approval; the result says so. " +
+        "Run a tool that changes something, found with search_tools (kind \"write\"). " +
         "Read tools are refused here: use call_read_tool.",
       inputSchema: callInput,
       annotations: { title: "Call a write tool", readOnlyHint: false, destructiveHint: true, openWorldHint: true },

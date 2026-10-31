@@ -3,7 +3,6 @@
 
 import type { AppContext } from "../context.ts";
 import { errorMessage } from "../util/errors.ts";
-import { createCalendarApprovals } from "./approvals.ts";
 import { eventContent } from "./content.ts";
 import { createCalendarPush } from "./push.ts";
 import { createCalendarSetup } from "./setup.ts";
@@ -21,7 +20,6 @@ export function createCalendarService(ctx: AppContext): CalendarService {
   // Push channels follow the set of synced calendars.
   const sync = createCalendarSync(ctx, { onSyncSetChanged: reconcile });
   const setup = createCalendarSetup(ctx);
-  const approvals = createCalendarApprovals(ctx);
   return {
     kick: (accountId, calendarId) => sync.kick(accountId, calendarId),
     syncAccount: (accountId) => sync.syncAccount(accountId),
@@ -30,8 +28,6 @@ export function createCalendarService(ctx: AppContext): CalendarService {
     check: () => setup.check(),
     calendars: (accountId) => setup.calendars(accountId),
     handlePush: (headers) => push.handlePush(headers),
-    approvalBlockedReason: (a) => approvals.approvalBlockedReason(a),
-    applyApproval: (a) => approvals.applyApproval(a),
     eventContent: (accountId, calendarId, eventId) => eventContent(ctx, accountId, calendarId, eventId),
     async start() {
       await sync.start?.();

@@ -10,17 +10,16 @@
 // - Every write goes into ONE new Drive folder named after the run (xaq-smoke-<UTC timestamp>), through
 //   ScratchGuard (guards.ts): the target must be that folder or a file this run created whose drive_get parents
 //   include it. The only mail is ONE draft to the account's own address, deleted again; nothing is ever sent.
-// - Tool calls go through /mcp as a temporary agent (mail read + draft, the Workspace connection at "ask"), so risky
-//   calls really come back pending; the command approves its own calls (checked: agent, tool, exact arguments)
-//   through the admin API.
+// - Tool calls go through /mcp as a temporary agent (full access, sends only to the account itself; the Workspace
+//   connection at "full").
 // - Cleanup always runs (also on a failed step, Ctrl-C, SIGTERM or SIGHUP): the draft deleted, the folder trashed
-//   (drive_trash, approved), the agent deleted, attachmentDirs restored, the temp dir removed. Then the leftover
+//   (drive_trash), the agent deleted, attachmentDirs restored, the temp dir removed. Then the leftover
 //   check. A second Ctrl-C runs fastCleanup (agent and attachmentDirs only, bounded) and quits.
 
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import type { Account, AgentWithKey, ConnectionView, McpCallApprovalView } from "../../shared/types.ts";
+import type { Account, AgentWithKey, ConnectionView } from "../../shared/types.ts";
 import { SMOKE_NAME_RE, SMOKE_TEMP_RE, type SmokeDraftView, type SmokeLeftovers, type SmokeSweep, smokeName, smokeSubjectPrefix } from "../../shared/smoke.ts";
 import type { AdminChannel } from "../connections-cli/admin.ts";
 import { NPX } from "../listen/version.ts";
@@ -101,8 +100,6 @@ export interface SmokeDeps {
    */
   tmpRoot?: string;
   imageUrl?: string;
-  /** get_call_status polling while an approved call runs. */
-  pollMs?: number;
 }
 
 /** Setup problems found before anything is created: printed as they are, exit 1. */
@@ -202,18 +199,18 @@ export function planLines(marker: string, account: string, connection: Connectio
     "  - Sheets: create a sheet, write a range, append rows, read back",
     "  - Slides: create a deck from an outline, add a slide, replace text, upload a PNG and insert it (Drive",
     "    thumbnail path: a private image must be refused), insert a public https image, read back, delete a",
-    "    slide through the approval path",
+    "    slide",
     `  - Gmail: ONE draft to ${account} only, with a local file and a scratch-folder file attached; checked, then`,
     "    deleted. Nothing is ever sent.",
-    "Cleanup, also on failure, Ctrl-C, SIGTERM or SIGHUP: the folder goes to the Drive trash (drive_trash, approved",
-    "here), the draft is deleted, the agent is deleted, attachmentDirs is restored. Temporary changes until then:",
-    `the agent (mail read and draft on ${account}, ${connection.slug} at "ask") and a private temp dir in attachmentDirs.`,
+    "Cleanup, also on failure, Ctrl-C, SIGTERM or SIGHUP: the folder goes to the Drive trash (drive_trash), the",
+    "draft is deleted, the agent is deleted, attachmentDirs is restored. Temporary changes until then:",
+    `the agent (full access on ${account}, sending only to itself; ${connection.slug} at "full") and a private temp dir in attachmentDirs.`,
   ];
 }
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err)).replace(/\s+/g, " ").slice(0, 300);
 
-/** Canonical JSON (sorted keys): the approval's stored arguments must be exactly the call the run made. */
+/** Canonical JSON (sorted keys), to compare what was written with what reads back. */
 function canonical(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
   if (v && typeof v === "object") {
@@ -399,49 +396,18 @@ export class SmokeRun {
     return `${this.connection!.slug}__${tool}`;
   }
 
-  /**
-   * A Workspace tool call. Reads go straight through; writes are checked by the guard first. A write that comes back
-   * pending is approved here (its own call only); `approved` says which approval ran it.
-   */
-  private async ws(tool: string, args: Record<string, unknown>, force = false): Promise<{ out: CallOutcome; approved: string | null }> {
+  /** A Workspace tool call. Reads go straight through; writes are checked by the guard first. */
+  private async ws(tool: string, args: Record<string, unknown>, force = false): Promise<{ out: CallOutcome }> {
     const write = tool in WRITE_TARGETS;
     if (write) await this.guard.checkWrite(tool, args);
     else if (!READ_TOOLS.has(tool)) throw new GuardError(`${tool} isn't one of the calls the smoke run makes`);
     const out = await this.rawCall(this.exposed(tool), args, force && !write);
-    const pending = /^pending_approval:/.test(out.text) ? /approval_id: (apr_[A-Za-z0-9_-]+)/.exec(out.text)?.[1] : undefined;
-    if (pending) {
-      if (!write) throw new Error(`${tool} is a read, but it came back pending approval`);
-      return { out: await this.approveOwn(pending, tool, args), approved: pending };
-    }
     if (out.isError) throw new Error(`${tool}: ${out.text}`);
-    return { out, approved: null };
+    return { out };
   }
 
   private async read(tool: string, args: Record<string, unknown>, force = false): Promise<CallOutcome> {
     return (await this.ws(tool, args, force)).out;
-  }
-
-  /** Approves a pending call after checking it is exactly this run's: its agent, connection, tool and arguments. */
-  private async approveOwn(approvalId: string, tool: string, args: Record<string, unknown>): Promise<CallOutcome> {
-    const view = await this.deps.admin.request<McpCallApprovalView>("GET", `/api/approvals/${encodeURIComponent(approvalId)}`);
-    const mine =
-      view.approval.agentId === this.ledger.agent?.id &&
-      view.connection?.id === this.connection?.id &&
-      view.tool?.name === tool &&
-      view.argsIntact &&
-      canonical(JSON.parse(view.argsDisplay)) === canonical(args);
-    if (!mine) throw new GuardError(`approval ${approvalId} isn't exactly this run's ${tool} call, so it wasn't approved`);
-    await this.deps.admin.request("POST", `/api/approvals/${encodeURIComponent(approvalId)}/approve`, { note: `${this.marker}: approved by xaq smoke` });
-    this.ledger.approvals.push(approvalId);
-    for (let i = 0; ; i++) {
-      const status = await this.rawCall("get_call_status", { approval_id: approvalId });
-      if (/^running:/.test(status.text) && i < 60) {
-        await new Promise((r) => setTimeout(r, this.deps.pollMs ?? 1000));
-        continue;
-      }
-      if (status.isError || !/^done:/.test(status.text)) throw new Error(`${tool} after approval: ${status.text}`);
-      return status;
-    }
   }
 
   /** drive_get, as the guards and the leftover check read it. */
@@ -516,12 +482,12 @@ export class SmokeRun {
       const r = await this.deps.admin.request<AgentWithKey>("POST", "/api/smoke/agents", { name: this.marker, accountId: account.id, connectionId: connection.id });
       this.ledger.agent = { id: r.agent.id, name: r.agent.name };
       this.mcp = await this.deps.connectMcp(r.apiKey);
-      return `${r.agent.name}: ${account.email} read + draft, ${connection.slug} at "ask"`;
+      return `${r.agent.name}: ${account.email} full (sending only to itself), ${connection.slug} at "full"`;
     });
     if (!created) return;
     const tools = await this.step("xaq", "tools/list has every tool the run uses", async () => {
       const listed = new Set(await this.mcp!.listTools());
-      const wanted = [...[...READ_TOOLS, ...Object.keys(WRITE_TARGETS)].map((t) => this.exposed(t)), "get_call_status", ...MAIL_TOOLS];
+      const wanted = [...[...READ_TOOLS, ...Object.keys(WRITE_TARGETS)].map((t) => this.exposed(t)), ...MAIL_TOOLS];
       const missing = wanted.filter((t) => !listed.has(t));
       if (missing.length) throw new Error(`missing: ${missing.join(", ")} (update xaq and the ${WORKSPACE_PRESET} extension)`);
       return `${wanted.length} tools`;
@@ -814,7 +780,7 @@ export class SmokeRun {
       return `deck ${deck}, ${made.length} slides`;
     });
     await this.step("slides_add_slide", "add a slide", async () => {
-      const { out } = await this.ws("slides_add_slide", { presentationId: this.need(deck, "the deck"), title: "Smoke: deleted through approval", bullets: ["xaq smoke deletes this slide"] });
+      const { out } = await this.ws("slides_add_slide", { presentationId: this.need(deck, "the deck"), title: "Smoke: deleted again", bullets: ["xaq smoke deletes this slide"] });
       extra = typeof out.structured?.slideId === "string" ? out.structured.slideId : null;
       if (!extra) throw new Error("no slide id returned");
       return `slide ${extra}`;
@@ -870,14 +836,13 @@ export class SmokeRun {
       if (problems.length) throw new Error(`missing: ${problems.join(", ")}`);
       return `${slides.length} slides`;
     });
-    await this.step("slides_delete_slide", "delete a slide through the approval path", async () => {
+    await this.step("slides_delete_slide", "delete a slide", async () => {
       const slideId = this.need(extra, "the added slide");
-      const { approved } = await this.ws("slides_delete_slide", { presentationId: this.need(deck, "the deck"), slideId });
-      if (!approved) throw new Error("the call wasn't held for approval (the connection should be at \"ask\")");
+      await this.ws("slides_delete_slide", { presentationId: this.need(deck, "the deck"), slideId });
       const out = await this.read("slides_read", { presentationId: deck! });
       const slides = (Array.isArray(out.structured?.slides) ? out.structured.slides : []) as { slideId?: string }[];
-      if (slides.some((s) => s.slideId === slideId)) throw new Error("approved, but the slide is still there");
-      return `pending, approved (${approved}), gone`;
+      if (slides.some((s) => s.slideId === slideId)) throw new Error("deleted, but the slide is still there");
+      return "gone";
     });
   }
 
@@ -1010,12 +975,11 @@ export class SmokeRun {
     const folder = this.ledger.folder;
     const reported = new Set<string>();
     if (folder) {
-      await this.step("drive_trash", "cleanup: trash the scratch folder through the approval path", async () => {
-        const { approved } = await this.ws("drive_trash", { fileId: folder.id });
-        if (!approved) throw new Error("the call wasn't held for approval (the connection should be at \"ask\")");
+      await this.step("drive_trash", "cleanup: trash the scratch folder", async () => {
+        await this.ws("drive_trash", { fileId: folder.id });
         const f = await this.driveFacts(folder.id);
-        if (!f.trashed) throw new Error("approved, but the folder isn't in the trash");
-        return `pending, approved (${approved}), in the trash`;
+        if (!f.trashed) throw new Error("trashed, but the folder isn't in the trash");
+        return "in the trash";
       });
       // The leftover check on Drive, while the agent can still look. Drive trashes a folder's children asynchronously:
       // for a while after the folder is in the trash, a file inside it still reads trashed: false. A file whose parent is

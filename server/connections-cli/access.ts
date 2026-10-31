@@ -4,11 +4,10 @@ import type { ConnectionsApi } from "./api.ts";
 import type { Prompter } from "./prompt.ts";
 import { safeText } from "../listen/ui.ts";
 
-/** The one access question (docs/MCP-BROKER.md "Access and approvals") and which agents get it. */
+/** The one access question (docs/MCP-BROKER.md "Access") and which agents get it. */
 
 export const ACCESS_LEVELS: { value: AccessLevel; label: string; short: string }[] = [
-  { value: "full", label: "Full access: every tool, never asks", short: "Full access" },
-  { value: "ask", label: "Ask before risky actions: deleting, sending, publishing and payments wait for your approval", short: "Ask before risky actions" },
+  { value: "full", label: "Full access: every tool", short: "Full access" },
   { value: "read", label: "Read only: only tools that read; the rest aren't listed", short: "Read only" },
 ];
 
@@ -16,8 +15,8 @@ export const accessLabel = (level: AccessLevel) => ACCESS_LEVELS.find((l) => l.v
 
 export function parseAccess(value: string): AccessLevel {
   const v = value.trim().toLowerCase();
-  const map: Record<string, AccessLevel> = { full: "full", ask: "ask", risky: "ask", read: "read", "read-only": "read", readonly: "read" };
-  if (!map[v]) throw new Error(`Unknown --access "${value}". Use full, ask or read.`);
+  const map: Record<string, AccessLevel> = { full: "full", read: "read", "read-only": "read", readonly: "read" };
+  if (!map[v]) throw new Error(`Unknown --access "${value}". Use full or read.`);
   return map[v];
 }
 
@@ -26,7 +25,7 @@ export async function chooseAccess(p: Prompter, flag: AccessLevel | undefined): 
   return p.choose(
     "What can agents do with it?",
     ACCESS_LEVELS.map((l) => ({ value: l.value, label: l.label })),
-    "ask",
+    "full",
   );
 }
 
