@@ -86,8 +86,9 @@ describe("migration 7 (Google Calendar)", () => {
       expect(a1.calendar).toBeNull(); // mail-only account: the console shows nothing calendar-related
 
       const grant = toGrant(db.get<GrantRow>("SELECT * FROM grants WHERE id = 'grt_1'")!);
+      // Its sends waited for approval, so it becomes read only (full only for grants that already sent directly).
       expect(grant).toMatchObject({
-        level: "full",
+        level: "read",
         allowTo: ["*@example.com"],
       });
 
