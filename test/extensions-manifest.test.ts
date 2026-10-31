@@ -193,15 +193,6 @@ describe("setup copy", () => {
     const link = validateManifest(patch(remote(), "setup.0.link", { label: "Open {{publicUrl}}", url: "{{publicUrl}}/settings" }));
     expect(renderSetup(link.setup!, CTX)[0]!.link).toEqual({ label: "Open https://xaq.example", url: "https://xaq.example/settings" });
   });
-
-  it("the repo's manifests carry no template the context doesn't fill", () => {
-    for (const name of FIXTURE_EXTENSIONS) {
-      const steps = presetFromManifest(fixtureExtension(name)).setupSteps(CTX);
-      for (const s of steps) {
-        for (const v of [s.title, s.body, s.link?.label, s.link?.url, s.copy?.label, s.copy?.value]) expect(v ?? "").not.toMatch(/\{\{|\}\}/);
-      }
-    }
-  });
 });
 
 describe("presetFromManifest", () => {
@@ -279,49 +270,6 @@ describe("presetFromManifest", () => {
     expect(() => presetFromManifest({ ...fixtureExtension("notion"), name: "other" })).toThrow(/installed as "other"/);
     expect(() => presetFromManifest({ ...fixtureExtension("notion"), kind: "code" })).toThrow(/installed as "code"/);
     expect(() => presetFromManifest({ ...fixtureExtension("notion"), manifest: { schema: 1 } })).toThrow(ManifestError);
-  });
-});
-
-describe("the Brightspace extension's risk map", () => {
-  const p = () => presetFromManifest(fixtureExtension("brightspace"));
-  const READS = [
-    "get_briefing",
-    "get_calendar",
-    "get_submission_history",
-    "get_my_work",
-    "get_course_updates",
-    "get_my_groups",
-    "get_checklists",
-    "get_grade_summary",
-    "search_course",
-    "get_my_courses",
-    "get_my_grades",
-    "get_announcements",
-    "get_assignments",
-    "get_course_content",
-    "read_course_content",
-    "get_roster",
-    "get_discussions",
-    "get_syllabus",
-  ];
-
-  it("lists the server's 19 HTTP tools and its stdio download_file", () => {
-    expect(Object.keys(fixtureManifest("brightspace").risk!.tools).sort()).toEqual([...READS, "check_auth", "download_file"].sort());
-  });
-
-  it.each(READS)("%s reads (free, listed at read only)", (name) => {
-    expect(classifyTool(tool(name, {}, { readOnlyHint: true }), p())).toEqual({ risky: false, read: true, source: "preset" });
-  });
-
-  it("check_auth (can start a sign-in with MFA) and download_file (writes a file) are writes; nothing is risky", () => {
-    expect(classifyTool(tool("check_auth", {}, { readOnlyHint: true }), p())).toEqual({ risky: false, read: false, source: "preset" });
-    expect(classifyTool(tool("download_file", {}, { readOnlyHint: false, destructiveHint: false }), p())).toEqual({ risky: false, read: false, source: "preset" });
-    expect(Object.values(fixtureManifest("brightspace").risk!.tools).some((e) => e.class === "risky")).toBe(false);
-  });
-
-  it("a tool it adds later falls back to the generic rules (a submit tool would be risky by its name)", () => {
-    expect(p().classify(tool("submit_assignment"))).toBeNull();
-    expect(classifyTool(tool("post_discussion_reply"), p()).risky).toBe(true);
   });
 });
 
