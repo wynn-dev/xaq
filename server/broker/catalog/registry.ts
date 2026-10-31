@@ -3,7 +3,7 @@
 // last one).
 
 import type { Db } from "../../db/index.ts";
-import type { AccessLevel, IntegrationPreset, RegisteredTool } from "../types.ts";
+import type { AccessLevel, RegisteredTool } from "../types.ts";
 import { candidateKey, checkCollisions, exposedName, type NameRefusal } from "./names.ts";
 import type { CatalogStore } from "./store.ts";
 

@@ -28,7 +28,7 @@
 // the API key generated; it is handed to the polling CLI exactly once and written to a 0600 file.
 // Codes are short-lived and single-use; requests, approvals, denials, expiry and key delivery are audited.
 
-import type { AccessLevel, EventFilter, EventType } from "./types.ts";
+import type { AccessLevel } from "./types.ts";
 
 /** The agent tools the CLI and the console know (recipes, connect commands). */
 export const AGENT_TOOLS = ["claude-code", "codex", "cursor", "hermes", "other"] as const;

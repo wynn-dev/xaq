@@ -24,7 +24,7 @@ import { removeConnectionState } from "../extensions/host/spawn.ts";
 import type { CredentialStore } from "./credentials/store.ts";
 import { googleConnectionState, googleConnectionView, googleTokenDeps, isGooglePreset, syncGoogleConnections } from "../extensions/google-auth.ts";
 import { forgetHandedTokens } from "../extensions/handed-tokens.ts";
-import { conflict, errorMessage, notFound } from "../util/errors.ts";
+import { errorMessage, notFound } from "../util/errors.ts";
 import { type ConnectionGrantRef, connectionGrantsOf } from "./access.ts";
 import { brokerConnections, Catalog, CatalogRegistry, CatalogStore, connectionGrants } from "./catalog/index.ts";
 import { nativeDepsFor, registerNativeFlows, upstreamConnector } from "./connector.ts";
@@ -38,7 +38,6 @@ import {
   type NativeSourceDeps,
   type RegisteredTool,
   SourceError,
-  type ToolResult,
   type ToolSource,
 } from "./types.ts";
 

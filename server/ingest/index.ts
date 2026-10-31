@@ -32,7 +32,7 @@ interface Loop {
   done: Promise<void>;
 }
 
-/** Gmail ingest: polling or Pub/Sub, per-account history syncs, resyncs, pause and resume. */
+/** Gmail ingest: polling, per-account history syncs, resyncs, pause and resume. */
 export class IngestService {
   private readonly log;
   private loop: Loop | null = null;
@@ -91,7 +91,7 @@ export class IngestService {
     }
   }
 
-  /** Records the baseline historyId and (in pubsub mode) starts the watch. Called by google.completeConnect. */
+  /** Records the baseline historyId. Called by google.completeConnect. */
   async onAccountConnected(accountId: string): Promise<void> {
     const row = getRow(this.ctx, accountId);
     if (!row) return;
