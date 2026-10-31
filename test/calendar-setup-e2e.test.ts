@@ -1,9 +1,7 @@
-// Setup and sync end to end through the real Calendar client (A) and the fake Calendar API. The
-// finer cases (forced scope errors, slow probes) use test/calendar-setup-fakes.ts.
+// Setup and sync end to end through the real Calendar client and the fake Calendar API.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AppContext } from "../server/context.ts";
-import { consent } from "./calendar-setup-fakes.ts";
-import { FAKE_CLIENT, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";
+import { consent, FAKE_CLIENT, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";
 import { testContext } from "./helpers.ts";
 import { grantInput } from "./mail-fakes.ts";
 

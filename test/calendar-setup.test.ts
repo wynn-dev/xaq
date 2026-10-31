@@ -11,8 +11,7 @@ import { GoogleApiError } from "../server/google/types.ts";
 import { CALENDAR_SCOPES } from "../shared/google-scopes.ts";
 import { HttpError } from "../server/util/errors.ts";
 import type { CalendarSetupState, SetupWarning } from "../shared/types.ts";
-import { ACTIVATION_URL, consent, fakeCalendar, MAIL_ONLY } from "./calendar-setup-fakes.ts";
-import { connectFakeAccount, FAKE_CLIENT, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";
+import { CALENDAR_ACTIVATION_URL as ACTIVATION_URL, connectFakeAccount, consent, FAKE_CLIENT, type FakeGoogle, MAIL_ONLY, recordingEvents, startFakeGoogle } from "./fake-google.ts";
 import { testContext } from "./helpers.ts";
 import { grantInput } from "./mail-fakes.ts";
 
@@ -22,7 +21,6 @@ const WYNN = "wynn@example.com";
 let fake: FakeGoogle;
 let ctx: AppContext;
 let rec: ReturnType<typeof recordingEvents>;
-let cal: ReturnType<typeof fakeCalendar>;
 let dispose: () => Promise<void>;
 
 async function waitFor(cond: () => boolean, ms = 5000): Promise<void> {
@@ -39,7 +37,6 @@ beforeEach(async () => {
   const t = testContext({ events: rec.factory }, { google: fake.google });
   ctx = t.ctx;
   dispose = t.dispose;
-  cal = fakeCalendar(ctx);
   ctx.google.setClient({ ...FAKE_CLIENT, appType: "internal" });
 });
 
@@ -54,6 +51,7 @@ function withErrors(app: Hono<AppEnv>): Hono<AppEnv> {
 }
 
 const api = () => withErrors(googleApi(ctx));
+const calendarLists = () => fake.requests.filter((r) => r.path.endsWith("/calendarList")).length;
 const json = async <T>(res: Response | Promise<Response>) => (await (await res).json()) as T;
 const calendarWarnings = () => ctx.google.setupWarnings().filter((w) => w.code.startsWith("calendar_"));
 const received = (email: string) => rec.ofType("message.received").filter((e) => e.accountId === ctx.accounts.getByEmail(email)!.id);
@@ -172,7 +170,7 @@ describe("upgrading an existing install (zero mail downtime)", () => {
 
 describe("Calendar API turned off in the project", () => {
   it("is detected right after the consent, warned about with Google's activationUrl, and cleared by a check", async () => {
-    cal.disableApi(true);
+    fake.disableApi("calendar", true);
     const { account } = await consent(ctx, fake, OPS, {}, {});
     expect(account!.calendar).toMatchObject({ status: "api_disabled", error: "The Google Calendar API is turned off in your Google Cloud project." });
     expect(ctx.calendar.setupState()).toMatchObject({ api: "disabled", step: "enable_api", enableApiUrl: ACTIVATION_URL });
@@ -188,7 +186,7 @@ describe("Calendar API turned off in the project", () => {
     expect(calendars.status).toBe(409);
     expect(await calendars.json()).toMatchObject({ error: { code: "calendar_api_disabled" } });
 
-    cal.disableApi(false);
+    fake.disableApi("calendar", false);
     const checked = await json<CalendarSetupState>(api().request("/google/calendar/check", { method: "POST" }));
     expect(checked).toMatchObject({ api: "enabled", step: "done" });
     expect(ctx.accounts.get(account!.id)!.calendar).toMatchObject({ status: "active", error: null });
@@ -255,8 +253,8 @@ describe("API state across accounts", () => {
 
   it("a connect waits for a slow probe only briefly; the answer is recorded when it comes", async () => {
     const a = (await consent(ctx, fake, OPS)).account!;
-    cal.delayMs = 200;
-    cal.disableApi(true);
+    fake.delayMs = 200;
+    fake.disableApi("calendar", true);
     const t = Date.now();
     await probeCalendar(ctx, a.id, { waitMs: 30 });
     expect(Date.now() - t).toBeLessThan(150);
@@ -268,11 +266,12 @@ describe("API state across accounts", () => {
 describe("GET /accounts/:id/calendars", () => {
   it("lists the account's calendars, primary first, names cleaned, synced from calendar_sync", async () => {
     const { account } = await consent(ctx, fake, OPS);
+    fake.calendar.addCalendar(OPS, { id: "team@group.calendar.google.com", name: "Team\u200b\nstandups", accessRole: "writer", timeZone: "Europe/Berlin" });
     ctx.db.run("INSERT INTO calendar_sync (account_id, calendar_id, updated_at) VALUES (?, ?, ?)", account!.id, OPS, now());
     const res = await withErrors(accountsApi(ctx)).request(`/accounts/${account!.id}/calendars`);
     expect(await res.json()).toEqual([
-      { id: OPS, name: OPS, primary: true, accessRole: "owner", timeZone: "Europe/Berlin", color: "#9fe1e7", synced: true },
-      { id: "team@group.calendar.google.com", name: "Team standups", primary: false, accessRole: "writer", timeZone: "Europe/Berlin", color: null, synced: false },
+      { id: OPS, name: OPS, primary: true, accessRole: "owner", timeZone: "UTC", color: "#9fe1e7", synced: true },
+      { id: "team@group.calendar.google.com", name: "Team standups", primary: false, accessRole: "writer", timeZone: "Europe/Berlin", color: "#9fe1e7", synced: false },
     ]);
     expect(ctx.calendar.setupState().accounts[0]).toMatchObject({ syncedCalendars: 1 });
   });
@@ -284,7 +283,7 @@ describe("GET /accounts/:id/calendars", () => {
     const notGranted = await app.request(`/accounts/${account!.id}/calendars`);
     expect(notGranted.status).toBe(409);
     expect(await notGranted.json()).toMatchObject({ error: { code: "calendar_not_granted", message: `Google Calendar isn't added to ${OPS} yet.`, hint: expect.stringContaining("Add Calendar") } });
-    expect(cal.calls).toEqual([]);
+    expect(calendarLists()).toBe(0);
     ctx.accounts.setStatus(account!.id, "needs_reauth", "x");
     expect(await json(app.request(`/accounts/${account!.id}/calendars`))).toMatchObject({ error: { code: "needs_reauth" } });
     expect((await app.request("/accounts/acc_nope/calendars")).status).toBe(404);
@@ -294,7 +293,7 @@ describe("GET /accounts/:id/calendars", () => {
     const { account } = await consent(ctx, fake, OPS, {}, { scopes: [...MAIL_ONLY, ...CALENDAR_SCOPES.slice(0, 2)] });
     // xaq believes it has every scope (stale), Google knows better.
     ctx.db.run("UPDATE accounts SET scopes = ? WHERE id = ?", JSON.stringify([...MAIL_ONLY, ...CALENDAR_SCOPES]), account!.id);
-    cal.scopeInsufficient(1);
+    fake.failNext({ path: "/calendarList", status: 403, reason: "insufficientPermissions" });
     const err = await ctx.calendar.calendars(account!.id).catch((e: unknown) => e);
     expect(err).toMatchObject({ code: "calendar_not_granted" });
     expect(ctx.accounts.get(account!.id)!.calendar).toMatchObject({ status: "not_granted", missingScopes: [CALENDAR_SCOPES[2]] });
@@ -302,8 +301,8 @@ describe("GET /accounts/:id/calendars", () => {
 
   it("retries once when the refreshed scopes are complete (the cached token predated a consent)", async () => {
     const { account } = await consent(ctx, fake, OPS);
-    cal.scopeInsufficient(1);
-    expect(await ctx.calendar.calendars(account!.id)).toHaveLength(2);
+    fake.failNext({ path: "/calendarList", status: 403, reason: "insufficientPermissions" });
+    expect(await ctx.calendar.calendars(account!.id)).toHaveLength(1);
   });
 });
 
@@ -324,7 +323,7 @@ describe("setup warnings", () => {
       expect(w.hint.length).toBeGreaterThan(20);
     }
     ctx.settings.setState("calendar.setup", { enabled: false });
-    cal.disableApi(true);
+    fake.disableApi("calendar", true);
     await ctx.calendar.check();
     ctx.db.run("DELETE FROM grants");
     for (const w of [...calendarWarnings(), ...ctx.google.setupWarnings().filter((x) => x.code === "calendar_not_added")]) {

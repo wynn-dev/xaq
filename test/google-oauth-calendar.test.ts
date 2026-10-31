@@ -7,15 +7,13 @@ import { storedFailure } from "../server/google/oauth.ts";
 import { googleRuntime } from "../server/google/runtime.ts";
 import { CALENDAR_SCOPES, GMAIL_SCOPE } from "../shared/google-scopes.ts";
 import { HttpError } from "../server/util/errors.ts";
-import { consent, fakeCalendar, MAIL_ONLY } from "./calendar-setup-fakes.ts";
-import { connectFakeAccount, FAKE_CLIENT, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";
+import { connectFakeAccount, consent, FAKE_CLIENT, type FakeGoogle, MAIL_ONLY, recordingEvents, startFakeGoogle } from "./fake-google.ts";
 import { testContext } from "./helpers.ts";
 
 const ME = "me@example.com";
 
 let fake: FakeGoogle;
 let ctx: AppContext;
-let cal: ReturnType<typeof fakeCalendar>;
 let dispose: () => Promise<void>;
 
 beforeEach(async () => {
@@ -23,7 +21,6 @@ beforeEach(async () => {
   const t = testContext({ events: recordingEvents().factory }, { google: fake.google });
   ctx = t.ctx;
   dispose = t.dispose;
-  cal = fakeCalendar(ctx);
   ctx.google.setClient({ ...FAKE_CLIENT, appType: "internal" });
   fake.addAccount(ME);
 });
@@ -42,6 +39,7 @@ const requested = (start: Parameters<AppContext["google"]["startConnect"]>[0] = 
   return { scopes: (q.get("scope") ?? "").split(" "), incremental: q.get("include_granted_scopes") };
 };
 
+const calendarLists = () => fake.requests.filter((r) => r.path.endsWith("/calendarList")).length;
 const scopesOf = (id: string) => JSON.parse(getRow(ctx, id)!.scopes) as string[];
 
 describe("which scopes a consent asks for", () => {
@@ -51,7 +49,7 @@ describe("which scopes a consent asks for", () => {
     expect(scope).toEqual(expect.arrayContaining([...CALENDAR_SCOPES]));
     expect(account!.calendar).toEqual({ status: "active", missingScopes: [], lastSyncAt: null, error: null });
     // The probe right after the consent saw the API working.
-    expect(cal.calls).toEqual([{ accountId: account!.id, method: "listCalendars" }]);
+    expect(calendarLists()).toBe(1);
     expect(ctx.calendar.setupState()).toMatchObject({ enabled: true, api: "enabled", step: "done" });
   });
 
@@ -69,7 +67,7 @@ describe("which scopes a consent asks for", () => {
     expect(requested().scopes).toEqual([GMAIL_SCOPE, "openid", "email", "profile"]);
     const { account } = await consent(ctx, fake, ME);
     expect(account!.calendar).toBeNull();
-    expect(cal.calls).toEqual([]);
+    expect(calendarLists()).toBe(0);
   });
 
   it("a reconnect asks again for calendar scopes the account had only while Calendar is on and not mail-only", async () => {
@@ -148,7 +146,7 @@ describe("Add Calendar to an existing account", () => {
     expect(row.status).toBe("active");
     expect(scopesOf(id)).toEqual(expect.arrayContaining([GMAIL_SCOPE]));
     expect(ctx.calendar.setupState().accounts[0]).toMatchObject({ status: "not_granted", missingScopes: [...CALENDAR_SCOPES] });
-    expect(cal.calls).toEqual([]);
+    expect(calendarLists()).toBe(0);
     expect(fake.revoked).toEqual([]);
   });
 
