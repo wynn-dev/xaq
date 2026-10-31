@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Account, AttachmentSource, GrantInput } from "../shared/types.ts";
 import type { AppContext } from "../server/context.ts";
-import { GMAIL_SCOPE } from "../server/google/scopes.ts";
+import { GMAIL_SCOPE } from "../shared/google-scopes.ts";
 import type { GmailMessage } from "../server/google/types.ts";
 import { connectFakeAccount, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";
 import { testContext } from "./helpers.ts";

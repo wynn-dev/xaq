@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, readFileSync } from "node:fs";
 import { z } from "zod";
-import { AGENT_TOOLS, type AgentTool, type ListenerConfig } from "../../shared/agent-api.ts";
+import { AGENT_TOOLS, type AgentTool } from "../../shared/agent-api.ts";
 import { type EventType, isEventType } from "../../shared/types.ts";
 import { isTooOpen, writePrivateFile } from "./fsutil.ts";
 import { profilePath } from "./paths.ts";

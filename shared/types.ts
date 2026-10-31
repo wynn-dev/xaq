@@ -294,7 +294,6 @@ export interface Settings {
   approvalTtlHours: number;
   /** Accept device-flow pairing requests from `npx xaq-cli connect` (each still needs approval). */
   pairingEnabled: boolean;
-  /**
 }
 
 export interface GoogleClientConfig {
