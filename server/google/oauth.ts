@@ -23,7 +23,7 @@ import {
   PUBSUB_SCOPE,
   scopeGrants,
   scopeWithout,
-} from "./scopes.ts";
+} from "../../shared/google-scopes.ts";
 import { GoogleApiError } from "./types.ts";
 
 export { GMAIL_SCOPE, PUBSUB_SCOPE };

@@ -15,7 +15,8 @@ import { type IntegrationPreset, SourceError, type ToolDef } from "../server/bro
 import { checkTarget, guardedFetch } from "../server/broker/upstream/fetch.ts";
 import { requireSameOrigin, UpstreamRuntime, upstreams } from "../server/broker/upstream/runtime.ts";
 import { presetById, presets } from "../server/integrations/index.ts";
-import { hostSlugPart, presetServerSlug, presetServerUrl } from "../server/integrations/user-server.ts";
+import { presetServerUrl } from "../server/integrations/user-server.ts";
+import { hostSlugPart, presetServerSlug } from "../shared/user-server.ts";
 import type { LookupFn } from "../server/webhooks/ssrf.ts";
 import { type FakeMcpUpstream, type FakeTool, startFakeMcpUpstream } from "./fake-mcp-upstream.ts";
 import { fixtureManifest, useFixtureExtensions } from "./extension-fixtures.ts";

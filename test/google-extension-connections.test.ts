@@ -18,7 +18,7 @@ import { codeExtensionNodeProblem } from "../server/extensions/host/index.ts";
 import { computeIntegrity } from "../server/extensions/integrity.ts";
 import { extensionStore } from "../server/extensions/store.ts";
 import { grantedScopes } from "../server/google/scoped.ts";
-import { GMAIL_SCOPE, WORKSPACE_SCOPES } from "../server/google/scopes.ts";
+import { GMAIL_SCOPE, WORKSPACE_SCOPES } from "../shared/google-scopes.ts";
 import { presets } from "../server/integrations/index.ts";
 import { entriesFromDir, type FakeGithub, fakeSha, startFakeGithub } from "./extension-fakes.ts";
 import { connectFakeAccount, FAKE_CLIENT, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";

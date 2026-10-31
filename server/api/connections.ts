@@ -24,7 +24,8 @@ import { connectionView, getConnection, listConnections, notifyAgent } from "../
 import { Approvals } from "../mail/approvals.ts";
 import { connectionHookUrl } from "../integrations/hooks.ts";
 import type { WebhookReachability } from "../broker/reachability.ts";
-import { presetServerSlug, presetServerUrl } from "../integrations/user-server.ts";
+import { presetServerSlug } from "../../shared/user-server.ts";
+import { presetServerUrl } from "../integrations/user-server.ts";
 import type { IntegrationPreset, PresetAuth } from "../broker/types.ts";
 import type { AppContext } from "../context.ts";
 import { now } from "../db/index.ts";

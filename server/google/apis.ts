@@ -13,7 +13,7 @@ import { apiLibraryUrl, enableApisCommand, PROJECT_ID_RE } from "./api-links.ts"
 import { errorFromResponse, hasReason, isAbortError } from "./http.ts";
 import { accountScopes, getRow } from "./accounts.ts";
 import { googleAccessToken } from "./scoped.ts";
-import { GOOGLE_SERVICE_RE, IDENTITY_TOKEN_SCOPES } from "./scopes.ts";
+import { GOOGLE_SERVICE_RE, IDENTITY_TOKEN_SCOPES } from "../../shared/google-scopes.ts";
 import { AccountNeedsReauthError, GoogleApiError, ScopesNotGrantedError } from "./types.ts";
 
 export { GOOGLE_SERVICE_RE };

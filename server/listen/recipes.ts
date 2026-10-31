@@ -1,4 +1,4 @@
-import type { AgentTool } from "../../shared/agent-api.ts";
+import { AGENT_TOOLS, type AgentTool } from "../../shared/agent-api.ts";
 import { PRODUCT } from "../brand.ts";
 import { claudeMcpConfigPath } from "./mcpheader.ts";
 import { mcpServerName, profileBrand } from "./names.ts";
@@ -6,7 +6,7 @@ import { DEFAULT_PROFILE } from "./paths.ts";
 import { isLoopbackHost } from "./transport.ts";
 import { NPX } from "./version.ts";
 
-export const TOOLS: readonly AgentTool[] = ["claude-code", "codex", "cursor", "hermes", "other"];
+export const TOOLS: readonly AgentTool[] = AGENT_TOOLS;
 export const TOOL_LABELS: Record<AgentTool, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",

@@ -11,7 +11,7 @@ import { probeGoogleApis } from "../server/google/apis.ts";
 import { extensionConsentConnection, startConnect } from "../server/google/oauth.ts";
 import { googleRuntime } from "../server/google/runtime.ts";
 import { accountHasScopes, accountMissingScopes, googleAccessToken, grantedScopes } from "../server/google/scoped.ts";
-import { DOCS_SCOPE, DRIVE_FILE_SCOPE, DRIVE_READONLY_SCOPE, GMAIL_SCOPE, SHEETS_SCOPE, SLIDES_SCOPE, WORKSPACE_SCOPES } from "../server/google/scopes.ts";
+import { DOCS_SCOPE, DRIVE_FILE_SCOPE, DRIVE_READONLY_SCOPE, GMAIL_SCOPE, SHEETS_SCOPE, SLIDES_SCOPE, WORKSPACE_SCOPES } from "../shared/google-scopes.ts";
 import { DownscopeError, ScopesNotGrantedError } from "../server/google/types.ts";
 import { HttpError } from "../server/util/errors.ts";
 import { connectFakeAccount, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";

@@ -13,7 +13,7 @@ import { type AccountRow, accountScopes, getRow, updateRow } from "../google/acc
 import { type CalendarClient, type CalendarDateTimeRaw, type CalendarEventRaw, classifyCalendarError } from "../google/calendar.ts";
 import { sleep } from "../google/http.ts";
 import { googleRuntime } from "../google/runtime.ts";
-import { CALENDAR_SCOPES, hasScopes } from "../google/scopes.ts";
+import { CALENDAR_SCOPES, hasScopes } from "../../shared/google-scopes.ts";
 import { AccountNeedsReauthError, GoogleApiError } from "../google/types.ts";
 import { cleanLine } from "../mail/content.ts";
 import { errorMessage } from "../util/errors.ts";

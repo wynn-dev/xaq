@@ -14,7 +14,7 @@ const HOME = mkdtempSync(join(tmpdir(), "xaq-home-"));
 process.env.HOME = HOME;
 for (const v of ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME"]) delete process.env[v];
 
-const { DRIVE_READONLY_SCOPE, GMAIL_SCOPE } = await import("../server/google/scopes.ts");
+const { DRIVE_READONLY_SCOPE, GMAIL_SCOPE } = await import("../shared/google-scopes.ts");
 const { connectFakeAccount, recordingEvents, startFakeGoogle } = await import("./fake-google.ts");
 const { connectAgent, grantInput } = await import("./mail-fakes.ts");
 const { testContext } = await import("./helpers.ts");

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Account, AgentWithKey, ConnectAccountResponse } from "../shared/types.ts";
-import { DRIVE_READONLY_SCOPE, GMAIL_SCOPE } from "../server/google/scopes.ts";
+import { DRIVE_READONLY_SCOPE, GMAIL_SCOPE } from "../shared/google-scopes.ts";
 import { GOOGLE_WORKSPACE_EXTENSION } from "../server/google/workspace-binding.ts";
 import { HAS_AGENTS } from "./e2e/features.ts";
 import { grant, mailbox, type Stack, startStack } from "./e2e/harness.ts";

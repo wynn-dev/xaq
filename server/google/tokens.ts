@@ -15,7 +15,7 @@ import {
   REQUEST_TIMEOUT_MS,
   sleep,
 } from "./http.ts";
-import { IDENTITY_TOKEN_SCOPES, missingScopes } from "./scopes.ts";
+import { IDENTITY_TOKEN_SCOPES, missingScopes } from "../../shared/google-scopes.ts";
 import { AccountNeedsReauthError, DownscopeError, GoogleApiError, ScopesNotGrantedError } from "./types.ts";
 
 /** A downscoped access token (TokenManager.scopedAccessToken). */

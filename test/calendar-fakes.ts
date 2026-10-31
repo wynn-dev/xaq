@@ -15,7 +15,7 @@ import type {
   EventsListParams,
   WriteOptions,
 } from "../server/google/calendar.ts";
-import { CALENDAR_SCOPES, MAIL_SCOPES } from "../server/google/scopes.ts";
+import { CALENDAR_SCOPES, MAIL_SCOPES } from "../shared/google-scopes.ts";
 import { GoogleApiError, type GoogleService } from "../server/google/types.ts";
 import type { IngestService } from "../server/ingest/index.ts";
 import { AgentMail, ToolError, type ToolTrace } from "../server/mail/agent.ts";

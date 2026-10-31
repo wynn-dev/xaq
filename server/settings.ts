@@ -2,6 +2,7 @@ import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import type { GoogleAppType, GoogleClientCheck as ClientCheck, IngestMode, PubsubState, Settings } from "../shared/types.ts";
+import { publicUrlProblem } from "../shared/public-url.ts";
 import type { Bus } from "./bus.ts";
 import type { Config } from "./config.ts";
 import { type Db, json } from "./db/index.ts";
@@ -147,14 +148,9 @@ export class SettingsStore {
 const INGEST_MODES: IngestMode[] = ["pubsub", "poll"];
 
 function validate(s: Settings): Settings {
-  let url: URL;
-  try {
-    url = new URL(s.publicUrl);
-  } catch {
-    throw badRequest("Public URL must be a full URL", "For example https://mail.example.com or http://localhost:8425");
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") throw badRequest("Public URL must use http or https");
-  if (url.search || url.hash) throw badRequest("Public URL must not contain a query or fragment");
+  const problem = publicUrlProblem(s.publicUrl);
+  if (problem) throw badRequest(`Public URL: ${problem}`);
+  const url = new URL(s.publicUrl.trim());
   const int = (v: number, name: string, min: number, max: number) => {
     if (!Number.isInteger(v) || v < min || v > max) throw badRequest(`${name} must be a whole number from ${min} to ${max}`);
     return v;

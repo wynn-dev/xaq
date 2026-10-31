@@ -31,7 +31,6 @@ import {
   duplicateOf,
   emptyDraft,
   grantedScopesView,
-  presetServerSlug,
   suggestDraftSlug,
   exactOrigin,
   finishEarlyCreate,
@@ -51,6 +50,7 @@ import {
 import { brokerStatuses, firstRunView, shownWizard } from "../src/components/setup/first-run.ts";
 import { stepStatuses } from "../src/components/setup/steps.ts";
 import { fixtureManifest } from "./extension-fixtures.ts";
+import { presetServerSlug } from "../shared/user-server.ts";
 
 const NOW = Date.parse("2026-10-16T12:00:00.000Z");
 const inDays = (d: number) => new Date(NOW + d * 86_400_000).toISOString();

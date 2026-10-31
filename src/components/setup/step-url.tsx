@@ -1,3 +1,4 @@
+import { publicUrlProblem } from "@shared/public-url";
 import type { GoogleClientView, Settings } from "@shared/types";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangleIcon, CheckCircle2Icon, InfoIcon, LaptopIcon, NetworkIcon, ServerIcon, ShieldIcon, XCircleIcon } from "lucide-react";
@@ -13,7 +14,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { api } from "@/lib/api";
 import { NPX } from "@/lib/cli";
 import { useApiMutation } from "@/lib/mutations";
-import { addressLabel, analyzeUrl, consolePort, isLoopbackOrigin, localConsoleUrl, publicUrlError, type Tone, type UrlAnalysis, urlVerdict } from "@/lib/public-url";
+import { addressLabel, analyzeUrl, consolePort, isLoopbackOrigin, localConsoleUrl, type Tone, type UrlAnalysis, urlVerdict } from "@/lib/public-url";
 import { keys, queries } from "@/lib/queries";
 import { tunnelCommand } from "@/lib/tunnel";
 import { cn } from "@/lib/utils";
@@ -76,7 +77,7 @@ function UrlForm({ index, onNext, returnTo, settings, addresses }: StepProps & {
   const firstVisit = statuses.url !== "done";
   const [url, setUrl] = useState(firstVisit && analyzeUrl(origin) ? origin : settings.publicUrl);
   const [changedRedirect, setChangedRedirect] = useState(false);
-  const error = publicUrlError(url);
+  const error = publicUrlProblem(url);
   const clean = url.trim().replace(/\/+$/, "");
   const analysis = error ? null : analyzeUrl(clean);
   const port = consolePort(addresses, settings.publicUrl);

@@ -8,7 +8,7 @@
 import type { AppContext } from "../context.ts";
 import { googleRuntime } from "./runtime.ts";
 import { accountHasScopes, googleAccessToken } from "./scoped.ts";
-import { DRIVE_READONLY_SCOPE } from "./scopes.ts";
+import { DRIVE_READONLY_SCOPE } from "../../shared/google-scopes.ts";
 
 /** The scopes a Drive attachment's token carries: read-only Drive, nothing else. */
 export const DRIVE_ATTACH_SCOPES = [DRIVE_READONLY_SCOPE] as const;

@@ -16,7 +16,7 @@ import { accountScopes, getRow } from "../server/google/accounts.ts";
 import type { CalendarClient, CalendarListEntryRaw, WatchChannel } from "../server/google/calendar.ts";
 import { googleErrorFromBody } from "../server/google/http.ts";
 import { googleRuntime } from "../server/google/runtime.ts";
-import { CALENDAR_SCOPES } from "../server/google/scopes.ts";
+import { CALENDAR_SCOPES } from "../shared/google-scopes.ts";
 import type { Account, ExtraScopeName } from "../shared/types.ts";
 import type { FakeGoogle } from "./fake-google.ts";
 

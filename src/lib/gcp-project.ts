@@ -55,17 +55,6 @@ export function iamBindingCommand(projectId: string, email: string): string | nu
   return `gcloud projects add-iam-policy-binding ${shellQuote(projectId)} --member=${shellQuote(`user:${email.trim()}`)} --role=roles/pubsub.admin`;
 }
 
-// ───────────── OAuth scopes (mirrors server/google/scopes.ts; a test keeps them equal) ─────────────
-
-const G = "https://www.googleapis.com/auth/";
-
-/** What the wizard lists on the Data access page: Gmail (restricted), then Calendar's three (sensitive). */
-export const SCOPES = {
-  gmail: `${G}gmail.modify`,
-  pubsub: `${G}pubsub`,
-  calendar: [`${G}calendar.events`, `${G}calendar.calendarlist.readonly`, `${G}calendar.events.freebusy`],
-} as const;
-
 // ───────────── Google Cloud console links ─────────────
 
 const p = (id: string) => encodeURIComponent(id);

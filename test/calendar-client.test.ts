@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AppContext } from "../server/context.ts";
 import { activationUrl, type CalendarClient, classifyCalendarError } from "../server/google/calendar.ts";
-import { CALENDAR_SCOPES, GMAIL_SCOPE } from "../server/google/scopes.ts";
+import { CALENDAR_SCOPES, GMAIL_SCOPE } from "../shared/google-scopes.ts";
 import { isOutcomeUnknown } from "../server/google/http.ts";
 import { GoogleApiError } from "../server/google/types.ts";
 import { connectFakeAccount, type FakeGoogle, startFakeGoogle } from "./fake-google.ts";

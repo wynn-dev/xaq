@@ -2,7 +2,7 @@
 // opens, what each account shows, how a per-account consent ended, and which notice Overview shows.
 import { describe, expect, it } from "vitest";
 import type { CalendarSetupState, SetupWarning } from "../shared/types.ts";
-import { CALENDAR_SCOPES } from "../server/google/scopes.ts";
+import { CALENDAR_SCOPES } from "../shared/google-scopes.ts";
 import {
   accountCalendarView,
   accountsToAdd,

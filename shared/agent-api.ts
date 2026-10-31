@@ -30,7 +30,9 @@
 
 import type { CalendarWriteMode, Capability, EventType, SendMode, WebhookFilter } from "./types.ts";
 
-export type AgentTool = "claude-code" | "codex" | "cursor" | "hermes" | "other";
+/** The agent tools the CLI and the console know (recipes, connect commands). */
+export const AGENT_TOOLS = ["claude-code", "codex", "cursor", "hermes", "other"] as const;
+export type AgentTool = (typeof AGENT_TOOLS)[number];
 
 export interface PairingStartInput {
   /** Human-readable agent name, e.g. "Hermes on wynn-mbp". */

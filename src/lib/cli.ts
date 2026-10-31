@@ -2,13 +2,13 @@
 // `connect` / `listen` commands and per-tool recipes. Mirrors server/listen/recipes.ts (agent side).
 
 // Relative (not @shared): the setup-logic unit tests type-check this file under the server config.
-import type { AgentTool } from "../../shared/agent-api.ts";
+import { AGENT_TOOLS, type AgentTool } from "../../shared/agent-api.ts";
 
 /** The npm package; the command it installs is `xaq`. Swap for NPM_PACKAGE from @shared/types once it exists. */
 export const NPM_PACKAGE = "xaq-cli";
 export const NPX = `npx ${NPM_PACKAGE}`;
 
-export const TOOLS: AgentTool[] = ["claude-code", "codex", "cursor", "hermes", "other"];
+export const TOOLS: readonly AgentTool[] = AGENT_TOOLS;
 
 export const TOOL_LABEL: Record<AgentTool, string> = {
   "claude-code": "Claude Code",

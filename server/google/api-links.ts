@@ -1,7 +1,7 @@
 // Links and commands that turn a Google API on in the user's own Cloud project (pure: no I/O, no AppContext), for
 // code extensions' Google setup (server/extensions/google-setup.ts) and the probe (server/google/apis.ts).
 
-import { GOOGLE_SERVICE_RE } from "./scopes.ts";
+import { GOOGLE_SERVICE_RE } from "../../shared/google-scopes.ts";
 
 /** A Google Cloud project ID (6 to 30 lowercase letters, digits and dashes, starting with a letter). */
 export const PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;

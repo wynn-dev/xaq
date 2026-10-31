@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { Account, AgentWithKey, ConnectAccountResponse, ConnectionView } from "../shared/types.ts";
 import { isSmokeDir } from "../shared/smoke.ts";
 import { type AdminChannel, openAdminChannel } from "../server/connections-cli/admin.ts";
-import { DRIVE_READONLY_SCOPE, GMAIL_SCOPE } from "../server/google/scopes.ts";
+import { DRIVE_READONLY_SCOPE, GMAIL_SCOPE } from "../shared/google-scopes.ts";
 import { GOOGLE_WORKSPACE_EXTENSION } from "../server/google/workspace-binding.ts";
 import { AttachmentParser, setAttachmentParser } from "../server/mail/extract/sandbox.ts";
 import { type AgentMcp, type CallOutcome, connectAgentMcp } from "../server/smoke/agent.ts";

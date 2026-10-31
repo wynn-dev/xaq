@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { IngestMode, Settings, SystemInfo } from "@shared/types";
+import { publicUrlProblem } from "@shared/public-url";
 import { useForm } from "@tanstack/react-form";
 import { useQueryClient } from "@tanstack/react-query";
 import { InfoIcon } from "lucide-react";
@@ -17,7 +18,7 @@ import { CalendarSetupSummary } from "@/components/google/calendar-setup";
 import { RedirectNotice } from "@/components/google/redirect-notice";
 import { UrlVerdict } from "@/components/setup/step-url";
 import { api, toastError } from "@/lib/api";
-import { addressLabel, analyzeUrl, isLoopbackOrigin, publicUrlError } from "@/lib/public-url";
+import { addressLabel, analyzeUrl, isLoopbackOrigin } from "@/lib/public-url";
 import { keys } from "@/lib/queries";
 
 interface FormValues {
@@ -117,7 +118,7 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form.Field name="publicUrl" validators={{ onChange: ({ value }) => publicUrlError(value) }}>
+          <form.Field name="publicUrl" validators={{ onChange: ({ value }) => publicUrlProblem(value) }}>
             {(field) => (
               <Field data-invalid={!field.state.meta.isValid}>
                 <FieldLabel htmlFor={field.name}>Public URL</FieldLabel>

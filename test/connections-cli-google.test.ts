@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { addConnection } from "../server/connections-cli/manage.ts";
 import { ScriptedPrompter } from "../server/connections-cli/prompt.ts";
 import { presetFromValidManifest, validateManifest } from "../server/extensions/manifest.ts";
-import { GMAIL_SCOPE, WORKSPACE_SCOPES } from "../server/google/scopes.ts";
+import { GMAIL_SCOPE, WORKSPACE_SCOPES } from "../shared/google-scopes.ts";
 import { type Daemon, startDaemon } from "./connections-cli-fake.ts";
 import { googleManifest } from "./google-extension-fixtures.ts";
 

@@ -13,7 +13,7 @@ import { MIGRATIONS } from "../server/db/schema.ts";
 import { type AccountRow, toAccount } from "../server/google/accounts.ts";
 import { classifyCalendarError } from "../server/google/calendar.ts";
 import { googleErrorFromBody } from "../server/google/http.ts";
-import { CALENDAR_SCOPES } from "../server/google/scopes.ts";
+import { CALENDAR_SCOPES } from "../shared/google-scopes.ts";
 import { GoogleApiError } from "../server/google/types.ts";
 import { Approvals } from "../server/mail/approvals.ts";
 import { attendeeImpact, calendarInScope } from "../server/policy/calendar.ts";
