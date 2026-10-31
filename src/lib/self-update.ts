@@ -3,7 +3,6 @@ import type { HealthResponse, SelfUpdateStatus } from "../../shared/types.ts";
 /** An update this tab started (kept in sessionStorage across the reload that picks up the new console). */
 export interface PendingUpdate {
   id: string;
-  kind: SelfUpdateStatus["kind"];
   from: string;
   to: string;
   /** Set just before the tab reloads into the new version, so it reloads once. */
@@ -31,9 +30,8 @@ export function savePending(pending: PendingUpdate | null): void {
 }
 
 /**
- * What a tab waiting on an update does next. `failed`: the job ended without the new version (it says
- * whether it rolled back). `reload`: /api/health answers with the version asked for, so load its console.
- * `succeeded`: that already happened. Otherwise `wait`: the service is restarting or the job is still going.
+ * What a tab waiting on an update does next. `failed`: the job ended without the new version. `reload`:
+ * /api/health answers with the version asked for, so load its console. `succeeded`: that already happened. Otherwise `wait`: the service is restarting or the job is still going.
  */
 export function updateVerdict(pending: PendingUpdate, status: SelfUpdateStatus | null, health: HealthResponse | null): "wait" | "reload" | "succeeded" | "failed" {
   const mine = status?.id === pending.id ? status : null;
@@ -42,31 +40,8 @@ export function updateVerdict(pending: PendingUpdate, status: SelfUpdateStatus |
   return pending.reloaded ? "succeeded" : "reload";
 }
 
-/** The step a running job is on, in words. */
-export const STEP_TEXT: Record<SelfUpdateStatus["step"], string> = {
-  starting: "Starting the update job…",
-  staging: "Downloading and checking the new version…",
-  stopping: "Stopping xaq…",
-  snapshot: "Saving a copy of the database…",
-  swapping: "Putting the new version in place…",
-  restarting: "Starting xaq again…",
-  health: "Waiting for xaq to answer…",
-  restoring: "It didn't come up: putting the previous version back…",
-  done: "Done.",
-};
-
 /** A finished job, for a toast or the dialog. */
 export function outcomeText(status: SelfUpdateStatus): { ok: boolean; title: string; description: string } {
-  const what = status.kind === "rollback" ? `Going back to ${status.to}` : `The update to ${status.to}`;
-  const message = status.message ?? "";
-  switch (status.state) {
-    case "succeeded":
-      return { ok: true, title: status.kind === "rollback" ? `Went back to xaq ${status.to}` : `Updated to xaq ${status.to}`, description: "" };
-    case "rolled_back":
-      return { ok: false, title: `${what} failed; xaq ${status.from} is back`, description: message };
-    case "rollback_failed":
-      return { ok: false, title: `${what} failed, and putting ${status.from} back failed too`, description: `${message} Check the service on the server (xaq service status).` };
-    default:
-      return { ok: false, title: `${what} didn't happen`, description: message };
-  }
+  if (status.state === "succeeded") return { ok: true, title: `Updated to xaq ${status.to}`, description: "" };
+  return { ok: false, title: `The update to ${status.to} failed`, description: `${status.message ?? ""} Check the service on the server (xaq service status).`.trim() };
 }

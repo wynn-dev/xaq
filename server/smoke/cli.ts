@@ -2,7 +2,6 @@
 // channel (server/connections-cli/admin.ts) and /mcp as a temporary agent. See run.ts for what it does.
 
 import type { Command } from "commander";
-import { LEGACY_PRODUCT } from "../brand.ts";
 import { resolveDataDir } from "../config.ts";
 import { NPX } from "../listen/version.ts";
 import type { SmokeFlags } from "./run.ts";
@@ -98,7 +97,7 @@ export function registerSmokeCommands(program: Command): void {
     .option("--connection <slug>", "the google-workspace connection (default: the only one)")
     .option("--json", "print the result table as JSON on stdout (progress goes to stderr)")
     .option("-y, --yes", "don't ask before running")
-    .option("-d, --data <dir>", `xaq's data directory (default ~/.xaq, or an existing ~/.${LEGACY_PRODUCT}; env XAQ_DATA)`)
+    .option("-d, --data <dir>", `xaq's data directory (default ~/.xaq; env XAQ_DATA)`)
     .addHelpText(
       "after",
       `
@@ -121,7 +120,7 @@ Example:
       const out = safeWriter(o.json ? process.stderr : process.stdout);
       const err = o.json ? out : safeWriter(process.stderr);
       const json = o.json ? safeWriter(process.stdout) : null;
-      const channel = openAdminChannel({ dataDir: resolveDataDir(o.data, { quiet: true }) });
+      const channel = openAdminChannel({ dataDir: resolveDataDir(o.data) });
       const prompter = new TerminalPrompter(!!o.yes, { input: process.stdin, output: o.json ? process.stderr : process.stdout });
       const controller = new AbortController();
       const run = new SmokeRun(o, {

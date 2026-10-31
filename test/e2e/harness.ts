@@ -68,7 +68,7 @@ export interface RequestOptions {
   cookie?: boolean;
 }
 
-/** Drives /api exactly like the browser console: session cookie + `x-agentinbox-csrf: 1`. */
+/** Drives /api exactly like the browser console: session cookie + `x-xaq-csrf: 1`. */
 export class AdminClient {
   cookie: string | null = null;
 
@@ -81,7 +81,7 @@ export class AdminClient {
   /** Raw request (no status check). Captures a new session cookie when the server sets one. */
   async request(path: string, opts: RequestOptions = {}): Promise<Response> {
     const headers: Record<string, string> = { accept: "application/json", ...opts.headers };
-    if (opts.csrf !== false) headers["x-agentinbox-csrf"] = "1";
+    if (opts.csrf !== false) headers["x-xaq-csrf"] = "1";
     if (opts.cookie !== false && this.cookie) headers.cookie = this.cookie;
     if (opts.json !== undefined) headers["content-type"] = "application/json";
     const res = await resilientFetch(`${this.base()}${path}`, {

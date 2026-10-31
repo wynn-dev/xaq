@@ -212,8 +212,6 @@ export interface ParserOptions {
 /** Built: dist/attachment-parser.js next to this file's chunk. Source mode: built on first use (bundle.ts). */
 async function defaultCode(): Promise<Buffer> {
   if (!import.meta.url.endsWith(".ts")) return readFile(new URL("./attachment-parser.js", import.meta.url));
-  const fromEnv = process.env.XAQ_ATTACHMENT_PARSER;
-  if (fromEnv) return readFile(fromEnv);
   // A computed specifier: bundle.ts (and the tsdown it loads) must stay out of the build.
   const devOnly = new URL("bundle.ts", import.meta.url).href;
   const { sourceModeBundle } = (await import(devOnly)) as typeof import("./bundle.ts");

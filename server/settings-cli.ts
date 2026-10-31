@@ -6,7 +6,6 @@ import { resolve } from "node:path";
 import type { Command } from "commander";
 import pc from "picocolors";
 import type { Settings } from "../shared/types.ts";
-import { LEGACY_PRODUCT } from "./brand.ts";
 import { resolveDataDir } from "./config.ts";
 import { AdminApiError, type AdminChannel } from "./connections-cli/admin.ts";
 import { safeText } from "./listen/ui.ts";
@@ -75,10 +74,10 @@ export async function removeAttachmentDir(dir: string, deps: SettingsCliDeps): P
 const GROUP = "Run xaq:";
 
 export function registerSettingsCommands(program: Command): void {
-  const dataOption = (cmd: Command) => cmd.option("-d, --data <dir>", `xaq's data directory (default ~/.xaq, or an existing ~/.${LEGACY_PRODUCT}; env XAQ_DATA)`);
+  const dataOption = (cmd: Command) => cmd.option("-d, --data <dir>", `xaq's data directory (default ~/.xaq; env XAQ_DATA)`);
   const withChannel = async (o: { data?: string }, run: (deps: SettingsCliDeps) => Promise<number>) => {
     const { CLEANUP_SIGNALS, openAdminChannel } = await import("./connections-cli/admin.ts");
-    const channel = openAdminChannel({ dataDir: resolveDataDir(o.data, { quiet: true }) });
+    const channel = openAdminChannel({ dataDir: resolveDataDir(o.data) });
     const handlers = CLEANUP_SIGNALS.map((sig) => {
       const h = () => {
         channel.close();

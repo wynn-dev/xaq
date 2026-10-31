@@ -4,7 +4,6 @@
 import type { Command } from "commander";
 import pc from "picocolors";
 import type { ExtensionErrorBody, ExtensionResolveResult, ExtensionUpdateResult, ExtensionView } from "../../shared/extensions.ts";
-import { LEGACY_PRODUCT } from "../brand.ts";
 import { resolveDataDir } from "../config.ts";
 import { AdminApiError, type AdminChannel } from "../connections-cli/admin.ts";
 import type { Prompter } from "../connections-cli/prompt.ts";
@@ -169,11 +168,11 @@ export async function removeExtension(name: string, flags: { force?: boolean }, 
 const GROUP = "MCP connections (on xaq's machine):";
 
 export function registerExtensionCommands(program: Command): void {
-  const dataOption = (cmd: Command) => cmd.option("-d, --data <dir>", `xaq's data directory (default ~/.xaq, or an existing ~/.${LEGACY_PRODUCT}; env XAQ_DATA)`);
+  const dataOption = (cmd: Command) => cmd.option("-d, --data <dir>", `xaq's data directory (default ~/.xaq; env XAQ_DATA)`);
   const withApi = async (o: { data?: string; yes?: boolean }, run: (deps: ExtDeps) => Promise<number>) => {
     const { CLEANUP_SIGNALS, openAdminChannel } = await import("../connections-cli/admin.ts");
     const { TerminalPrompter } = await import("../connections-cli/prompt.ts");
-    const channel = openAdminChannel({ dataDir: resolveDataDir(o.data, { quiet: true }) });
+    const channel = openAdminChannel({ dataDir: resolveDataDir(o.data) });
     const handlers = CLEANUP_SIGNALS.map((sig) => {
       const h = () => {
         channel.close();

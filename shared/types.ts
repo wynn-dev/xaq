@@ -174,19 +174,14 @@ export interface UpdateInfo {
 }
 
 /**
- * The status file the update job writes (`<data>/update/status.json`, server/update.ts). `running` until the
- * job ends; then `succeeded`, `failed` (refused or failed before anything changed), `rolled_back` (the
- * new version didn't come up, the previous install and database are back) or `rollback_failed`.
+ * The status file the update job writes (`<data>/update/status.json`, server/update.ts): `running` until the
+ * job ends, then `succeeded` or `failed` (with what went wrong).
  */
 export interface SelfUpdateStatus {
   id: string;
-  /** `update`: to the npm `latest` version; `rollback`: back to the previous install (app.old). */
-  kind: "update" | "rollback";
   from: string;
   to: string;
-  state: "running" | "succeeded" | "failed" | "rolled_back" | "rollback_failed";
-  /** The step running (or the last one reached). */
-  step: "starting" | "staging" | "stopping" | "snapshot" | "swapping" | "restarting" | "health" | "restoring" | "done";
+  state: "running" | "succeeded" | "failed";
   /** What went wrong, for the console. */
   message: string | null;
   startedAt: string;
@@ -199,16 +194,13 @@ export interface SelfUpdateInfo {
   supported: boolean;
   /** Why not, when it can't. */
   reason: string | null;
-  /** The version kept in `<data>/app.old`, when it is older than this one (offered as "go back"). */
-  previous: string | null;
   status: SelfUpdateStatus | null;
 }
 
-/** POST /api/system/update. `version` (for `update`) must be the npm `latest` the console showed. */
+/** POST /api/system/update. `version` must be the npm `latest` the console showed. */
 export interface SelfUpdateRequest {
   password: string;
-  action: "update" | "rollback";
-  version?: string;
+  version: string;
 }
 
 /** Ordered setup checklist; the console's setup wizard and overview both render this. */
@@ -1566,7 +1558,7 @@ export interface ApiError {
 
 // ───────────────────────────── Console API route map ─────────────────────────────
 // Session: cookie `aib_session` (HttpOnly, SameSite=Lax). Mutating requests must send header
-// `x-agentinbox-csrf: 1` (simple CSRF guard; the console fetch wrapper always sets it).
+// `x-xaq-csrf: 1` (simple CSRF guard; the console fetch wrapper always sets it).
 //
 // Unauthenticated:
 //   GET    /api/health                                → HealthResponse

@@ -4,7 +4,7 @@ import { envVar } from "./brand.ts";
 
 /**
  * Secrets at rest (refresh tokens, webhook secrets, Google client secret) are AES-256-GCM encrypted.
- * Key source: XAQ_MASTER_KEY (AGENTINBOX_MASTER_KEY before the rename; base64, 32 bytes) or `<dataDir>/master.key` (generated, mode 0600).
+ * Key source: XAQ_MASTER_KEY (base64, 32 bytes) or `<dataDir>/master.key` (generated, mode 0600).
  * Ciphertext format: "v1:" + base64(iv[12] | tag[16] | ciphertext).
  */
 export class Crypto {

@@ -8,7 +8,7 @@
 // 2. The path must be absolute and, lexically, inside an allowed directory; then its real path (symlinks and
 //    ".." resolved) must be inside an allowed directory's real path too.
 // 3. Refused even inside an allowed directory (server/util/own-dirs.ts): xaq's own directories (the data directory,
-//    ~/.xaq, ~/.agentinbox, the CLI's config, state and data directories at their XDG and default locations); the
+//    ~/.xaq, the CLI's config, state and data directories at their XDG and default locations); the
 //    service files (all of ~/Library/LaunchAgents, systemd unit directories); the agent tools' config directories and
 //    the MCP config files `setup-mcp` writes (Codex, Cursor, Claude Code, Hermes) with their *.xaq-backup-* copies;
 //    credential stores (~/.ssh, ~/.aws, ~/.config/gh, ~/.gnupg, ~/Library/Keychains, ~/.kube, ~/.docker, ~/.netrc,

@@ -1,6 +1,6 @@
 // Where secrets live on this machine, which files are never attached from (server/mail/local-files.ts) and which no
 // attachment directory may be, contain or sit inside (Settings.attachmentDirs, server/settings.ts):
-// - xaq's own directories: the daemon's data directory (the configured one, ~/.xaq, ~/.agentinbox) and the CLI's XDG
+// - xaq's own directories: the daemon's data directory (the configured one and ~/.xaq) and the CLI's XDG
 //   directories (config with the agents' profiles and MCP headers, state, data), both where XDG_* points now and at
 //   their default locations: a daemon run by launchd or systemd may not see the user's XDG_CONFIG_HOME;
 // - the service files xaq writes (launchd plists, systemd units): their environment may carry XAQ_MASTER_KEY;
@@ -11,8 +11,8 @@
 
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { LEGACY_PRODUCT, PRODUCT } from "../brand.ts";
-import { legacyDataDir, newDataDir } from "../config.ts";
+import { PRODUCT } from "../brand.ts";
+import { defaultDataDir } from "../config.ts";
 import { claudeConfigFile, codexConfigFile, cursorConfigFile } from "../listen/mcpsetup.ts";
 
 /** Case-insensitive file systems (macOS, Windows by default): paths are compared lower-cased there. */
@@ -32,8 +32,8 @@ const xdgEnv = (env: NodeJS.ProcessEnv, name: string): string | null => {
 };
 
 /**
- * The daemon's data directory (the configured one, ~/.xaq and the pre-rename ~/.agentinbox) and the CLI's XDG
- * directories (config, state, data; `xaq`, `agentinbox` and `xaq-cli` under each, see server/listen/paths.ts), under
+ * The daemon's data directory (the configured one and ~/.xaq) and the CLI's XDG
+ * directories (config, state, data; `xaq` and `xaq-cli` under each, see server/listen/paths.ts), under
  * both the XDG_* values this process sees and the default locations.
  */
 export function ownDirs(dataDir: string, env: NodeJS.ProcessEnv = process.env): string[] {
@@ -46,8 +46,8 @@ export function ownDirs(dataDir: string, env: NodeJS.ProcessEnv = process.env): 
     xdgEnv(env, "XDG_DATA_HOME"),
     join(home, ".local", "share"),
   ].filter((b): b is string => !!b);
-  const names = [PRODUCT, LEGACY_PRODUCT, `${PRODUCT}-cli`];
-  return [...new Set([resolve(dataDir), newDataDir(), legacyDataDir(), ...bases.flatMap((b) => names.map((n) => join(b, n)))])];
+  const names = [PRODUCT, `${PRODUCT}-cli`];
+  return [...new Set([resolve(dataDir), defaultDataDir(), ...bases.flatMap((b) => names.map((n) => join(b, n)))])];
 }
 
 /** Secret-holding directories and files beyond xaq's own directories. */

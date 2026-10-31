@@ -1,6 +1,6 @@
 ---
 name: xaq
-description: Read, search, draft, send and organize Gmail, and read and schedule Google Calendar events, through a xaq server (formerly agentinbox); react to new mail and calendar changes via its event feed or webhooks. Use whenever a task involves email in a mailbox connected to xaq (checking the inbox, finding a message, replying, following up on a thread, triaging labels, waiting for a reply), the calendar of such an account (what's on it, finding a free slot, scheduling or moving a meeting, answering an invitation), or when handling a xaq webhook payload.
+description: Read, search, draft, send and organize Gmail, and read and schedule Google Calendar events, through a xaq server; react to new mail and calendar changes via its event feed or webhooks. Use whenever a task involves email in a mailbox connected to xaq (checking the inbox, finding a message, replying, following up on a thread, triaging labels, waiting for a reply), the calendar of such an account (what's on it, finding a free slot, scheduling or moving a meeting, answering an invitation), or when handling a xaq webhook payload.
 ---
 <!-- xaq-cli skill: written by `xaq skill install`, which may replace it. -->
 
@@ -27,7 +27,6 @@ Claude Code:
 claude mcp add --transport http --scope user xaq {{XAQ_URL}}/mcp --header "Authorization: Bearer $XAQ_API_KEY"
 ```
 
-xaq was formerly agentinbox: an agent set up before the rename may have these tools under that name (`mcp__agentinbox__…` in Claude Code, the toolset `mcp-agentinbox` in Hermes). It is the same server.
 
 You only see tools your grants allow. If a tool you need is missing, the key lacks that capability: ask the user to
 change the grant rather than looking for a workaround.

@@ -177,7 +177,7 @@ export const NODE_HAS_ALLOW_NET = process.allowedNodeEnvironmentFlags.has("--all
 
 /**
  * The child's whole environment, built from nothing: the four XAQ_EXT_* values, plus TZ and LANG when xaq has them.
- * No PATH, HOME, NODE_OPTIONS, XAQ_*, AGENTINBOX_* or anything else from xaq's environment.
+ * No PATH, HOME, NODE_OPTIONS, XAQ_* or anything else from xaq's environment.
  */
 export function childEnv(p: { name: string; connectionId: string; stateDir: string }, from: { TZ?: string; LANG?: string } = process.env): Record<string, string> {
   const env: Record<string, string> = {

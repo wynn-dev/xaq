@@ -12,9 +12,9 @@ export const CONNECTIONS_VISIBLE = true;
 const GROUP = "MCP connections (on xaq's machine):";
 
 const collect = (value: string, previous: string[] | undefined) => [...(previous ?? []), value];
-// --data, else XAQ_DATA (AGENTINBOX_DATA), else ~/.xaq or an existing pre-rename ~/.agentinbox (config.ts; rename-xaq: keep).
-const dataDirOf = (o: { data?: string }) => resolveDataDir(o.data, { quiet: true });
-const dataOption = (cmd: Command) => cmd.option("-d, --data <dir>", `xaq's data directory (default ~/.xaq, or an existing ~/.${LEGACY_PRODUCT}; env XAQ_DATA)`);
+// --data, else XAQ_DATA, else ~/.xaq (config.ts).
+const dataDirOf = (o: { data?: string }) => resolveDataDir(o.data);
+const dataOption = (cmd: Command) => cmd.option("-d, --data <dir>", `xaq's data directory (default ~/.xaq; env XAQ_DATA)`);
 
 async function withApi<T>(o: { data?: string; yes?: boolean }, run: (deps: { api: import("./api.ts").ConnectionsApi; prompter: import("./prompt.ts").Prompter }) => Promise<T>): Promise<T> {
   const { CLEANUP_SIGNALS, openAdminChannel } = await import("./admin.ts");

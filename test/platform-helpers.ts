@@ -8,7 +8,7 @@ import type { ServiceOverrides } from "../server/wire.ts";
 import type { IngestStatus, PubsubState } from "../shared/types.ts";
 import { testContext } from "./helpers.ts";
 
-export const CSRF = { "x-agentinbox-csrf": "1" };
+export const CSRF = { "x-xaq-csrf": "1" };
 export const PASSWORD = "correct horse battery";
 
 /** Minimal google fake: only what the platform routes read. */

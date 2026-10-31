@@ -361,7 +361,7 @@ reference doesn't document a default. `sendNotifications` is deprecated.
 | Event storage | `server/events/*` | done, tested |
 | MCP registration hook, tool names | `server/mcp/calendar.ts`, `server/mcp/server.ts` (`Register`, `CALENDAR_TOOL_NAMES`) | hook stub (C) |
 | Console vocabulary: labels, icons, KIND_LABEL, DENIAL_REASONS, CALENDAR_WRITE_MODE_INFO | `src/lib/labels.ts`, `src/components/events/event-row.tsx` | done (copy may change) |
-| `config.google.calendarBase` (`AGENTINBOX_GOOGLE_CALENDAR_BASE`) | `server/config.ts` | done; fake and demo point it at themselves |
+| `config.google.calendarBase` (`XAQ_GOOGLE_BASE`, tests only) | `server/config.ts` | done; fake and demo point it at themselves |
 
 ## Work split
 

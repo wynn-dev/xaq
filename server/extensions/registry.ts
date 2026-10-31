@@ -13,7 +13,7 @@ export const OFFICIAL_REPO = "xaq-extensions";
  */
 export const OFFICIAL_NAMES: readonly string[] = ["notion", "t3code", "whoop", "brightspace", "google-workspace"];
 
-/** Where sources are fetched from. Overridable (tests point them at a fake GitHub). */
+/** Where sources are fetched from. XAQ_EXT_GITHUB_BASE (tests only) points all three at a fake GitHub. */
 export interface ExtensionUrls {
   /** index.json. */
   registry: string;
@@ -24,10 +24,12 @@ export interface ExtensionUrls {
 }
 
 export function defaultExtensionUrls(): ExtensionUrls {
+  const base = envVar("EXT_GITHUB_BASE");
+  if (base) return { registry: `${base}/raw/index.json`, githubApi: `${base}/api`, codeload: `${base}/codeload` };
   return {
-    registry: envVar("EXT_REGISTRY_URL") ?? `https://raw.githubusercontent.com/${OFFICIAL_OWNER}/${OFFICIAL_REPO}/main/index.json`,
-    githubApi: envVar("EXT_GITHUB_API") ?? "https://api.github.com",
-    codeload: envVar("EXT_CODELOAD") ?? "https://codeload.github.com",
+    registry: `https://raw.githubusercontent.com/${OFFICIAL_OWNER}/${OFFICIAL_REPO}/main/index.json`,
+    githubApi: "https://api.github.com",
+    codeload: "https://codeload.github.com",
   };
 }
 

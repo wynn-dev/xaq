@@ -52,7 +52,7 @@ export interface InstanceInfo {
   service?: boolean;
 }
 
-/** `<data>/xaq.lock` (`agentinbox.lock` in a data directory from before the rename: see dataFiles). */
+/** `<data>/xaq.lock`. */
 export const lockPath = (dataDir: string) => dataFiles(dataDir).lock;
 
 /** Data dirs locked by this process: a lock naming our own pid is live only if it's in here. */
@@ -214,7 +214,7 @@ function sampleCiphertext(dbPath: string): string | null {
 /**
  * Refuses to start with a master key that can't read the stored secrets: a missing master.key would
  * otherwise be regenerated, silently making every refresh token and webhook secret unreadable.
- * `envKey` overrides XAQ_MASTER_KEY (or AGENTINBOX_MASTER_KEY; used by `service install` to check the key it will install).
+ * `envKey` overrides XAQ_MASTER_KEY (used by `service install` to check the key it will install).
  */
 export function assertMasterKeyUsable(config: Pick<Config, "dbPath" | "masterKeyPath">, envKey = envVar("MASTER_KEY")): void {
   const sample = sampleCiphertext(config.dbPath);
@@ -234,7 +234,7 @@ export function assertMasterKeyUsable(config: Pick<Config, "dbPath" | "masterKey
   } catch {
     throw new Error(
       `The master key from ${source} can't decrypt the secrets stored in ${config.dbPath}. ` +
-        "Use the key this data directory was created with (master.key from your backup, or the previous XAQ_MASTER_KEY or AGENTINBOX_MASTER_KEY).",
+        "Use the key this data directory was created with (master.key from your backup, or the previous XAQ_MASTER_KEY).",
     );
   }
 }

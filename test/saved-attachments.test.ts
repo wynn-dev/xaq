@@ -6,7 +6,6 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { hasForeignFiles } from "../server/config.ts";
 import {
   ATTACHMENT_RETENTION_DAYS,
   MAX_SAVED_BYTES,
@@ -54,8 +53,6 @@ describe("saved attachments", () => {
     expect(statSync(join(ctx.config.dataDir, "attachments")).mode & 0o777).toBe(0o700);
     expect(statSync(join(ctx.config.dataDir, "attachments", "18f00aa")).mode & 0o777).toBe(0o700);
     expect(statSync(path).mode & 0o777).toBe(0o600);
-    // The data dir still counts as ours (attachments/ is one of our entries).
-    expect(hasForeignFiles(ctx.config.dataDir)).toBe(false);
   });
 
   it("cleans hostile names: no hidden files, no control or bidi characters, encoded words decoded", async () => {

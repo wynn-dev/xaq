@@ -226,7 +226,7 @@ describe.runIf(HAS_AGENTS)("MCP attachments", () => {
       // The setting is admin-only: an agent key gets nowhere near /api/settings.
       const asAgent = await fetch(`${s.url}/api/settings`, {
         method: "PATCH",
-        headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "x-agentinbox-csrf": "1" },
+        headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "x-xaq-csrf": "1" },
         body: JSON.stringify({ attachmentDirs: [dir] }),
       });
       expect(asAgent.status).toBe(401);

@@ -1,21 +1,15 @@
 // Must stay the first import: exits with a clear message on a too-old Node.
 import "./node-check.ts";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { basename, join, sep } from "node:path";
+import { join, sep } from "node:path";
 import type { Command as CommandType } from "commander";
-import { envVar, underService } from "./brand.ts";
+import { envVar } from "./brand.ts";
 
 // Loaded after the Node check (static imports are hoisted above it in the bundle).
 const { Command, InvalidArgumentError } = await import("commander");
 const { default: pc } = await import("picocolors");
 
 process.title = "xaq";
-
-// The `agentinbox` command now comes from the agentinbox-cli shim, which says this itself and sets the
-// flag before running us; the check stays for anything else that starts us under that name.
-if (basename(process.argv[1] ?? "") === "agentinbox" && !(globalThis as { __xaqShimNotice?: boolean }).__xaqShimNotice && !underService()) {
-  process.stderr.write("agentinbox is now xaq: use `npx xaq-cli …` (or `xaq …` once installed with npm i -g xaq-cli).\n");
-}
 
 // node:sqlite is stable enough for us but still warns on Node 22. This runs before any server
 // module loads: everything that touches node:sqlite is imported dynamically below.
@@ -64,7 +58,7 @@ const withServerOptions = (cmd: CommandType) =>
   cmd
     .option("-p, --port <port>", "port to listen on (default 8425, env PORT)", parsePort)
     .option("--host <host>", "bind address (default 0.0.0.0, env HOST)")
-    .option("-d, --data <dir>", "data directory (default ~/.xaq, or an existing ~/.agentinbox; env XAQ_DATA)");
+    .option("-d, --data <dir>", "data directory (default ~/.xaq; env XAQ_DATA)");
 
 const configInput = (o: ServerFlags) => ({ port: portOption(o.port), host: o.host, dataDir: o.data });
 
@@ -88,7 +82,6 @@ Examples:
                                   on an agent's machine: wake Claude Code on new mail
 
 Run any command with --help for details. Install it with npm i -g xaq-cli to type xaq instead.
-Coming from agentinbox? Your data, keys and services carry over: see "Upgrading from agentinbox" in the README.
 Docs: https://github.com/wynn-dev/xaq/blob/main/docs/reference.md`,
   )
   .showSuggestionAfterError();
@@ -120,44 +113,41 @@ const service = program
   .helpGroup(SERVER_GROUP);
 
 withServerOptions(
-  service.command("install").description("install and start the service; re-run it to change the port or update (replaces an agentinbox service, keeping its data)"),
+  service.command("install").description("install and start the service; re-run it to change the port or update"),
 )
-  .option("--node <path>", "the Node.js binary the service runs (default: this one if new enough, else the previous service's, else the newest found)")
+  .option("--node <path>", "the Node.js binary the service runs (default: this one)")
   .action(async (o: ServerFlags & { node?: string }) => {
     const { loadConfig } = await import("./config.ts");
-    const { installService, serviceInstallInput, systemOps } = await import("./service.ts");
-    // Replacing a service from before the rename keeps its data directory, port and host unless told otherwise.
-    await installService(loadConfig(serviceInstallInput(configInput(o), systemOps()), version), undefined, { node: o.node });
+    const { installService } = await import("./service.ts");
+    await installService(loadConfig(configInput(o), version), undefined, { node: o.node });
   });
 
 service
   .command("uninstall")
   .description("stop and remove the service (keeps your data)")
-  .option("-d, --data <dir>", "data directory, if the installed service doesn't say (default ~/.xaq, or an existing ~/.agentinbox; env XAQ_DATA)")
+  .option("-d, --data <dir>", "data directory, if the installed service doesn't say (default ~/.xaq; env XAQ_DATA)")
   .action(async (o: ServerFlags) => {
     const { uninstallService } = await import("./service.ts");
     const { resolveDataDir } = await import("./config.ts");
     // No loadConfig: uninstalling must not create a data directory.
-    uninstallService({ dataDir: resolveDataDir(o.data, { quiet: true }) });
+    uninstallService({ dataDir: resolveDataDir(o.data) });
   });
 
 // The console's update job (server/update.ts), started by the service as its own systemd unit or launchd job.
 service
   .command("update-run", { hidden: true })
   .requiredOption("-d, --data <dir>", "the service's data directory")
-  .requiredOption("--id <id>", "the update's id (the status file and audit entries carry it)")
-  .option("--to <version>", "the version to install")
-  .option("--back", "go back to the previous install (app.old)")
-  .action(async (o: { data: string; id: string; to?: string; back?: boolean }) => {
-    if (!o.back === !o.to) throw new Error("Give either --to or --back.");
+  .requiredOption("--id <id>", "the update's id (the status file carries it)")
+  .requiredOption("--to <version>", "the version to install")
+  .action(async (o: { data: string; id: string; to: string }) => {
     const { runUpdateJob } = await import("./update.ts");
-    const status = await runUpdateJob({ dataDir: o.data, id: o.id, kind: o.back ? "rollback" : "update", version: o.to });
+    const status = await runUpdateJob({ dataDir: o.data, id: o.id, version: o.to });
     if (status.state !== "succeeded") process.exitCode = 1;
   });
 
 service
   .command("status")
-  .description("show service status, and check the Node.js it runs (code extensions need a recent one)")
+  .description("show service status")
   .action(async () => {
     const { serviceStatus } = await import("./service.ts");
     serviceStatus();
@@ -184,14 +174,12 @@ skill
   .option("-t, --target <target>", "claude, codex, agents, or a skills directory path", "claude")
   .option("--url <url>", "xaq server URL agents connect to (env XAQ_URL)")
   .action(async (o: { target: string; url?: string }) => {
-    const { removeLegacySkill, renderSkill, SKILL_TARGETS, skillPath, writeSkill } = await import("./skill/index.ts");
+    const { renderSkill, SKILL_TARGETS, skillPath, writeSkill } = await import("./skill/index.ts");
     checkSkillTarget(o.target, Object.keys(SKILL_TARGETS));
     const url = await serverUrl(o.url);
     const path = skillPath(o.target);
     writeSkill(path, renderSkill(url));
     console.log(`Installed the xaq skill to ${pc.cyan(path)} (server ${url}).`);
-    const replaced = removeLegacySkill(o.target);
-    if (replaced) console.log(`Removed the agentinbox skill it replaces (${replaced}).`);
     if (!o.url && !envVar("URL")) {
       console.log(pc.dim("Agents on other machines need the server's address: re-run with --url https://your-server."));
     }
@@ -202,7 +190,7 @@ program
   .description("forgot the console password? Removes it and prints a new setup link (or the first-run link)")
   .summary("print a new setup link (forgot the password?)")
   .helpGroup(SERVER_GROUP)
-  .option("-d, --data <dir>", "data directory (default ~/.xaq, or an existing ~/.agentinbox; env XAQ_DATA)")
+  .option("-d, --data <dir>", "data directory (default ~/.xaq; env XAQ_DATA)")
   .option("-p, --port <port>", "port of the running instance, used for the printed link", parsePort)
   .option("--host <host>", "host of the running instance, used for the printed link")
   .action(
@@ -284,7 +272,7 @@ for (const cmd of program.commands) {
 program.commandsGroup(SERVER_GROUP).helpCommand("help [command]", "show help for a command").helpCommand(true);
 
 /**
- * The URL written into SKILL.md: --url, XAQ_URL (AGENTINBOX_URL), else the xaq running on this
+ * The URL written into SKILL.md: --url, XAQ_URL, else the xaq running on this
  * machine (its lock file), else http://localhost:8425.
  */
 async function serverUrl(flag: string | undefined): Promise<string> {
@@ -292,7 +280,7 @@ async function serverUrl(flag: string | undefined): Promise<string> {
   if (!raw) {
     const { runningInstance } = await import("./instance.ts");
     const { resolveDataDir } = await import("./config.ts");
-    const running = runningInstance(resolveDataDir(undefined, { quiet: true }));
+    const running = runningInstance(resolveDataDir(undefined));
     const host = running && !["0.0.0.0", "::", ""].includes(running.host) ? running.host : "localhost";
     raw = `http://${host.includes(":") ? `[${host}]` : host}:${running?.port || process.env.PORT || 8425}`;
   }
@@ -355,6 +343,6 @@ try {
   await program.parseAsync(process.argv);
 } catch (err) {
   console.error(pc.red(err instanceof Error ? err.message : String(err)));
-  if (envVar("DEBUG") && err instanceof Error) console.error(err.stack);
+  if (envVar("LOG_LEVEL") === "debug" && err instanceof Error) console.error(err.stack);
   process.exit(1);
 }

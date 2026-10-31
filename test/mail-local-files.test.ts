@@ -163,8 +163,8 @@ describe("path attachments: the boundary", () => {
     expect((await refusal(join(docs, "key-link.txt"), wide)).message).toMatch(/leads through a symlink to something that can't be attached/);
     linkSync(join(data, "readme.txt"), join(docs, "hardlink.txt"));
     expect((await refusal(join(docs, "hardlink.txt"), wide)).message).toMatch(/hard-linked files can't be attached/);
-    // ~/.xaq, ~/.agentinbox and the CLI's ~/.config/xaq count as xaq's own wherever the data directory is.
-    for (const dir of [join(HOME, ".xaq"), join(HOME, ".agentinbox"), join(HOME, ".config", "xaq", "profiles")]) {
+    // ~/.xaq and the CLI's ~/.config/xaq count as xaq's own wherever the data directory is.
+    for (const dir of [join(HOME, ".xaq"), join(HOME, ".config", "xaq", "profiles")]) {
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, "default.json"), "{}");
       expect((await refusal(join(dir, "default.json"), { allowedDirs: [HOME], dataDir: data })).message).toMatch(/xaq's own files/);

@@ -114,7 +114,6 @@ export function createCliSession(dbPath: string, clock: () => number = Date.now)
 }
 
 export function openAdminChannel(opts: OpenAdminOptions): AdminChannel {
-  // xaq.db, or agentinbox.db in a data directory from before the rename (rename-xaq: keep).
   const dbPath = dataFiles(opts.dataDir).db;
   if (!existsSync(dbPath)) {
     throw new Error(
