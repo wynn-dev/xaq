@@ -7,7 +7,7 @@ import type { Lifecycle } from "../context.ts";
 export interface MailService extends Lifecycle {
   /**
    * FROZEN. Cleaned, markdown-converted body with signals, honoring Settings.maxBodyChars. Used for
-   * webhook payloads with includeBody (visibility is checked by the caller, not here).
+   * listener payloads with a body (visibility is checked by the caller, not here).
    */
   messageContent(accountId: string, messageId: string): Promise<MessageContent>;
 

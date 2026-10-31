@@ -13,7 +13,7 @@ import { MANIFEST_JSON_SCHEMA, presetFromManifest, presetFromValidManifest, rend
 import { OFFICIAL_NAMES } from "../server/extensions/registry.ts";
 import { ExtensionError } from "../server/extensions/sources.ts";
 import { ExtensionStore } from "../server/extensions/store.ts";
-import { CALENDAR_EVENTS_SCOPE, GMAIL_SCOPE, PUBSUB_SCOPE, WORKSPACE_SCOPES } from "../shared/google-scopes.ts";
+import { CALENDAR_EVENTS_SCOPE, GMAIL_SCOPE, WORKSPACE_SCOPES } from "../shared/google-scopes.ts";
 import { fixtureExtension } from "./extension-fixtures.ts";
 import { googleManifest, WORKSPACE_APIS } from "./google-extension-fixtures.ts";
 
@@ -35,7 +35,6 @@ const withAuth = (auth: unknown) => {
 const CTX: SetupContext = {
   publicUrl: "https://xaq.example",
   redirectUri: "https://xaq.example/oauth/connections/callback",
-  webhookUrl: null,
   google: {
     projectId: "my-project-123",
     appType: "external",
@@ -76,7 +75,7 @@ describe("manifest validation: code.auth google", () => {
       `${G}calendar`,
       `${G}calendar.readonly`,
       `${G}calendar.events.freebusy`,
-      PUBSUB_SCOPE,
+      `${G}pubsub`,
       `${G}cloud-platform`,
       `${G}cloud-platform.read-only`,
       "openid",

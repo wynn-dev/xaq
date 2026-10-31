@@ -102,7 +102,7 @@ export class SyncPass {
       );
       this.emit("message.sent", msg, threadLabels, `${msg.id}:message.sent`);
       // Self-addressed mail is normally only a send; the setup test email also counts as received so
-      // the operator sees it reach webhooks and listeners filtered on message.received (the default).
+      // the operator sees it reach listeners filtered on message.received (the default).
       if (isTestEmail(msg)) this.emit("message.received", msg, threadLabels, `${msg.id}:message.received`);
       return;
     }

@@ -330,7 +330,6 @@ function ReuseRisks() {
         <ul className="list-disc space-y-1 pl-4">
           <li>Don't rename or rebrand the existing sign-in screen; leave it as it is.</li>
           <li>Create a separate OAuth client for xaq, and don't touch the other app's client.</li>
-          <li>Prefer polling over Pub/Sub for new mail (step 6).</li>
         </ul>
       </AlertDescription>
     </Alert>

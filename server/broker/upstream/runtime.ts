@@ -2,7 +2,7 @@ import type { CoreContext } from "../../context.ts";
 import { callbackMode } from "../../google/client.ts";
 import { HttpError } from "../../util/errors.ts";
 import { randomToken } from "../../util/ids.ts";
-import { type LookupFn, resolveTarget } from "../../webhooks/ssrf.ts";
+import { type LookupFn, resolveTarget } from "../../util/ssrf.ts";
 import { checkExpiries } from "../credentials/expiry.ts";
 import { Refresher } from "../credentials/refresher.ts";
 import { scrubText } from "../credentials/scrub.ts";

@@ -48,7 +48,7 @@ async function setup() {
   s = await startStack();
   email = mailbox("listen");
   other = mailbox("listen-other");
-  [account, otherAccount] = (await s.bootstrap({ accounts: [email, other], pubsub: true })) as [Account, Account];
+  [account, otherAccount] = (await s.bootstrap({ accounts: [email, other] })) as [Account, Account];
   scopeLabel = s.fake.addLabel(email, "xaq");
   // Fast polling for the tests (the server exposes this for tests; production default is 3 s).
   await setAgentApiOptions(s, { intervalSeconds: 1 });

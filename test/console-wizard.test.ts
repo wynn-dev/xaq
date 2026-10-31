@@ -9,7 +9,7 @@ import type { Profile } from "../server/listen/profile.ts";
 import { grantInWords } from "../src/components/agents/grant-words.ts";
 import { deniedDescription, linkedPairing } from "../src/components/approvals/pairing-link.ts";
 import { listenerHandled } from "../src/components/agents/listener-handled.ts";
-import { allStepsDone, type SetupDraft, showsSetupLink, skippedPatch, STEP_META, STEP_IDS, startsVerify, type StepId, type StepStatus, stepStatuses, verifiedPatch, verifyDoneHeading, wizardStep } from "../src/components/setup/steps.ts";
+import { allStepsDone, type SetupDraft, showsSetupLink, skippedPatch, STEP_IDS, startsVerify, type StepId, type StepStatus, stepStatuses, verifiedPatch, verifyDoneHeading, wizardStep } from "../src/components/setup/steps.ts";
 import { lastCallShown } from "../src/components/agents/last-call.ts";
 import { activeTest, checksComplete, doneSummary, TEST_SUBJECT, TEST_TTL_MS, type VerifyTest, verifyChecks, verifyFooter, verifyMode } from "../src/components/setup/verify-checks.ts";
 import { connectCommands, NPX } from "../src/lib/cli.ts";
@@ -344,7 +344,6 @@ describe("stepStatuses: the verify step", () => {
     googleClientConfigured: true,
     gcpProjectId: "p-123456",
     googleAppType: "external",
-    pubsub: { mode: "poll", topic: null, subscription: null, lastError: null, lastMessageAt: null, principalAccountId: null, principalEmail: null, pendingPrincipalAccountId: null, pendingPrincipalEmail: null },
     accountsConnected: 1,
     agentsCreated: 1,
     verified,
@@ -361,7 +360,7 @@ describe("stepStatuses: the verify step", () => {
   it("stays todo once this browser started the step, until Finish", () => {
     // The server has evidence (a tool call) long before the listener and the test email.
     expect(verify(true, { verifyStarted: true })).toBe("todo");
-    expect(allStepsDone(stepStatuses(state(true), { verifyStarted: true, pubsubSkipped: true }))).toBe(false);
+    expect(allStepsDone(stepStatuses(state(true), { verifyStarted: true }))).toBe(false);
     // "Finish setup" or "Finish without checking".
     expect(verify(true, { verifyStarted: true, verified: true })).toBe("done");
     expect(verify(false, { verifyStarted: true, verified: true })).toBe("done");
@@ -377,7 +376,7 @@ describe("stepStatuses: the verify step", () => {
     // MCP only: no listener, no delivery.
     expect(checksComplete({ ...green, listenDone: false, delivered: false, skipListen: true })).toBe(true);
 
-    const draft: SetupDraft = { verifyStarted: true, pubsubSkipped: true };
+    const draft: SetupDraft = { verifyStarted: true };
     expect(verifiedPatch(false, draft)).toBeNull();
     const patched = { ...draft, ...verifiedPatch(checksComplete(green), draft) };
     expect(patched.verified).toBe(true);
@@ -408,7 +407,7 @@ describe("stepStatuses: the verify step", () => {
     expect(verifyFooter(false, true).nextDisabled).toBe(false);
   });
 
-  it("records how step 8 was finished", () => {
+  it("records how step 7 was finished", () => {
     expect(skippedPatch({ verifyStarted: true })).toEqual({ verified: true, verifiedBy: "skip" });
     // Skipping after the checks passed doesn't forget that they did.
     expect(skippedPatch({ verified: true, verifiedBy: "checks" })).toEqual({ verified: true, verifiedBy: "checks" });
@@ -419,13 +418,13 @@ describe("stepStatuses: the verify step", () => {
   });
 
   it("says 'Setup complete' only when every required step is done", () => {
-    const all = stepStatuses(state(true), { verified: true, pubsubSkipped: true });
+    const all = stepStatuses(state(true), { verified: true });
     expect(verifyDoneHeading(all)).toEqual({ title: "Setup complete", nextStep: null });
-    // Optional real-time delivery left to do doesn't matter; step 8 itself (about to be marked) neither.
-    expect(verifyDoneHeading({ ...all, pubsub: "todo", verify: "todo" })).toEqual({ title: "Setup complete", nextStep: null });
+    // Step 7 itself (about to be marked) doesn't matter.
+    expect(verifyDoneHeading({ ...all, verify: "todo" })).toEqual({ title: "Setup complete", nextStep: null });
     // A required step is still to do: the first one is linked.
     expect(verifyDoneHeading({ ...all, consent: "todo", accounts: "todo" })).toEqual({ title: "This check is done", nextStep: "consent" });
-    expect(verifyDoneHeading({ ...all, url: "todo", pubsub: "todo" })).toEqual({ title: "This check is done", nextStep: "url" });
+    expect(verifyDoneHeading({ ...all, url: "todo", agent: "todo" })).toEqual({ title: "This check is done", nextStep: "url" });
   });
 
   it("shows the last successful tool call, or marks a failed one", () => {
@@ -486,9 +485,8 @@ describe("stepStatuses: the verify step", () => {
     expect(showsSetupLink(true, true, "/events")).toBe(false);
   });
 
-  it("calls setup done without the optional real-time delivery step", () => {
+  it("calls setup done once every step is", () => {
     expect(allStepsDone(stepStatuses(state(true), {}))).toBe(true);
-    expect(STEP_META.pubsub.short).toBe("Real-time delivery");
   });
 });
 
@@ -587,7 +585,7 @@ describe("Approvals: the CLI's ?pairing= link after a decision", () => {
 
 describe("wizardStep: which step /get-started shows", () => {
   it("shows ?step= as given and never pins it", () => {
-    expect(wizardStep("pubsub", { loaded: true, firstTodo: "consent" })).toEqual({ shown: "pubsub", pin: null });
+    expect(wizardStep("agent", { loaded: true, firstTodo: "consent" })).toEqual({ shown: "agent", pin: null });
   });
 
   it("without ?step=, shows the first unfinished step and pins it once progress has loaded", () => {
@@ -610,20 +608,19 @@ describe("startsVerify: which steps start the end-to-end check in this browser",
     consent: "done",
     client: "done",
     accounts: "done",
-    pubsub: "skipped",
     agent: "todo",
     verify: "todo",
     ...over,
   });
 
-  it("starts on step 7 while no agent exists, so an early tool call can't complete step 8", () => {
+  it("starts on step 6 while no agent exists, so an early tool call can't complete step 7", () => {
     expect(startsVerify("agent", statuses(), {})).toBe(true);
-    // Then the server's evidence arrives (a tool call before step 8 is opened): step 8 stays todo.
+    // Then the server's evidence arrives (a tool call before step 7 is opened): step 7 stays todo.
     const s = { claimed: true, googleClientConfigured: true, gcpProjectId: "p-123456", googleAppType: "external", accountsConnected: 1, agentsCreated: 1, verified: true } as SetupState;
-    expect(stepStatuses({ ...s, pubsub: { mode: "poll" } } as SetupState, { verifyStarted: true }).verify).toBe("todo");
+    expect(stepStatuses(s, { verifyStarted: true }).verify).toBe("todo");
   });
 
-  it("starts on step 8 while it is todo", () => {
+  it("starts on step 7 while it is todo", () => {
     expect(startsVerify("verify", statuses({ agent: "done" }), {})).toBe(true);
   });
 
@@ -632,7 +629,7 @@ describe("startsVerify: which steps start the end-to-end check in this browser",
     expect(startsVerify("agent", statuses({ agent: "done", verify: "done" }), {})).toBe(false);
     expect(startsVerify("verify", statuses({ agent: "done" }), { verifyStarted: true })).toBe(false);
     expect(startsVerify("verify", statuses({ agent: "done" }), { verified: true })).toBe(false);
-    // Revisiting step 7 to add a second agent changes nothing.
+    // Revisiting step 6 to add a second agent changes nothing.
     expect(startsVerify("agent", statuses({ agent: "done" }), {})).toBe(false);
     expect(startsVerify("accounts", statuses(), {})).toBe(false);
   });

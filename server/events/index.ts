@@ -2,7 +2,6 @@ import { type EventType, isConnectionEventType, type MailEvent, type Page } from
 import type { AppContext } from "../context.ts";
 import { type Db, json, now, type Param } from "../db/index.ts";
 import { newId } from "../util/ids.ts";
-import { deliveriesForEvent } from "../webhooks/deliveries.ts";
 import { EVENT_SELECT, type EventRow, eventBySeq, toMailEvent, toStoredEvent } from "./repo.ts";
 import type { EventsService, FeedOptions, FeedResult, NewEvent, StoredEvent } from "./types.ts";
 
@@ -47,14 +46,11 @@ export function createEventsService(ctx: AppContext): EventsService {
         connection ? (e.connectionId ?? null) : null,
       );
       if (!inserted) return null;
-      const event = eventBySeq(ctx.db, inserted.seq)!;
-      ctx.webhooks.enqueue(event);
-      return event;
+      return eventBySeq(ctx.db, inserted.seq)!;
     });
     if (!stored) return null;
     const pub = toMailEvent(stored);
     publish(() => ctx.bus.emit("event", pub));
-    for (const d of deliveriesForEvent(ctx.db, stored.seq)) publish(() => ctx.bus.emit("delivery", d));
     return pub;
   }
 
@@ -68,12 +64,12 @@ export function createEventsService(ctx: AppContext): EventsService {
   }
 
   function get(id: string): StoredEvent | null {
-    const row = ctx.db.get<EventRow>(`${EVENT_SELECT} WHERE e.id = ? AND e.seq > 0`, id);
+    const row = ctx.db.get<EventRow>(`${EVENT_SELECT} WHERE e.id = ?`, id);
     return row ? toStoredEvent(row) : null;
   }
 
   function list(q: { accountId?: string; type?: EventType; cursor?: string | null; limit?: number }): Page<MailEvent> {
-    const where = ["e.seq > 0"];
+    const where: string[] = [];
     const params: Param[] = [];
     if (q.accountId) {
       where.push("e.account_id = ?");
@@ -89,7 +85,7 @@ export function createEventsService(ctx: AppContext): EventsService {
       params.push(before);
     }
     const limit = clamp(q.limit ?? 50, 1, 200);
-    const rows = ctx.db.all<EventRow>(`${EVENT_SELECT} WHERE ${where.join(" AND ")} ORDER BY e.seq DESC LIMIT ?`, ...params, limit + 1);
+    const rows = ctx.db.all<EventRow>(`${EVENT_SELECT} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY e.seq DESC LIMIT ?`, ...params, limit + 1);
     // Console only: keeps threadLabelIds (label scopes match them) for the "Delivered to" line.
     const items = rows.slice(0, limit).map((r) => toStoredEvent(r));
     return { items, nextCursor: rows.length > limit ? String(items.at(-1)!.seq) : null };
@@ -192,9 +188,8 @@ export function createEventsService(ctx: AppContext): EventsService {
     return { ackedSeq: ackedSeq(agentId) };
   }
 
-  /** Keeps events still referenced by a delivery; webhooks.prune expires and removes those first. */
   function prune(beforeIso: string): number {
-    return ctx.db.run(`DELETE FROM events WHERE created_at < ? AND seq NOT IN (SELECT event_seq FROM deliveries)`, beforeIso).changes;
+    return ctx.db.run(`DELETE FROM events WHERE created_at < ?`, beforeIso).changes;
   }
 
   return { emit, get, list, feed, wait, ack, prune };

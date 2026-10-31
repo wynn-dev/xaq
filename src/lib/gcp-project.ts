@@ -1,12 +1,7 @@
 // Google Cloud project IDs: validation, suggestions and the Cloud Shell commands (pure, unit-tested).
 
-import { shellQuote } from "./cli.ts";
-
 /** A project ID as Google accepts it: 6–30 chars, lowercase letters, digits and hyphens, starting with a letter. */
 export const PROJECT_ID_RE = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
-
-/** Same as PROJECT_ID_RE, also accepting the legacy domain-scoped form (`example.com:my-project`) the server accepts. */
-export const PROJECT_ID_WITH_DOMAIN_RE = /^([a-z0-9.-]+:)?[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
 
 /** A fresh project ID suggestion: "xaq-" + 6 random digits (Google IDs are global, so make a clash unlikely). */
 export function generateProjectId(): string {
@@ -31,9 +26,7 @@ export function projectIdProblem(raw: string): string | null {
 export const CALENDAR_API = "calendar-json.googleapis.com";
 
 /**
- * The Cloud Shell command: create the project, then enable the Gmail and Calendar APIs in it. Not
- * Pub/Sub: Google may want a billing account before it enables Pub/Sub, which would fail the whole
- * command on the required path. Pub/Sub is enabled in the optional real-time delivery step instead.
+ * The Cloud Shell command: create the project, then enable the Gmail and Calendar APIs in it.
  * Returns null for an invalid ID (it goes into a shell, so only ever a validated one).
  */
 export function projectCommand(id: string, inOrg: boolean): string | null {
@@ -46,14 +39,6 @@ export function projectCommand(id: string, inOrg: boolean): string | null {
   );
 }
 
-/**
- * Gives `email` the Pub/Sub Admin role on the project (run by the project owner in Cloud Shell).
- * Both values are shell-quoted; null when the project ID isn't valid.
- */
-export function iamBindingCommand(projectId: string, email: string): string | null {
-  if (!PROJECT_ID_WITH_DOMAIN_RE.test(projectId) || !email.trim()) return null;
-  return `gcloud projects add-iam-policy-binding ${shellQuote(projectId)} --member=${shellQuote(`user:${email.trim()}`)} --role=roles/pubsub.admin`;
-}
 
 // ───────────── Google Cloud console links ─────────────
 
@@ -63,11 +48,10 @@ const p = (id: string) => encodeURIComponent(id);
 export const cloudUrl = {
   cloudShell: "https://shell.cloud.google.com/?show=terminal",
   createProject: "https://console.cloud.google.com/projectcreate",
-  /** The Gmail API (step 2): enabling Pub/Sub may need billing, so it is enabled in step 6. */
+  /** The Gmail API (step 2). */
   enableGmail: (id: string) => `https://console.cloud.google.com/flows/enableapi?apiid=gmail.googleapis.com&project=${p(id)}`,
   /** The Calendar API (step 2, and "Add Google Calendar" on installs from before Calendar). */
   enableCalendar: (id: string) => `https://console.cloud.google.com/flows/enableapi?apiid=${CALENDAR_API}&project=${p(id)}`,
-  enablePubsub: (id: string) => `https://console.cloud.google.com/flows/enableapi?apiid=pubsub.googleapis.com&project=${p(id)}`,
   dashboard: (id: string) => `https://console.cloud.google.com/home/dashboard?project=${p(id)}`,
   authOverview: (id: string) => `https://console.cloud.google.com/auth/overview?project=${p(id)}`,
   authAudience: (id: string) => `https://console.cloud.google.com/auth/audience?project=${p(id)}`,

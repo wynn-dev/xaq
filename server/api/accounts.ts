@@ -7,8 +7,7 @@ import { ADMIN_ACTOR, readBody, router } from "./util.ts";
 const ConnectInput = z.object({
   reauthAccountId: z.string().min(1).optional(),
   /**
-   * Incremental consent: ["pubsub"] for Pub/Sub on the provisioning account (default: the account
-   * provisioning uses), ["calendar"] for Google Calendar (with reauthAccountId: "Add Calendar to <email>").
+   * Incremental consent: ["calendar"] for Google Calendar (with reauthAccountId: "Add Calendar to <email>").
    */
   scopes: z.array(z.enum(EXTRA_SCOPE_NAMES)).optional(),
   /** Leave Google Calendar out of this consent (a Workspace admin blocks it). */

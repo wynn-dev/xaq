@@ -260,19 +260,15 @@ describe("Testing mode and Workspace detection", () => {
 });
 
 describe("setup warnings", () => {
-  it("reports accounts needing reauth and failing Pub/Sub, errors first", async () => {
+  it("reports accounts needing reauth, errors first", async () => {
     const acct = await connectFakeAccount(ctx, fake, "rae@example.com");
     fake.failRefresh("rae@example.com");
     await expect(googleRuntime(ctx).tokens.accessToken(acct.id, { force: true })).rejects.toThrow();
-    ctx.settings.update({ ingestMode: "pubsub" });
-    ctx.settings.setState("pubsub", { topic: null, subscription: null, lastError: "Topic missing. Provision Pub/Sub again.", lastMessageAt: null, principalAccountId: null });
     ctx.google.setClient({ ...FAKE_CLIENT, appType: "external" });
 
     const all = warnings();
     expect(all.find((w) => w.code === "needs_reauth")).toMatchObject({ severity: "error", accountId: acct.id });
     expect(all.find((w) => w.code === "needs_reauth")!.hint).toContain("Reconnect");
-    expect(all.find((w) => w.code === "pubsub_failing")).toMatchObject({ severity: "error" });
-    expect(all.find((w) => w.code === "pubsub_failing")!.hint).toContain("Topic missing");
     const order = { error: 0, warning: 1, info: 2 };
     expect(all.map((w) => order[w.severity])).toEqual([...all.map((w) => order[w.severity])].sort());
   });

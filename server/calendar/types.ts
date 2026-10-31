@@ -20,7 +20,7 @@ export interface CalendarService extends Lifecycle {
   // ───── Sync (A: server/calendar/sync.ts) ─────
   /**
    * FROZEN. Sync now (soon, coalesced): one calendar, every synced calendar of an account, or everything.
-   * Called by push notifications (D), after direct writes (B) and when a grant gains calendar.read (B).
+   * Called after direct writes (B) and when a grant gains calendar.read (B).
    * Never throws.
    */
   kick(accountId?: string, calendarId?: string): void;
@@ -43,14 +43,6 @@ export interface CalendarService extends Lifecycle {
    */
   calendars(accountId: string): Promise<CalendarInfo[]>;
 
-  // ───── Push (D: server/calendar/push.ts) ─────
-  /**
-   * POST /google/calendar/push (unauthenticated). Verifies X-Goog-Channel-ID + X-Goog-Channel-Token against
-   * calendar_sync, marks the channel verified on "sync", kicks the calendar on "exists"/"not_exists".
-   * Returns the HTTP status to answer (204; 404 for an unknown channel so Google stops sending).
-   */
-  handlePush(headers: Headers): number;
-
   // ───── Approvals (B: server/calendar/approvals.ts) ─────
   /** FROZEN. Why this calendar approval can no longer be applied under the agent's current grant, or null. */
   approvalBlockedReason(approval: GoogleApproval): string | null;
@@ -63,7 +55,7 @@ export interface CalendarService extends Lifecycle {
   // ───── Content (C: server/calendar/content.ts) ─────
   /**
    * FROZEN. An event's description cleaned like a mail body (HTML → markdown, invisible text removed,
-   * signals), for webhook includeBody and get_calendar_event. null when the event has no description.
+   * signals), for listener bodies and get_calendar_event. null when the event has no description.
    */
   eventContent(accountId: string, calendarId: string, eventId: string): Promise<MessageContent | null>;
 }

@@ -5,7 +5,7 @@ import { readSetupToken } from "../server/auth/setup-token.ts";
 import type { GoogleService } from "../server/google/types.ts";
 import type { IngestService } from "../server/ingest/index.ts";
 import type { ServiceOverrides } from "../server/wire.ts";
-import type { IngestStatus, PubsubState } from "../shared/types.ts";
+import type { IngestStatus } from "../shared/types.ts";
 import { testContext } from "./helpers.ts";
 
 export const CSRF = { "x-xaq-csrf": "1" };
@@ -13,7 +13,6 @@ export const PASSWORD = "correct horse battery";
 
 /** Minimal google fake: only what the platform routes read. */
 export function fakeGoogle(view: { clientId?: string | null; hasSecret?: boolean; projectId?: string | null } = {}): () => GoogleService {
-  const pubsub: PubsubState = { mode: "poll", topic: null, subscription: null, lastError: null, lastMessageAt: null, principalAccountId: null, principalEmail: null, pendingPrincipalAccountId: null, pendingPrincipalEmail: null };
   return () =>
     ({
       clientView: () => ({
@@ -24,12 +23,11 @@ export function fakeGoogle(view: { clientId?: string | null; hasSecret?: boolean
         redirectUri: "http://localhost:8425/oauth/callback",
         callbackMode: "direct",
       }),
-      pubsubState: () => pubsub,
     }) as unknown as GoogleService;
 }
 
 export function fakeIngest(status: Partial<IngestStatus> = {}): () => IngestService {
-  return () => ({ status: () => ({ mode: "poll", running: true, lastPullAt: null, lastError: null, ...status }) }) as unknown as IngestService;
+  return () => ({ status: () => ({ running: true, lastPullAt: null, lastError: null, ...status }) }) as unknown as IngestService;
 }
 
 export interface Harness {

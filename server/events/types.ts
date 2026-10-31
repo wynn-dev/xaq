@@ -1,4 +1,4 @@
-// Events domain contract. Owned by the events + webhooks work area.
+// Events domain contract.
 // Members marked FROZEN are used by other domains: do not rename or change them. Adding members is fine.
 
 import type { CalendarEventSummary, EventType, MailEvent, MessageSummary, Page } from "../../shared/types.ts";
@@ -20,11 +20,11 @@ export interface NewEvent {
   threadLabelIds?: string[];
   /** For label.added / label.removed: the labels that changed. */
   labelIds?: string[];
-  /** calendar.* events: the event (its calendarId drives calendar scopes and webhook calendarIds filters). */
+  /** calendar.* events: the event (its calendarId drives calendar scopes and calendarIds filters). */
   calendarEvent?: CalendarEventSummary | null;
   detail?: Record<string, unknown>;
   /**
-   * Unique per logical event, e.g. `${accountId}:${messageId}:message.received`. Pub/Sub is at-least-once.
+   * Unique per logical event, e.g. `${accountId}:${messageId}:message.received`. Ingest may see an event more than once.
    * Calendar: `${accountId}:${calendarId}:${eventId}:${type}:${updated}` (invitation: without `updated`).
    */
   dedupeKey: string;
@@ -61,13 +61,12 @@ export interface FeedResult {
 
 export interface EventsService extends Lifecycle {
   /**
-   * FROZEN. Outbox write: inserts the event and its webhook deliveries in one transaction, then emits
-   * bus "event". Returns null when dedupeKey was already seen. Must not be called inside an open
-   * `db.tx` (it throws): listeners and the delivery worker would see the event before it commits.
+   * FROZEN. Inserts the event, then emits bus "event". Returns null when dedupeKey was already seen.
+   * Must not be called inside an open `db.tx` (it throws): listeners would see the event before it commits.
    */
   emit(e: NewEvent): MailEvent | null;
   get(id: string): StoredEvent | null;
-  /** Console listing, newest first (with threadLabelIds: never hand these items to agents or webhooks). */
+  /** Console listing, newest first (with threadLabelIds: never hand these items to agents). */
   list(q: { accountId?: string; type?: EventType; cursor?: string | null; limit?: number }): Page<MailEvent>;
 
   // Agent feed (MCP list_events / wait_for_events / ack_events). Only events the agent may see

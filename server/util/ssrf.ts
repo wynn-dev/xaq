@@ -2,9 +2,9 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 
 /**
- * SSRF guard for webhook targets. A target is refused when its host resolves to a non-public
+ * SSRF guard for outbound URLs (MCP upstreams). A target is refused when its host resolves to a non-public
  * address (private, loopback, link-local, unique-local, CGNAT, multicast, unspecified, reserved),
- * unless the host or the resolved address matches `Settings.webhookAllowlist` (hostnames,
+ * unless the host or the resolved address matches the caller's allowlist (hostnames,
  * "*.suffix" wildcards, IPs or CIDRs). Cloud metadata endpoints are refused unless their exact IP
  * is listed. Callers connect to the returned address (not the hostname) so a second DNS answer
  * cannot swap in a different target (DNS rebinding).
@@ -152,11 +152,11 @@ function ipAllowed(ip: string, list: Allowlist): boolean {
   return list.ips.has(ip) || list.nets.check(ip, family(ip));
 }
 
-/** Wording of resolveTarget's errors, so other callers (the MCP broker's upstream fetch) name their own setting. */
+/** Wording of resolveTarget's errors, so callers (the MCP broker's upstream fetch) name their own setting. */
 export interface TargetMessages {
-  /** What the URL is, e.g. "Webhook URL". */
+  /** What the URL is, e.g. "Upstream URL". */
   subject: string;
-  /** How to allow a private host, e.g. "add it to the webhook allowlist in Settings". */
+  /** How to allow a private host. */
   allowHint: (host: string) => string;
   /** Where plain http is allowed. */
   httpHint: string;
@@ -164,11 +164,11 @@ export interface TargetMessages {
   hostHint: string;
 }
 
-const WEBHOOK_MESSAGES: TargetMessages = {
-  subject: "Webhook URL",
-  allowHint: (host) => `To allow it, add "${host}" or a matching CIDR to the webhook allowlist in Settings.`,
-  httpHint: "Plain http is only allowed for loopback addresses and hosts on the webhook allowlist in Settings.",
-  hostHint: "Check the hostname in the webhook URL.",
+const URL_MESSAGES: TargetMessages = {
+  subject: "URL",
+  allowHint: () => "Private addresses aren't allowed here.",
+  httpHint: "Plain http is only allowed for loopback addresses.",
+  hostHint: "Check the hostname in the URL.",
 };
 
 /** Hostname from a URL without IPv6 brackets. */
@@ -182,7 +182,7 @@ export async function resolveTarget(
   url: URL,
   allowlist: readonly string[],
   lookup: LookupFn = defaultLookup,
-  messages: TargetMessages = WEBHOOK_MESSAGES,
+  messages: TargetMessages = URL_MESSAGES,
 ): Promise<ResolvedTarget> {
   if (url.protocol !== "http:" && url.protocol !== "https:") throw new SsrfError("blocked", `${messages.subject} must use http or https`);
   const host = urlHost(url);

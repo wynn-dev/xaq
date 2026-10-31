@@ -79,9 +79,9 @@ describe("migration 7 (Google Calendar)", () => {
       expect(db.get<{ v: number }>("SELECT MAX(version) AS v FROM _migrations")!.v).toBe(MIGRATIONS.length);
 
       const accounts = db.all<AccountRow>("SELECT * FROM accounts ORDER BY id");
-      expect(accounts.map((a) => [a.id, a.status, a.refresh_token_enc, a.history_id, a.watch_expires_at])).toEqual([
-        ["acc_1", "active", "rt1", "12345", T],
-        ["acc_2", "active", "rt2", "12345", T],
+      expect(accounts.map((a) => [a.id, a.status, a.refresh_token_enc, a.history_id])).toEqual([
+        ["acc_1", "active", "rt1", "12345"],
+        ["acc_2", "active", "rt2", "12345"],
       ]);
       const a1 = toAccount(accounts[0]!);
       expect(a1.grantedScopes).toEqual([GMAIL, PUBSUB, "openid"]);
@@ -142,7 +142,6 @@ describe("Account.calendar", () => {
     access_expires_at: null,
     scopes: JSON.stringify(scopes),
     history_id: null,
-    watch_expires_at: null,
     last_sync_at: null,
     created_at: T,
     refresh_expires_at: null,

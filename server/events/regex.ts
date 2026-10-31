@@ -1,7 +1,7 @@
 import { RE2JS } from "re2js";
 
 /**
- * Webhook subject filters run synchronously on attacker-controlled subjects during events.emit, so
+ * Subject filters run synchronously on attacker-controlled subjects during events.emit, so
  * they use RE2 (re2js): matching is linear in the input, with no catastrophic backtracking. RE2
  * syntax is JavaScript's minus lookarounds and backreferences.
  */

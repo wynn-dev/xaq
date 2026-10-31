@@ -1,26 +1,20 @@
 // E2E: the first-run wizard path over the console API, as a zero-context user takes it: claim → import
 // the downloaded client JSON (first without the redirect URI) → connect Gmail (External app in Testing)
-// → setup warnings → send the test email and watch it arrive as events and at a webhook.
+// → setup warnings → send the test email and watch it arrive as events.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Account, GoogleClientImportResult, SetupState, TestEmailResult, WebhookWithSecret } from "../shared/types.ts";
-import { HAS_AGENTS } from "./e2e/features.ts";
-import { FAKE_CLIENT, grant, mailbox, type Stack, startStack } from "./e2e/harness.ts";
-import { startWebhookReceiver, type WebhookReceiver } from "./e2e/webhook-receiver.ts";
-import { waitFor } from "./e2e/wait.ts";
+import type { Account, GoogleClientImportResult, SetupState, TestEmailResult } from "../shared/types.ts";
+import { FAKE_CLIENT, mailbox, type Stack, startStack } from "./e2e/harness.ts";
 
 let s: Stack;
-let rx: WebhookReceiver;
 
 beforeAll(async () => {
-  rx = await startWebhookReceiver();
   s = await startStack();
   await s.admin.claim(s.setupToken()!);
   await s.admin.patch("/api/settings", { publicUrl: s.url, pollIntervalSeconds: 5 });
 });
 afterAll(async () => {
   await s.close();
-  await rx.close();
 });
 
 const clientJson = (redirectUris: string[]) =>
@@ -81,23 +75,11 @@ describe("onboarding wizard", () => {
     expect(await (await fetch(`${s.url}/health`)).json()).toMatchObject({ status: "ok", setupComplete: true });
   });
 
-  it.runIf(HAS_AGENTS)("sends a test email that arrives as events and at a message.received webhook", async () => {
-    const { agent } = await s.createAgent("wizard-agent", [grant(account.id, { capabilities: ["read"] })]);
-    await s.admin.post<WebhookWithSecret>("/api/webhooks", {
-      agentId: agent.id,
-      name: "first webhook",
-      url: `${rx.url}/first`,
-      eventTypes: ["message.received"],
-      filter: {},
-      includeBody: false,
-      enabled: true,
-    });
+  it("sends a test email that arrives as events", async () => {
     const sent = await s.admin.post<TestEmailResult>(`/api/accounts/${account.id}/test-email`);
     expect(sent.messageId).toBeTruthy();
     const received = await s.waitForEvent((e) => e.type === "message.received" && e.message?.id === sent.messageId);
     expect(received.message).toMatchObject({ subject: "xaq test: your setup works", from: { email: account.email } });
     expect((await s.events({ accountId: account.id })).some((e) => e.type === "message.sent" && e.message?.id === sent.messageId)).toBe(true);
-    const hook = await waitFor(() => rx.at("/first").find((h) => h.json?.data.message?.id === sent.messageId), { what: "test email webhook" });
-    expect(hook.json!.type).toBe("message.received");
   });
 });

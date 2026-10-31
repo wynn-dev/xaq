@@ -10,7 +10,6 @@ import { toolName, usePublicUrl } from "@/components/agents/connect-agent-guide"
 import { grantInWords } from "@/components/agents/grant-words";
 import { CopyButton, ErrorAlert, TimeAgo } from "@/components/common";
 import { Visible } from "@/components/hidden-chars";
-import { ArrivalSpeed } from "@/hooks/use-delivery-speed";
 import { useNow } from "@/hooks/use-now";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -38,10 +37,10 @@ import type { StepProps } from "./step-url";
 import { StepCard, StepFooter } from "./wizard-shell";
 import { explainReason } from "@/lib/labels";
 
-// ───────────── State shared with step 7 (per browser and instance) ─────────────
+// ───────────── State shared with step 6 (per browser and instance) ─────────────
 
 interface VerifyState {
-  /** The agent being checked (set when step 7 approves or creates one). */
+  /** The agent being checked (set when step 6 approves or creates one). */
   agentId?: string;
   /** "I'll use MCP only": no listener expected. */
   skipListen?: boolean;
@@ -72,7 +71,7 @@ function writeState(patch: Partial<VerifyState>) {
   for (const s of subs) s();
 }
 
-/** Step 7 calls this when an agent is approved (or created with a key), so this step checks that one. */
+/** Step 6 calls this when an agent is approved (or created with a key), so this step checks that one. */
 export function setVerifyAgent(agentId: string) {
   writeState({ agentId, skipListen: undefined, test: undefined });
 }
@@ -316,7 +315,7 @@ function Checklist({ agent, state }: { agent: Agent; state: VerifyState }) {
     setComplete(complete ? agent.id : null);
     return () => setComplete(null);
   }, [complete, agent.id]);
-  // Every check green means step 8 is done now (verifiedBy "checks"); "Finish setup" just leaves the page.
+  // Every check green means step 7 is done now (verifiedBy "checks"); "Finish setup" just leaves the page.
   useEffect(() => {
     const patch = verifiedPatch(complete, readDraft());
     if (patch) updateDraft(patch);
@@ -363,7 +362,7 @@ function Checklist({ agent, state }: { agent: Agent; state: VerifyState }) {
         {announcement}
       </p>
 
-      {complete && <SuccessPanel agent={agent} label={label} tool={tool} listening={!skipListen} readIt={readIt} headingRef={doneRef} serviceCmd={c.listenService} accountId={test?.accountId} />}
+      {complete && <SuccessPanel agent={agent} label={label} tool={tool} listening={!skipListen} readIt={readIt} headingRef={doneRef} serviceCmd={c.listenService} />}
 
       <ol aria-label="Setup checks">
         <Item
@@ -430,7 +429,7 @@ function Checklist({ agent, state }: { agent: Agent; state: VerifyState }) {
                   </button>
                 </>
               ) : (
-                "Agents created with a copied key can't run a listener. Use a webhook from the agent's page instead."
+                "Agents created with a copied key can't run a listener."
               )
             ) : listenDone ? (
               "It keeps a connection open and runs your command for each new email you receive."
@@ -490,7 +489,7 @@ function Checklist({ agent, state }: { agent: Agent; state: VerifyState }) {
                 </Link>
               </>
             ) : sent ? (
-              "Usually a few seconds; with polling (no real-time delivery) up to the poll interval."
+              "Usually within the poll interval."
             ) : undefined
           }
         />
@@ -669,7 +668,7 @@ function SendTest({ agent, sent, blocked }: { agent: Agent; sent: boolean; /** T
   );
 }
 
-/** Step 8 revisited once done: what was verified, the same next steps, and a way to check again. */
+/** Step 7 revisited once done: what was verified, the same next steps, and a way to check again. */
 function CompletedView({
   agent,
   state,
@@ -712,7 +711,6 @@ function CompletedView({
         readIt={readIt}
         headingRef={headingRef}
         serviceCmd={c.listenService}
-        accountId={state.test?.accountId}
         summary={
           <ul aria-label="What was checked" className="space-y-1.5 text-sm">
             <DoneItem ok>
@@ -826,7 +824,6 @@ function SuccessPanel({
   readIt,
   headingRef,
   serviceCmd,
-  accountId,
   summary,
 }: {
   agent: Agent;
@@ -836,8 +833,6 @@ function SuccessPanel({
   readIt: boolean;
   headingRef: React.RefObject<HTMLHeadingElement | null>;
   serviceCmd: string;
-  /** The mailbox the test email went through: real-time also needs its Gmail watch. */
-  accountId?: string;
   /** What was verified (the completed step, revisited). */
   summary?: React.ReactNode;
 }) {
@@ -863,14 +858,7 @@ function SuccessPanel({
           )}
           <p className="text-sm text-muted-foreground">
             New mail reaches <Visible text={agent.name} />
-            {listening ? (
-              <>
-                {" "}
-                <ArrivalSpeed of="arriving" neutral="when it arrives" accountId={accountId} />
-              </>
-            ) : (
-              " whenever you ask it"
-            )}
+            {listening ? " when it arrives" : " whenever you ask it"}
             .
           </p>
         </div>

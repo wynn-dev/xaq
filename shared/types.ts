@@ -43,9 +43,6 @@ export type SendMode = (typeof SEND_MODES)[number];
 export const CALENDAR_WRITE_MODES = ["direct", "approval"] as const;
 export type CalendarWriteMode = (typeof CALENDAR_WRITE_MODES)[number];
 
-/** Prefix of Account.lastError when the account's Gmail watch (Pub/Sub push) couldn't be started or renewed. */
-export const GMAIL_WATCH_ERROR = "Gmail watch failed";
-
 /**
  * Whether an audit action is an MCP tool call: tool names never contain a "." (send_message), while
  * console and pairing actions do (agent.create, pairing.key_delivered). The SQL form of this rule is
@@ -80,7 +77,7 @@ export type NativeEventType = (typeof EVENT_TYPES)[number];
 export const BROKER_EVENT_TYPES = [
   "connection.auth_failed", // the upstream's credential stopped working; the owner must reconnect
   // Never emitted since the tool-change hold was removed (2026-10-16): a changed tool is only audited. Kept as an
-  // accepted type so saved listener `--types` and webhook filters naming it stay valid.
+  // accepted type so saved listener `--types` naming it stay valid.
   "connection.tool_changed",
   "connection.expiring", // the credential stops working on a known date (no refresh, or a cap): reconnect before it
   "approval.requested", // a risky upstream tool call waits for a human (detail.approvalUrl: the one-tap page)
@@ -104,7 +101,7 @@ export const isPresetEventType = (t: string): t is PresetEventType => {
 /** Events about a connection (broker or preset), never an account. */
 export const isConnectionEventType = (t: string): t is BrokerEventType | PresetEventType =>
   (BROKER_EVENT_TYPES as readonly string[]).includes(t) || isPresetEventType(t);
-/** Any event type the server accepts in filters (webhooks, the listener stream, the console). */
+/** Any event type the server accepts in filters (the listener stream, the console). */
 export const isEventType = (t: string): t is EventType => (EVENT_TYPES as readonly string[]).includes(t) || isConnectionEventType(t);
 
 export const CALENDAR_EVENT_TYPES = [
@@ -117,8 +114,6 @@ export type CalendarEventType = (typeof CALENDAR_EVENT_TYPES)[number];
 export const isCalendarEventType = (t: string): t is CalendarEventType => (CALENDAR_EVENT_TYPES as readonly string[]).includes(t);
 
 export type AccountStatus = "active" | "needs_reauth" | "paused" | "error";
-export type IngestMode = "pubsub" | "poll";
-export type DeliveryStatus = "pending" | "succeeded" | "failed" | "dead";
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "sent" | "failed" | "expired";
 export type AuditOutcome = "ok" | "denied" | "error";
 export type ActorType = "agent" | "admin" | "system";
@@ -141,9 +136,8 @@ export interface SetupStatus {
   authenticated: boolean;
 }
 
-/** Live state of the ingest pipeline (Pub/Sub pull loop or history polling). */
+/** Live state of the ingest pipeline (history polling). */
 export interface IngestStatus {
-  mode: IngestMode;
   running: boolean;
   lastPullAt: string | null;
   lastError: string | null;
@@ -208,15 +202,14 @@ export interface SetupState {
   /** True once an admin password exists. Before that, only /api/setup/claim with the setup token works. */
   claimed: boolean;
   googleClientConfigured: boolean;
-  /** Google project id (needed for Pub/Sub). */
+  /** Google project id (for Google Cloud console links). */
   gcpProjectId: string | null;
   googleAppType: GoogleAppType | null;
-  pubsub: PubsubState;
   accountsConnected: number;
   agentsCreated: number;
   /** Some agent is known to work: its tool called /mcp (Agent.lastMcpAt), or a listener acked an event. */
   verified: boolean;
-  /** All required steps done (claimed + client configured + ≥1 account). Pub/Sub is optional (poll fallback). */
+  /** All required steps done (claimed + client configured + ≥1 account). */
   complete: boolean;
   /**
    * Problems with the setup as configured, most severe first (errors, then warnings, then info).
@@ -244,7 +237,6 @@ export interface SetupState {
  * - client_invalid: the last GoogleClientCheck found Google doesn't know the client ID. "error".
  * - client_secret_invalid: the last GoogleClientCheck found Google rejects the secret. "error".
  * - needs_reauth: an account's sign-in was rejected; one per account (accountId set). Severity "error".
- * - pubsub_failing: ingest mode is pubsub and Pub/Sub has an error (hint carries the remediation). "error".
  * - calendar_not_added: Google Calendar isn't added to this install yet (existing installs after the upgrade).
  *   "info"; `url` is unset, the console links its "Add Google Calendar" flow. Gone once added or dismissed.
  * - calendar_api_disabled: Google said the Calendar API is disabled in the project (SERVICE_DISABLED). "error"
@@ -263,7 +255,6 @@ export type SetupWarningCode =
   | "redirect_uri_missing"
   | "redirect_uri_changed"
   | "needs_reauth"
-  | "pubsub_failing"
   | "calendar_not_added"
   | "calendar_api_disabled"
   | "calendar_scope_missing"
@@ -287,54 +278,20 @@ export interface SetupWarning {
   accountId?: string;
 }
 
-export interface PubsubState {
-  mode: IngestMode;
-  topic: string | null; // projects/{p}/topics/{t}
-  subscription: string | null; // projects/{p}/subscriptions/{s}
-  /** Last provisioning/health error, human readable, with remediation hint. */
-  lastError: string | null;
-  /** Last time a Pub/Sub message was pulled (proves the pipeline works end-to-end). */
-  lastMessageAt: string | null;
-  /**
-   * The connected account whose Google identity pulls the subscription ("Pub/Sub is set up with
-   * <principalEmail>"): the one the last successful provisioning used. Before any provisioning (or if it
-   * became inactive), the fallback: first active account with the Pub/Sub scope, else first active account.
-   * null when no active account exists.
-   */
-  principalAccountId: string | null;
-  principalEmail: string | null;
-  /**
-   * An account chosen with POST /api/google/pubsub/provision {accountId} whose provisioning hasn't
-   * succeeded yet ("Switching to <pendingPrincipalEmail>…"). Provisioning and the incremental Pub/Sub
-   * consent (POST /api/accounts/connect {scopes:["pubsub"]}) use it; it replaces the principal only once
-   * provisioning (and its watch) succeed, so a failed switch never disturbs a working setup. null when none.
-   */
-  pendingPrincipalAccountId: string | null;
-  pendingPrincipalEmail: string | null;
-}
-
 export interface Settings {
   /**
-   * How often calendars are polled for changes (incremental sync with syncToken), in seconds. With a
-   * working push channel (public https publicUrl) polling slows to a 15-minute safety net. Default 60.
+   * How often calendars are polled for changes (incremental sync with syncToken), in seconds. Default 60.
    */
   calendarPollSeconds: number;
   /** Externally reachable base URL of this instance, e.g. https://mail.example.com. Used in MCP snippets + OAuth redirect. */
   publicUrl: string;
-  ingestMode: IngestMode;
   pollIntervalSeconds: number;
   /** Max characters of message body returned to agents per message (0 = unlimited). */
   maxBodyChars: number;
-  /** Days to keep events, deliveries and audit entries. */
+  /** Days to keep events and audit entries. */
   retentionDays: number;
   /** Approval requests auto-expire after this many hours. */
   approvalTtlHours: number;
-  /**
-   * SSRF guard: webhook targets that resolve to private, loopback or link-local addresses are refused
-   * unless their host matches one of these entries (hostnames, IPs or CIDRs, e.g. "127.0.0.0/8",
-   * "10.0.0.0/8", "n8n.internal"). Defaults to loopback only.
-   */
-  webhookAllowlist: string[];
   /** Accept device-flow pairing requests from `npx xaq-cli connect` (each still needs approval). */
   pairingEnabled: boolean;
   /**
@@ -434,7 +391,6 @@ export interface Account {
   status: AccountStatus;
   lastError: string | null;
   historyId: string | null;
-  watchExpiresAt: string | null;
   lastSyncAt: string | null;
   createdAt: string;
   /**
@@ -496,11 +452,6 @@ export interface GmailLabel {
 }
 
 /** POST /api/accounts/connect → start OAuth. */
-export interface PubsubTestResult {
-  ok: boolean;
-  message: string;
-}
-
 /**
  * What the /oauth/callback page posts to its opener (window.postMessage) and on the
  * BroadcastChannel "agentinbox-oauth". On failure, `error`/`code`/`hint` mirror the ApiError that
@@ -690,7 +641,7 @@ export interface MessageSummary {
 }
 
 /**
- * One item of the agent event feed, webhooks and listeners. The name is historical: calendar.* events use
+ * One item of the agent event feed and listeners. The name is historical: calendar.* events use
  * the same envelope with `message: null` and `calendarEvent` set.
  */
 // ───────────────────────────── Calendar ─────────────────────────────
@@ -820,8 +771,6 @@ export interface CalendarSetupState {
     missingScopes: string[];
     /** Calendars whose changes are synced into events (owner/writer calendars), 0 while no grant reads them. */
     syncedCalendars: number;
-    /** A verified push channel is live for at least one synced calendar (otherwise changes arrive by polling). */
-    push: boolean;
   }[];
   /**
    * Next thing to do: enable_api (api "disabled"), connect_accounts (some active account lacks the scopes; the
@@ -846,8 +795,8 @@ export interface ConnectAccountInput {
    */
   mailOnly?: boolean;
 }
-/** "pubsub": the Pub/Sub scope for the provisioning account. "calendar": CALENDAR_SCOPES. */
-export const EXTRA_SCOPE_NAMES = ["pubsub", "calendar"] as const;
+/** "calendar": CALENDAR_SCOPES. */
+export const EXTRA_SCOPE_NAMES = ["calendar"] as const;
 export type ExtraScopeName = (typeof EXTRA_SCOPE_NAMES)[number];
 
 export interface MailEvent {
@@ -872,13 +821,14 @@ export interface MailEvent {
   createdAt: string;
   /**
    * Console only (GET /api/events and the console stream): the thread's labels when the event was
-   * recorded, which agents' label scopes are matched against. Never sent to agents or webhooks.
+   * recorded, which agents' label scopes are matched against. Never sent to agents.
    */
   threadLabelIds?: string[];
 }
 
-// ───────────────────────────── Webhooks ─────────────────────────────
+// ───────────────────────────── Event filters and payloads ─────────────────────────────
 
+/** Filter on events (`xaq listen` profiles). */
 export interface WebhookFilter {
   accountIds?: string[];
   /** Match if the message has any of these label ids. */
@@ -897,56 +847,13 @@ export interface WebhookFilter {
   calendarIds?: string[];
 }
 
-export interface Webhook {
-  id: string; // whk_…
-  agentId: string;
-  name: string;
-  url: string;
-  eventTypes: EventType[];
-  filter: WebhookFilter;
-  /** Include the cleaned message body (markdown) in the payload. */
-  includeBody: boolean;
-  enabled: boolean;
-  /** Shown once at creation and on rotation ("whsec_…", Standard Webhooks format). */
-  secretPrefix: string;
-  createdAt: string;
-  stats: { succeeded24h: number; failed24h: number; lastDeliveryAt: string | null };
-}
-
-export type WebhookInput = Omit<Webhook, "id" | "secretPrefix" | "createdAt" | "stats">;
-
-export interface WebhookWithSecret {
-  webhook: Webhook;
-  secret: string;
-}
-
-export interface Delivery {
-  id: string; // dlv_…
-  webhookId: string;
-  eventId: string;
-  eventType: EventType;
-  status: DeliveryStatus;
-  attempts: number;
-  nextAttemptAt: string | null;
-  lastStatusCode: number | null;
-  lastError: string | null;
-  /** First ~500 chars of the receiver's response body. */
-  lastResponse: string | null;
-  durationMs: number | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-/**
- * Webhook HTTP request body. Signed per https://www.standardwebhooks.com:
- * headers webhook-id, webhook-timestamp, webhook-signature ("v1,<base64 hmac-sha256>").
- */
+/** An event as `xaq listen` streams and forwards it (Standard Webhooks body when forwarded). */
 export interface WebhookPayload {
   type: EventType;
   timestamp: string;
   data: MailEvent & {
     /**
-     * Present only when the webhook has includeBody and the event concerns a message, or (calendar.* except
+     * Present only when the body was requested and the event concerns a message, or (calendar.* except
      * cancelled) an event with a description: then `body` is the cleaned description, attachments empty.
      */
     content?: MessageContent;
@@ -1499,7 +1406,6 @@ export interface OverviewStats {
   accounts: { total: number; active: number; needsAttention: number };
   agents: { total: number; activeLast24h: number };
   events24h: number;
-  deliveries24h: { succeeded: number; failed: number };
   pendingApprovals: number;
   toolCalls24h: number;
   denied24h: number;
@@ -1547,16 +1453,6 @@ export interface ApiError {
 //   POST   /api/google/client/check                   → GoogleClientCheck   (400 google_client_missing when nothing is saved)
 //   POST   /api/google/client/import GoogleClientImportInput → GoogleClientImportResult   (runs the check)
 //          400 client_json_invalid | client_json_desktop | client_secret_missing | bad_request (see GoogleClientImportResult)
-//   POST   /api/google/pubsub/provision {accountId?}  → PubsubState   (creates topic + IAM + subscription using the principal account's token;
-//          `accountId` chooses the principal: saved as pending (PubsubState.pendingPrincipal*), so the follow-up
-//          POST /api/accounts/connect {scopes:["pubsub"]} targets it; it becomes the principal only when provisioning succeeds)
-//          409 pubsub_scope_required (the principal hasn't granted the Pub/Sub scope: run that incremental consent, retry)
-//          409 needs_reauth | 409 account_paused (chosen account unusable) | 404 not_found (unknown accountId)
-//          400 pubsub_permission_denied (principal lacks roles/pubsub.admin or Owner; hint: IAM link + gcloud command)
-//              | pubsub_billing | pubsub_org_policy (Domain Restricted Sharing; hint: org policy link, polling alternative)
-//              | pubsub_api_disabled | gmail_api_disabled | pubsub_publish_denied | pubsub_project_not_found
-//              | pubsub_project_missing | pubsub_no_account | pubsub_provision_failed (anything else)
-//   POST   /api/google/pubsub/test                    → PubsubTestResult
 //   GET    /api/accounts                              → Account[]
 //   POST   /api/accounts/connect ConnectAccountInput  → ConnectAccountResponse
 //          400 google_client_missing (no OAuth client saved yet)
@@ -1576,7 +1472,7 @@ export interface ApiError {
 //              | gmail_api_disabled | google_client_missing;  502 google_error
 //   POST   /api/accounts/:id/resync                   → Account
 //   POST   /api/accounts/:id/pause | /resume          → Account
-//   DELETE /api/accounts/:id                          → 204 (stops watch, revokes token, deletes grants)
+//   DELETE /api/accounts/:id                          → 204 (revokes token, deletes grants)
 //   GET    /api/accounts/:id/labels                   → GmailLabel[]
 //   GET    /api/accounts/:id/calendars                → CalendarInfo[]   (live calendarList, for the grant editor's calendar scope)
 //          409 calendar_not_granted (missing scopes; hint: run the per-account consent) | 409 calendar_api_disabled | 409 needs_reauth
@@ -1596,14 +1492,6 @@ export interface ApiError {
 //   PUT    /api/agents/:id/grants/:accountId GrantInput → Grant   (upsert; one grant per agent×account)
 //   DELETE /api/agents/:id/grants/:accountId          → 204
 //   POST   /api/agents/:id/test                       → AgentTestResult (runs MCP initialize+tools/list as the agent)
-//   GET    /api/webhooks?agentId                      → Webhook[]
-//   POST   /api/webhooks WebhookInput                 → WebhookWithSecret
-//   PATCH  /api/webhooks/:id Partial<WebhookInput>    → Webhook
-//   POST   /api/webhooks/:id/rotate-secret            → WebhookWithSecret
-//   POST   /api/webhooks/:id/test                     → Delivery  (sends a synthetic event synchronously)
-//   DELETE /api/webhooks/:id                          → 204
-//   GET    /api/deliveries?webhookId&status&cursor    → Page<Delivery>
-//   POST   /api/deliveries/:id/replay                 → Delivery
 //   GET    /api/events?accountId&type&cursor          → Page<MailEvent>
 //   GET    /api/events/stream                         → text/event-stream of ConsoleStreamMessage (SSE `data:` = JSON)
 //   GET    /api/pairings?status                       → PairingRequest[]
@@ -1636,13 +1524,9 @@ export interface ApiError {
 //   GET    /skill.md                                   the agent skill (public, no secrets)
 //   /agent/v1/*                                        pairing + listener stream (see shared/agent-api.ts)
 //   GET    /health                                     HealthResponse (alias of /api/health for uptime monitors; 503 when degraded)
-//
-// Google-facing (unauthenticated; verified by channel id + X-Goog-Channel-Token):
-//   POST   /google/calendar/push                       Calendar push notifications (events.watch channels) → 204
 
 export type ConsoleStreamMessage =
   | { kind: "event"; data: MailEvent }
-  | { kind: "delivery"; data: Delivery }
   | { kind: "approval"; data: Approval }
   | { kind: "audit"; data: AuditEntry }
   | { kind: "account"; data: Account }

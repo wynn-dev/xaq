@@ -35,7 +35,6 @@ async function waitFor(cond: () => boolean, ms = 5000): Promise<void> {
 
 beforeEach(async () => {
   fake = await startFakeGoogle();
-  fake.pullWaitMs = 200;
   rec = recordingEvents();
   const t = testContext({ events: rec.factory }, { google: fake.google });
   ctx = t.ctx;
@@ -59,21 +58,21 @@ const json = async <T>(res: Response | Promise<Response>) => (await (await res).
 const calendarWarnings = () => ctx.google.setupWarnings().filter((w) => w.code.startsWith("calendar_"));
 const received = (email: string) => rec.ofType("message.received").filter((e) => e.accountId === ctx.accounts.getByEmail(email)!.id);
 
-/** Wynn's install before the upgrade: two accounts, Pub/Sub, mail flowing. Migration 7 then wrote enabled:false. */
+/** Wynn's install before the upgrade: two accounts, mail flowing. Migration 7 then wrote enabled:false. */
 async function existingInstall() {
   ctx.settings.setState("calendar.setup", { enabled: false });
-  const ops = await connectFakeAccount(ctx, fake, OPS, { pubsub: true });
+  const ops = await connectFakeAccount(ctx, fake, OPS);
   const wynn = await connectFakeAccount(ctx, fake, WYNN);
-  await ctx.google.provisionPubsub();
   ctx.ingest.start?.();
   await waitFor(() => ctx.ingest.status().lastPullAt !== null);
   fake.deliver(WYNN, { from: "a@x.test", subject: "Before the upgrade", text: "x" });
+  ctx.ingest.kick(wynn.id);
   await waitFor(() => received(WYNN).length === 1);
   return { ops, wynn };
 }
 
 describe("upgrading an existing install (zero mail downtime)", () => {
-  it("adds Calendar per account while mail keeps flowing, the watch stays and the token is swapped", async () => {
+  it("adds Calendar per account while mail keeps flowing and the token is swapped", async () => {
     const { ops, wynn } = await existingInstall();
     expect(ctx.accounts.get(wynn.id)!.calendar).toBeNull();
 
@@ -104,7 +103,6 @@ describe("upgrading an existing install (zero mail downtime)", () => {
 
     // Step 6: "Add Calendar to wynn@", with mail arriving before, during and after the consent.
     const before = getRow(ctx, wynn.id)!;
-    const watchBefore = fake.watch(WYNN);
     fake.consentAs(WYNN);
     const { authUrl } = ctx.google.startConnect({ reauthAccountId: wynn.id, scopes: ["calendar"] });
     expect(authUrl).toContain(`login_hint=${encodeURIComponent(WYNN)}`);
@@ -114,6 +112,7 @@ describe("upgrading an existing install (zero mail downtime)", () => {
     fake.deliver(WYNN, { from: "a@x.test", subject: "While the token is swapped", text: "x" });
     const account = await done;
     fake.deliver(WYNN, { from: "a@x.test", subject: "After the upgrade", text: "x" });
+    ctx.ingest.kick(wynn.id);
     await waitFor(() => received(WYNN).length === 4);
     expect(received(WYNN).map((e) => e.message?.subject)).toEqual(["Before the upgrade", "During the consent", "While the token is swapped", "After the upgrade"]);
     expect(rec.ofType("sync.gap")).toEqual([]);
@@ -122,9 +121,6 @@ describe("upgrading an existing install (zero mail downtime)", () => {
     expect(account.calendar).toMatchObject({ status: "active", missingScopes: [] });
     expect(after.refresh_token_enc).not.toBe(before.refresh_token_enc);
     expect(fake.revoked).toEqual([]);
-    expect(fake.watch(WYNN)).not.toBeNull();
-    expect(fake.watch(WYNN)!.topic).toBe(watchBefore!.topic);
-    expect(ctx.google.pubsubState()).toMatchObject({ principalAccountId: ops.id, lastError: null });
 
     // The other account is untouched until its own consent; then setup is done.
     expect(getRow(ctx, ops.id)!.scopes).not.toContain("calendar");
@@ -132,9 +128,8 @@ describe("upgrading an existing install (zero mail downtime)", () => {
     await consent(ctx, fake, OPS, { reauthAccountId: ops.id, scopes: ["calendar"] });
     expect(ctx.calendar.setupState()).toMatchObject({ step: "done", api: "enabled" });
     expect(calendarWarnings()).toEqual([]);
-    // The principal kept Pub/Sub through include_granted_scopes.
-    expect(ctx.google.pubsubState().principalAccountId).toBe(ops.id);
     fake.deliver(OPS, { from: "a@x.test", subject: "Ops still flows", text: "x" });
+    ctx.ingest.kick(ops.id);
     await waitFor(() => received(OPS).length === 1);
   });
 
@@ -146,6 +141,7 @@ describe("upgrading an existing install (zero mail downtime)", () => {
     expect(ctx.calendar.setupState().accounts.find((a) => a.accountId === wynn.id)).toMatchObject({ status: "not_granted", missingScopes: [...CALENDAR_SCOPES] });
     expect(ctx.accounts.get(wynn.id)!.status).toBe("active");
     fake.deliver(WYNN, { from: "a@x.test", subject: "Still here", text: "x" });
+    ctx.ingest.kick(wynn.id);
     await waitFor(() => received(WYNN).length === 2);
   });
 
@@ -155,6 +151,7 @@ describe("upgrading an existing install (zero mail downtime)", () => {
     expect(err.error).toMatchObject({ code: "oauth_access_denied" });
     expect(ctx.accounts.get(wynn.id)).toMatchObject({ status: "active", calendar: null });
     fake.deliver(WYNN, { from: "a@x.test", subject: "Still here", text: "x" });
+    ctx.ingest.kick(wynn.id);
     await waitFor(() => received(WYNN).length === 2);
   });
 
@@ -277,7 +274,7 @@ describe("GET /accounts/:id/calendars", () => {
       { id: OPS, name: OPS, primary: true, accessRole: "owner", timeZone: "Europe/Berlin", color: "#9fe1e7", synced: true },
       { id: "team@group.calendar.google.com", name: "Team standups", primary: false, accessRole: "writer", timeZone: "Europe/Berlin", color: null, synced: false },
     ]);
-    expect(ctx.calendar.setupState().accounts[0]).toMatchObject({ syncedCalendars: 1, push: false });
+    expect(ctx.calendar.setupState().accounts[0]).toMatchObject({ syncedCalendars: 1 });
   });
 
   it("answers 409 calendar_not_granted, needs_reauth, and 404 for unknown accounts", async () => {

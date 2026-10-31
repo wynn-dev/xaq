@@ -222,22 +222,11 @@ describe.skipIf(codeExtensionNodeProblem() !== null)("prompts and resources on /
 });
 
 describe("connections without their extension", () => {
-  it("a code connection whose extension isn't installed says so (status error), and calls say so too; the presets list skips the reachability check", async () => {
-    let checks = 0;
+  it("a code connection whose extension isn't installed says so (status error), and calls say so too", async () => {
     const h = harness({
       broker: (ctx) =>
         createBrokerService(ctx, {
           presets: () => [],
-          reachability: {
-            lookup: async () => {
-              checks++;
-              return [{ address: "93.184.216.34", family: 4 }];
-            },
-            tailscale: async () => {
-              checks++;
-              return null;
-            },
-          },
         }),
     });
     cleanup.push(() => h.dispose());
@@ -255,7 +244,6 @@ describe("connections without their extension", () => {
     expect(ctx.db.get<{ status: string }>("SELECT status FROM connections WHERE id = 'con_w'")!.status).toBe("active");
 
     expect(await json(await h.request("/api/connections/presets", { cookie, headers: CSRF }))).toEqual([]);
-    expect(checks).toBe(0);
   });
 });
 

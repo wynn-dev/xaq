@@ -22,8 +22,6 @@ import { extensionConsentConnection } from "../google/oauth.ts";
 import { exposedName } from "../broker/catalog/index.ts";
 import { connectionView, getConnection, listConnections, notifyAgent } from "../broker/service.ts";
 import { Approvals } from "../mail/approvals.ts";
-import { connectionHookUrl } from "../integrations/hooks.ts";
-import type { WebhookReachability } from "../broker/reachability.ts";
 import { presetServerSlug } from "../../shared/user-server.ts";
 import { presetServerUrl } from "../integrations/user-server.ts";
 import type { IntegrationPreset, PresetAuth } from "../broker/types.ts";
@@ -33,9 +31,6 @@ import { canonicalPrivateTarget, originKey, PrivateTargetError, validateUpstream
 import { badRequest, conflict, errorMessage, HttpError, notFound } from "../util/errors.ts";
 import { newId, randomToken } from "../util/ids.ts";
 import { ADMIN_ACTOR, readBody, router } from "./util.ts";
-
-/** A preset that takes no webhooks: no webhook step, no Funnel offer, no reachability check. */
-const NO_WEBHOOKS: WebhookReachability = { reach: "unknown", webhookBase: null, funnel: null, reason: "no preset takes webhooks" };
 
 /** The upstream runtime's URL rule (http(s), no userinfo): the same check the connect flow applies. */
 const httpUrl = z
@@ -153,19 +148,13 @@ export function connectionsApi(ctx: AppContext) {
     const missing = ids.filter((id) => !ctx.db.get("SELECT 1 FROM agents WHERE id = ?", id));
     if (missing.length) throw badRequest(`Unknown agent ${missing.join(", ")}`);
   };
-  const presetView = (p: IntegrationPreset, reach: WebhookReachability): PresetView => {
+  const presetView = (p: IntegrationPreset): PresetView => {
     const publicUrl = ctx.settings.publicUrl();
     const steps = p.setupSteps({
       // A Google extension's steps name the project, the app type and the connected accounts (google-setup.ts).
       google: isGooglePreset(p) ? googleSetupContext(ctx) : null,
       publicUrl,
       redirectUri: `${publicUrl}/oauth/connections/callback`,
-      // The preset's URL (POST /hooks/connections/<preset id>): no connection exists yet while choosing a preset, and
-      // the route finds the connection by its signature. Only when the internet can reach it.
-      webhookUrl: reach.webhookBase ? connectionHookUrl(reach.webhookBase, p.id) : null,
-      funnel: reach.funnel
-        ? { port: reach.funnel.port, command: reach.funnel.command, offCommand: reach.funnel.offCommand, webhookUrl: connectionHookUrl(reach.funnel.origin, p.id) }
-        : null,
     });
     return {
       id: p.id,
@@ -186,12 +175,7 @@ export function connectionsApi(ctx: AppContext) {
     return c.json<ConnectionView[]>(listConnections(ctx).map((x) => connectionView(ctx, x, Date.now(), presets)));
   });
 
-  app.get("/connections/presets", async (c) => {
-    const presets = ctx.broker.presets();
-    // The reachability check (DNS, the Tailscale CLI) only for a preset that takes webhooks: none does today.
-    const reach: WebhookReachability = presets.some((p) => p.events?.handleWebhook) ? await ctx.broker.webhookReachability() : NO_WEBHOOKS;
-    return c.json<PresetView[]>(presets.map((p) => presetView(p, p.events?.handleWebhook ? reach : NO_WEBHOOKS)));
-  });
+  app.get("/connections/presets", (c) => c.json<PresetView[]>(ctx.broker.presets().map(presetView)));
 
   // A Google extension's "Check again": is each of its APIs on in the project, checked as the picked account. The probe
   // token is downscoped (the extension's granted scopes, or only identity before consent): never the account's own.

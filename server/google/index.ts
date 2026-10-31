@@ -7,7 +7,6 @@ import { type CalendarClient, createCalendarClient } from "./calendar.ts";
 import { createGmailClient } from "./gmail.ts";
 import { mimeTools } from "./mime.ts";
 import { completeConnect, completeConnectFromUrl, connectAttempt, revokeAccount, startConnect } from "./oauth.ts";
-import { provisionPubsub, pubsubState, testPubsub } from "./pubsub.ts";
 import { googleRuntime } from "./runtime.ts";
 import { sendTestEmail } from "./testmail.ts";
 import { setupWarnings } from "./warnings.ts";
@@ -64,9 +63,5 @@ export function createGoogleService(ctx: AppContext): GoogleService {
     },
     revoke: (accountId) => revokeAccount(ctx, accountId),
     sendTestEmail: (accountId) => sendTestEmail(ctx, accountId),
-
-    pubsubState: () => pubsubState(ctx),
-    provisionPubsub: (opts) => provisionPubsub(ctx, opts),
-    testPubsub: () => testPubsub(ctx),
   };
 }

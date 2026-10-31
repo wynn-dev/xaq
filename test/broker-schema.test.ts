@@ -102,8 +102,6 @@ function preBrokerDb(path: string): void {
   run("INSERT INTO sent_threads (account_id, gmail_thread_id, last_sent_at) VALUES ('acc_1', 't1', ?)", T);
   run("INSERT INTO calendar_sync (account_id, calendar_id, sync_token, updated_at) VALUES ('acc_1', 'wynn@example.com', 'tok', ?)", T);
   run("INSERT INTO calendar_event_state (account_id, calendar_id, event_id, fingerprint, summary, updated_at) VALUES ('acc_1', 'wynn@example.com', 'e1', 'f', '{}', ?)", T);
-  run("INSERT INTO webhooks (id, agent_id, name, url, secret_enc, secret_prefix, event_types, created_at) VALUES ('whk_1', 'agt_hermes', 'n', 'https://x.test/h', 'v1:s', 'whsec_ab', '[\"message.received\"]', ?)", T);
-  run("INSERT INTO deliveries (id, webhook_id, event_seq, status, created_at, updated_at) VALUES ('dlv_1', 'whk_1', 1, 'succeeded', ?, ?)", T, T);
   run("INSERT INTO agent_cursors (agent_id, acked_seq, updated_at) VALUES ('agt_hermes', 1, ?)", T);
   run("INSERT INTO listener_cursors (agent_id, consumer, acked_seq, updated_at, start_seq) VALUES ('agt_hermes', 'default', 2, ?, 0)", T);
   run(
@@ -146,7 +144,13 @@ describe("migration 8 on an install at migration 7", () => {
       const now = snapshot(after);
       for (const [table, rows] of was) {
         if (table === "_migrations") continue;
-        if (table === "approvals") {
+        // Migration 13 drops webhooks (their tables), Gmail watches and Calendar push channels (their columns).
+        if (table === "webhooks" || table === "deliveries") {
+          expect(now.has(table)).toBe(false);
+        } else if (table === "accounts" || table === "calendar_sync") {
+          const kept = (r: Record<string, unknown>) => Object.fromEntries(Object.entries(r).filter(([k]) => k !== "watch_expires_at" && !k.startsWith("channel_")));
+          expect([table, now.get(table)]).toEqual([table, rows.map(kept)]);
+        } else if (table === "approvals") {
           expect(now.get(table)).toEqual(rows.map((r) => ({ ...r, connection_id: null, tool_call: null })));
         } else if (table === "events" || table === "oauth_states") {
           // events.connection_id (migration 8); oauth_states.connection_id (migration 9, upstream OAuth).

@@ -1,6 +1,6 @@
 // The console's calendar logic (workstream F): grants always carry their calendar fields, presets keep
 // calendar access, grant summaries in words, calendar approval rendering, calendar event rows and event
-// visibility (which must agree with policy.canSeeEvent), and calendar webhook filters.
+// visibility (which must agree with policy.canSeeEvent).
 import { describe, expect, it } from "vitest";
 import type { Approval, CalendarApprovalDetail, CalendarEventSummary, Grant, MailEvent } from "../shared/types.ts";
 import { calendarInWords, grantInWords } from "../src/components/agents/grant-words.ts";
@@ -21,7 +21,6 @@ import {
   withCalendarWriteChoice,
 } from "../src/lib/grants.ts";
 import { approvalStatusInfo, DENIAL_REASONS } from "../src/lib/labels.ts";
-import { cleanFilter, describeWebhook } from "../src/lib/webhook-filter.ts";
 
 const FMT = { timeZone: "UTC", locale: "en-US", now: Date.parse("2026-10-16T10:00:00Z") };
 const ME = "ops@acme.dev";
@@ -410,28 +409,6 @@ describe("event visibility mirrors policy.canSeeEvent", () => {
   });
   it("a calendar event without its calendar id is never visible", () => {
     expect(grantSees(grant({ capabilities: ["calendar.read"] }), event("calendar.event_created"))).toBe(false);
-  });
-});
-
-describe("calendar webhook filters", () => {
-  it("keeps calendarIds and describes calendar matching", () => {
-    expect(cleanFilter({ calendarIds: [] })).toEqual({});
-    expect(cleanFilter({ calendarIds: ["team"], from: ["*@vendor.com"] })).toEqual({ calendarIds: ["team"], from: ["*@vendor.com"] });
-    const lines = describeWebhook(
-      { eventTypes: ["calendar.invitation_received"], filter: { calendarIds: ["team"], from: ["*@vendor.com"], labelIds: ["Label_1"] }, includeBody: true },
-      [],
-      (id) => id,
-      (id) => (id === "team" ? "Team" : id),
-    );
-    expect(lines).toEqual([
-      "Sends invitation received events",
-      "from every account the agent can read",
-      "only for calendar events on Team",
-      "where the organizer matches *@vendor.com",
-      "including the cleaned event description",
-    ]);
-    const mixed = describeWebhook({ eventTypes: ["message.received", "calendar.event_created"], filter: { to: ["me@x.com"] }, includeBody: false }, []);
-    expect(mixed).toContain("where a recipient (or guest) matches me@x.com");
   });
 });
 

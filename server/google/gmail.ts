@@ -33,8 +33,6 @@ const COST = {
   "drafts.send": 100,
   "drafts.delete": 10,
   "history.list": 2,
-  watch: 100,
-  stop: 50,
 } as const;
 
 /** Uploads take longer: 30 s + 1 s per 256 KB of raw message, capped at 10 minutes. */
@@ -186,13 +184,6 @@ export function createGmailClient(ctx: AppContext, accountId: string): GmailClie
         },
       });
       return { history: r?.history ?? [], nextPageToken: r?.nextPageToken ?? null, historyId: String(r?.historyId ?? p.startHistoryId) };
-    },
-    async watch(p) {
-      const r = await call<{ historyId: string | number; expiration: string | number }>("watch", "/watch", { method: "POST", body: p });
-      return { historyId: String(r.historyId), expiration: String(r.expiration) };
-    },
-    async stopWatch() {
-      await call<void>("stop", "/stop", { method: "POST" });
     },
   };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isBlockedAddress, type LookupFn, normalizeIp, resolveTarget, SsrfError } from "../server/webhooks/ssrf.ts";
+import { isBlockedAddress, type LookupFn, normalizeIp, resolveTarget, SsrfError } from "../server/util/ssrf.ts";
 
 const DEFAULT_ALLOWLIST = ["localhost", "127.0.0.0/8", "::1"];
 
@@ -79,7 +79,7 @@ describe("resolveTarget", () => {
     const err = await refused(check("http://10.0.0.5:8080/hook"));
     expect(err.kind).toBe("blocked");
     expect(err.message).toMatch(/10\.0\.0\.5 is a private/);
-    expect(err.hint).toMatch(/allowlist/);
+    expect(err.hint).toMatch(/Private addresses/);
     await refused(check("http://192.168.1.10/"));
     await refused(check("http://[fd12::1]/"));
   });
@@ -133,7 +133,7 @@ describe("resolveTarget", () => {
   it("requires https unless the target is loopback or allowlisted", async () => {
     const err = await refused(check("http://hooks.example.com/", [], { "hooks.example.com": ["93.184.216.34"] }));
     expect(err.message).toMatch(/https/);
-    expect(err.hint).toMatch(/allowlist/);
+    expect(err.hint).toMatch(/loopback/);
     await refused(check("http://93.184.216.34/"));
     await expect(check("http://127.0.0.1:9/", ["127.0.0.0/8"])).resolves.toBeTruthy();
     await expect(check("http://[::1]:9/", ["::1"])).resolves.toBeTruthy();

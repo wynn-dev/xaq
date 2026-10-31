@@ -11,7 +11,6 @@ const PAIRING_SWEEP_MS = 30_000;
 
 export interface MaintenanceResult {
   events: number;
-  deliveries: number;
   audit: number;
   sessions: number;
 }
@@ -28,9 +27,7 @@ export function runMaintenance(ctx: AppContext): MaintenanceResult {
       return 0;
     }
   };
-  // Deliveries first: they point at events.
   const result: MaintenanceResult = {
-    deliveries: step("deliveries", () => ctx.webhooks.prune(before)),
     events: step("events", () => ctx.events.prune(before)),
     audit: step("audit log", () => ctx.audit.prune(before)),
     sessions: step("sessions", () => adminAuth(ctx).sessions.pruneExpired()),

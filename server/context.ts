@@ -22,7 +22,6 @@ import type { MailService } from "./mail/types.ts";
 import type { PolicyService } from "./policy/types.ts";
 import { SettingsStore } from "./settings.ts";
 import { createLogger, type Logger } from "./util/log.ts";
-import type { WebhooksService } from "./webhooks/types.ts";
 
 export interface Lifecycle {
   start?(): void | Promise<void>;
@@ -46,7 +45,6 @@ export interface Services {
   events: EventsService;
   policy: PolicyService;
   mail: MailService;
-  webhooks: WebhooksService;
   calendar: CalendarService;
   /** The MCP broker (server/broker/service.ts). */
   broker: BrokerService;
@@ -55,7 +53,7 @@ export interface Services {
 export interface AppContext extends CoreContext, Services {}
 
 /** Start order. Policy and events first (no I/O), ingest and calendar sync last so everything they emit into is running. */
-export const SERVICE_ORDER: (keyof Services)[] = ["policy", "accounts", "events", "webhooks", "mail", "google", "broker", "ingest", "calendar"];
+export const SERVICE_ORDER: (keyof Services)[] = ["policy", "accounts", "events", "mail", "google", "broker", "ingest", "calendar"];
 
 export function createCore(config: Config): CoreContext {
   const db = new Db(config.dbPath);

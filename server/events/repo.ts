@@ -3,13 +3,6 @@ import { type Db, json } from "../db/index.ts";
 import { badRequest } from "../util/errors.ts";
 import type { StoredEvent } from "./types.ts";
 
-/**
- * Synthetic events created by `webhooks.test` are stored with a negative seq so their deliveries
- * can join them like any other event. Every agent- and console-facing query only reads seq > 0.
- */
-export const TEST_ACCOUNT_ID = "acc_test";
-export const TEST_ACCOUNT_EMAIL = "test@xaq.invalid";
-
 export interface EventRow {
   seq: number;
   id: string;
@@ -36,7 +29,7 @@ export function toStoredEvent(r: EventRow): StoredEvent {
   const detail = json.parse<Record<string, unknown> | null>(r.detail, null);
   const changed = json.parse<string[] | null>(r.changed_label_ids, null);
   const calendarEvent = json.parse<CalendarEventSummary | null>(r.calendar_event, null);
-  const fallbackEmail = r.seq < 0 ? TEST_ACCOUNT_EMAIL : typeof detail?.email === "string" ? detail.email : "";
+  const fallbackEmail = typeof detail?.email === "string" ? detail.email : "";
   return {
     id: r.id,
     seq: r.seq,

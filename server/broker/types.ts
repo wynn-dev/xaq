@@ -186,16 +186,6 @@ export interface SetupContext {
   /** Redirect URI for upstream OAuth (/oauth/connections/callback on this install). */
   redirectUri: string;
   /**
-   * Inbound webhook URL, or null when nothing public reaches this install (server/broker/reachability.ts). Presets
-   * poll either way (with webhooks it's the reconciliation poll), so a webhook step is always optional.
-   */
-  webhookUrl: string | null;
-  /**
-   * The optional Tailscale Funnel step: the install is tailnet-only on a *.ts.net name and the Tailscale CLI is
-   * there. `command` exposes only the webhook path on `port`; once run, webhooks go to `webhookUrl`.
-   */
-  funnel?: { port: number; command: string; offCommand: string; webhookUrl: string } | null;
-  /**
    * Additive (Google extensions): the install's Google Cloud project ID (null until the Google step of the setup
    * wizard is done), its OAuth app type, and xaq's connected Google accounts with the scopes each granted.
    */
@@ -315,9 +305,7 @@ export interface IntegrationEvent {
 export interface NativeEvents {
   /** Event types this preset may emit. */
   types: string[];
-  /** Verifies and parses an inbound webhook; null when the signature is bad (respond 401, emit nothing). */
-  handleWebhook?(req: { headers: Record<string, string>; rawBody: Buffer }, deps: NativeSourceDeps & { clientSecret: string }): Promise<IntegrationEvent[] | null>;
-  /** Polling fallback without a public URL; returns new events since `cursor` and the next cursor. */
+  /** Returns new events since `cursor` and the next cursor. */
   poll?(cursor: string | null, deps: NativeSourceDeps): Promise<{ events: IntegrationEvent[]; cursor: string | null }>;
   pollIntervalMs?: number;
 }

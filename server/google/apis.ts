@@ -1,5 +1,5 @@
-// Google APIs a code extension's account access needs on in the user's own Google Cloud project: the console deep links, the gcloud command, and a cheap probe per API that
-// recognises Google's "API not enabled" answer (SERVICE_DISABLED / accessNotConfigured), as pubsub.ts does.
+// Google APIs a code extension's account access needs on in the user's own Google Cloud project: the console deep
+// links, the gcloud command, and a cheap probe per API that recognises Google's "API not enabled" answer (SERVICE_DISABLED / accessNotConfigured).
 //
 // A probe never uses the account's own token (it can read Gmail): only a downscoped one, for the extension's granted
 // scopes when there are any, else for the identity scopes alone. Before consent, an identity-only token can't prove

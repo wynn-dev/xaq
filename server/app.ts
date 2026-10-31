@@ -8,8 +8,6 @@ import { z } from "zod";
 import type { ApiError } from "../shared/types.ts";
 import { agentApiRoutes } from "./agentapi/index.ts";
 import { bearer } from "./agentapi/auth.ts";
-import { CALENDAR_PUSH_PATH } from "./calendar/push.ts";
-import { CONNECTION_HOOK_BODY_LIMIT, CONNECTION_HOOKS_PREFIX, type ConnectionHookHost, connectionHookRoutes } from "./integrations/hooks.ts";
 import { accountsApi } from "./api/accounts.ts";
 import { agentsApi } from "./api/agents.ts";
 import { connectionsApi } from "./api/connections.ts";
@@ -28,7 +26,6 @@ import { settingsApi } from "./api/settings.ts";
 import { setupApi, setupPublicApi } from "./api/setup.ts";
 import { healthRoutes, type SelfUpdateHost, systemApi } from "./api/system.ts";
 import type { AppEnv } from "./api/util.ts";
-import { webhooksApi } from "./api/webhooks.ts";
 import { csrfGuard, currentSetupToken, requireAdmin } from "./auth/index.ts";
 import type { AppContext } from "./context.ts";
 import { contentSecurityPolicy, inlineScriptHashes } from "./csp.ts";
@@ -39,8 +36,6 @@ import { HttpError, PolicyDenied } from "./util/errors.ts";
 export interface AppOptions {
   /** Built console directory. Defaults to dist/web next to the running module. */
   webDir?: string;
-  /** Inbound webhooks for native presets (POST /hooks/connections/:id); default: the broker's. */
-  connectionHooks?: ConnectionHookHost;
   /** The console's one-click update (server/update.ts); tests fake it. */
   selfUpdate?: SelfUpdateHost;
 }
@@ -57,8 +52,6 @@ const AUTH_PATHS = ["/api/setup/claim", "/api/setup/verify-token", "/api/auth/lo
 /** /mcp without a valid agent key; with one, MCP_AGENT_BODY_LIMIT (server/mcp/index.ts). */
 const MCP_BODY_LIMIT = 4 * 1024 * 1024;
 const AGENT_BODY_LIMIT = 64 * 1024;
-/** Calendar push notifications have no body. */
-const PUSH_BODY_LIMIT = 4 * 1024;
 
 /** Extensions served as files; any other path (even with a dot, e.g. /accounts/me@example.com) is a console route. */
 const ASSET_EXTENSIONS = new Set([
@@ -68,7 +61,7 @@ const ASSET_EXTENSIONS = new Set([
 ]);
 
 /** Paths the console's index.html fallback must never answer. */
-const SERVER_PREFIXES = ["/api", "/agent", "/mcp", "/oauth", "/google", "/hooks", "/skill.md", "/health"];
+const SERVER_PREFIXES = ["/api", "/agent", "/mcp", "/oauth", "/skill.md", "/health"];
 const isServerPath = (path: string) => SERVER_PREFIXES.some((p) => path === p || path.startsWith(p + "/"));
 
 const withMcp = new WeakSet<object>();
@@ -101,25 +94,6 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Hono<AppEnv> 
     return c.text("Not found", 404);
   });
 
-  // The WHOOP setup's optional Tailscale Funnel exposes only the hooks path on its own port. The real fence is
-  // tailscaled's mount: it serves nothing else on that port (server/broker/reachability.ts). This is only a backstop,
-  // and a weak one, since the Host it compares is whatever the client sent: tailscaled marks Funnel traffic with
-  // Tailscale-Funnel-Request (and drops a client-sent one), and Funnel traffic for any host:port but the public URL's
-  // (whose owner chose to funnel the console) only reaches the hooks.
-  const bareHost = (h: string) => h.toLowerCase().replace(/:(443|80)$/, "");
-  app.use("*", async (c, next) => {
-    if (c.req.header("tailscale-funnel-request") && !c.req.path.startsWith(`${CONNECTION_HOOKS_PREFIX}/`)) {
-      let publicHost: string | null = null;
-      try {
-        publicHost = bareHost(new URL(ctx.settings.publicUrl()).host);
-      } catch {
-        // No usable public URL: nothing is the funnelled console.
-      }
-      if (bareHost(c.req.header("host") ?? "") !== publicHost) return c.text("Not found", 404);
-    }
-    await next();
-  });
-
   // ── Public ──
   // The rest of the body is never read, so the connection can't be reused: say so, or a keep-alive client
   // sends its next request on a socket that is about to close.
@@ -139,8 +113,6 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Hono<AppEnv> 
     return (key && ctx.policy.authenticate(key) ? mcpAgentLimit : mcpLimit)(c, next);
   });
   app.use("/agent/*", limit(AGENT_BODY_LIMIT));
-  app.use(CALENDAR_PUSH_PATH, limit(PUSH_BODY_LIMIT));
-  app.use(`${CONNECTION_HOOKS_PREFIX}/*`, limit(CONNECTION_HOOK_BODY_LIMIT));
   app.use("/api/*", csrfGuard());
   app.route("/", healthRoutes(ctx));
   app.route("/api", setupPublicApi(ctx));
@@ -153,10 +125,6 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Hono<AppEnv> 
   app.route("/", oauthRoutes(ctx));
   // Upstream connections' sign-ins (MCP broker).
   app.route("/", connectionOAuthRoutes(ctx));
-  // Google-facing: verified by channel id + X-Goog-Channel-Token, outside the admin session and CSRF guard.
-  app.post(CALENDAR_PUSH_PATH, (c) => c.body(null, ctx.calendar.handlePush(c.req.raw.headers) as 204));
-  // Provider-facing (WHOOP): verified by the preset's signature check, outside the admin session and CSRF guard.
-  app.route("/", connectionHookRoutes({ host: () => opts.connectionHooks ?? ctx.broker.hooks, log: ctx.log }));
   const mcp = mcpRoutes(ctx);
   if (mcp.routes.length) withMcp.add(app);
   app.route("/", mcp);
@@ -168,7 +136,7 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Hono<AppEnv> 
   // brokerApprovalsApi before approvalsApi: it answers /approvals/:id for mcp.call and passes the rest on.
   // connectionsApi before brokerApprovalsApi: its /connections/:id/kill runs the service's kill (hooks first).
   const system = (c: AppContext) => systemApi(c, opts.selfUpdate);
-  for (const api of [setupApi, authApi, settingsApi, system, googleApi, accountsApi, agentsApi, connectionsApi, brokerApprovalsApi, approvalsApi, webhooksApi, eventsApi, auditApi, overviewApi, pairingsApi, extensionsApi]) {
+  for (const api of [setupApi, authApi, settingsApi, system, googleApi, accountsApi, agentsApi, connectionsApi, brokerApprovalsApi, approvalsApi, eventsApi, auditApi, overviewApi, pairingsApi, extensionsApi]) {
     app.route("/api", api(ctx));
   }
 

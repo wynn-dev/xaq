@@ -1,12 +1,12 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP, type LookupFunction } from "node:net";
 import { Agent, buildConnector, fetch as undiciFetch } from "undici";
-import { type LookupFn, normalizeIp, resolveTarget, type ResolvedTarget, SsrfError, type TargetMessages, urlHost } from "../../webhooks/ssrf.ts";
+import { type LookupFn, normalizeIp, resolveTarget, type ResolvedTarget, SsrfError, type TargetMessages, urlHost } from "../../util/ssrf.ts";
 import { SourceError } from "../types.ts";
 
 /**
  * The broker's one outbound fetch for upstream MCP servers and their OAuth endpoints:
- * - every hop is checked with the webhook guard `resolveTarget` and the connection is pinned to the checked
+ * - every hop is checked with the SSRF guard `resolveTarget` and the connection is pinned to the checked
  *   address (an undici Agent whose `connect.lookup` only ever answers that address: no DNS rebinding);
  * - redirects are manual, re-checked at every hop, at most MAX_REDIRECTS; credentials are dropped when a
  *   redirect leaves the origin;

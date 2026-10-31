@@ -345,7 +345,6 @@ export function fakeAccounts(ctx: AppContext): AccountsService {
     status: r.status,
     lastError: null,
     historyId: null,
-    watchExpiresAt: null,
     lastSyncAt: null,
     createdAt: r.created_at,
     refreshTokenExpiresAt: null,

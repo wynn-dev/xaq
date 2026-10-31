@@ -6,8 +6,6 @@ const G = "https://www.googleapis.com/auth/";
 
 /** Read, compose, send and label mail (restricted scope). Every account has it. */
 export const GMAIL_SCOPE = `${G}gmail.modify`;
-/** Pub/Sub provisioning and pulling, for the provisioning ("principal") account only. */
-export const PUBSUB_SCOPE = `${G}pubsub`;
 /** Identity (display name, email, Workspace domain from the id_token). */
 export const IDENTITY_SCOPES = ["openid", "email", "profile"] as const;
 
@@ -31,7 +29,7 @@ export const DRIVE_READONLY_SCOPE = `${G}drive.readonly`;
 export const CALENDAR_SCOPES: readonly string[] = [CALENDAR_EVENTS_SCOPE, CALENDAR_LIST_SCOPE, CALENDAR_FREEBUSY_SCOPE];
 
 /** Optional scope sets requested incrementally (include_granted_scopes), by ConnectAccountInput.scopes name. */
-export const EXTRA_SCOPE_SETS = { pubsub: [PUBSUB_SCOPE], calendar: CALENDAR_SCOPES } as const satisfies Record<string, readonly string[]>;
+export const EXTRA_SCOPE_SETS = { calendar: CALENDAR_SCOPES } as const satisfies Record<string, readonly string[]>;
 
 /** Scopes in `wanted` that `granted` lacks. */
 export const missingScopes = (granted: readonly string[], wanted: readonly string[]): string[] => wanted.filter((s) => !granted.includes(s));
@@ -72,7 +70,7 @@ export const IDENTITY_TOKEN_SCOPES: readonly string[] = ["openid", `${G}userinfo
  * them (cloud-platform includes Pub/Sub; https://mail.google.com/ is full Gmail). EXTENSION_SCOPE_RE refuses every
  * gmail*, calendar*, pubsub* and cloud-platform* name as well, so a new Gmail or Calendar scope can't slip through.
  */
-export const CORE_ONLY_SCOPES: readonly string[] = [GMAIL_SCOPE, PUBSUB_SCOPE, ...CALENDAR_SCOPES, `${G}cloud-platform`, "https://mail.google.com/"];
+export const CORE_ONLY_SCOPES: readonly string[] = [GMAIL_SCOPE, `${G}pubsub`, ...CALENDAR_SCOPES, `${G}cloud-platform`, "https://mail.google.com/"];
 
 /**
  * A scope a code extension's `code.auth` of type "google" may list: an https://www.googleapis.com/auth/ URL whose name

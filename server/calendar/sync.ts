@@ -38,19 +38,12 @@ import { noteCalendarApi } from "./setup.ts";
 import { isInvitation, summarizeEvent } from "./summary.ts";
 
 export interface CalendarSyncOptions {
-  /**
-   * The account's set of synced calendars changed (rows added or removed): push channels follow it (D).
-   * Runs after the change, outside the pass; a throw or rejection is logged.
-   */
-  onSyncSetChanged?(accountId: string): void | Promise<void>;
   /** Tests: the poll interval (default Settings.calendarPollSeconds) and how often the loop looks for due accounts. */
   timing?: { pollMs?: number; tickMs?: number };
 }
 
 /** The calendar list (which calendars sync) is re-read this often, and on kick. */
 export const LIST_REFRESH_MS = 15 * 60_000;
-/** Calendars with a verified push channel are still polled this often, in case a notification was lost. */
-export const PUSH_SAFETY_NET_MS = 15 * 60_000;
 /** Events created this long before the previous sync still count as new (a sync racing the creation, clock skew). */
 const NEW_GRACE_MS = 5 * 60_000;
 const PAGE_SIZE = 1000;
@@ -91,8 +84,6 @@ interface Pass {
   calendars: Set<string> | null;
   /** Re-read the calendar list first. */
   refresh: boolean;
-  /** Sync push-covered calendars too (kicks, "Sync now"). */
-  force: boolean;
 }
 
 export function createCalendarSync(ctx: AppContext, opts: CalendarSyncOptions = {}): CalendarSync {
@@ -159,14 +150,14 @@ export class CalendarSync {
     if (!this.running) return;
     const ids = accountId ? [accountId] : [...new Set([...readers(this.ctx).keys(), ...this.syncedAccounts()])];
     for (const id of ids) {
-      this.schedule(id, { calendars: calendarId ? new Set([calendarId]) : null, refresh: !calendarId, force: true }).catch((err: unknown) =>
+      this.schedule(id, { calendars: calendarId ? new Set([calendarId]) : null, refresh: !calendarId }).catch((err: unknown) =>
         this.log.debug("Calendar sync failed", { accountId: id, error: errorMessage(err) }),
       );
     }
   }
 
   syncAccount(accountId: string): Promise<void> {
-    return this.schedule(accountId, { calendars: null, refresh: true, force: true });
+    return this.schedule(accountId, { calendars: null, refresh: true });
   }
 
   // ───────────── Scheduling ─────────────
@@ -193,7 +184,6 @@ export class CalendarSync {
       const p = queued.pass;
       p.calendars = p.calendars === null || want.calendars === null ? null : new Set([...p.calendars, ...want.calendars]);
       p.refresh ||= want.refresh;
-      p.force ||= want.force;
       return queued.done;
     }
     const pass: Pass = { ...want, calendars: want.calendars && new Set(want.calendars) };
@@ -219,7 +209,7 @@ export class CalendarSync {
       for (const id of new Set([...readers(this.ctx).keys(), ...this.syncedAccounts()])) {
         if (this.polling.has(id) || (this.health.get(id)?.nextAt ?? 0) > t) continue;
         this.polling.add(id);
-        void this.schedule(id, { calendars: null, refresh: false, force: false })
+        void this.schedule(id, { calendars: null, refresh: false })
           .catch(() => {})
           .finally(() => this.polling.delete(id));
       }
@@ -237,15 +227,6 @@ export class CalendarSync {
     const failures = (this.health.get(accountId)?.failures ?? 0) + 1;
     const retryAfter = err instanceof GoogleApiError ? (err.details.retryAfterMs ?? 0) : 0;
     this.health.set(accountId, { failures, nextAt: Date.now() + Math.max(pollBackoffMs(interval, failures), retryAfter) });
-  }
-
-  /** Tells push the synced set changed, outside the pass (its failures are logged, never thrown). */
-  private syncSetChanged(accountId: string): void {
-    const hook = this.opts.onSyncSetChanged;
-    if (!hook) return;
-    Promise.resolve()
-      .then(() => hook(accountId))
-      .catch((err: unknown) => this.log.warn("Updating calendar push channels failed", { accountId, error: errorMessage(err) }));
   }
 
   // ───────────── One account ─────────────
@@ -276,7 +257,6 @@ export class CalendarSync {
         // Re-read: a refresh below may have dropped it.
         const cal = getSyncRow(this.ctx.db, accountId, calendarId);
         if (!cal || (p.calendars && !p.calendars.has(calendarId))) continue;
-        if (!p.force && pushCovered(cal)) continue;
         try {
           await this.syncCalendar(row, client, cal);
         } catch (err) {
@@ -303,38 +283,21 @@ export class CalendarSync {
   private async refreshList(row: AccountRow, client: CalendarClient, scope: Set<string> | null): Promise<void> {
     const entries = await client.listCalendars();
     const wanted = entries.filter((e) => (e.accessRole === "owner" || e.accessRole === "writer") && (scope === null || scope.has(e.id.toLowerCase())));
-    let changed = false;
     for (const e of wanted) {
       const name = cleanLine(e.summaryOverride || e.summary || e.id, 200);
-      if (upsertSyncCalendar(this.ctx.db, row.id, { id: e.id, name, accessRole: e.accessRole, primary: !!e.primary })) changed = true;
+      upsertSyncCalendar(this.ctx.db, row.id, { id: e.id, name, accessRole: e.accessRole, primary: !!e.primary });
     }
     const keep = new Set(wanted.map((e) => e.id));
     for (const cal of syncRows(this.ctx.db, row.id)) {
-      if (keep.has(cal.calendar_id)) continue;
-      await this.removeCalendar(cal);
-      changed = true;
+      if (!keep.has(cal.calendar_id)) deleteSyncCalendar(this.ctx.db, cal.account_id, cal.calendar_id);
     }
     this.listedAt.set(row.id, Date.now());
-    if (changed) this.syncSetChanged(row.id);
   }
 
   /** No grant reads the account any more: drop its calendars (a later grant starts from a fresh baseline). */
-  private async forget(accountId: string): Promise<void> {
-    const rows = syncRows(this.ctx.db, accountId);
+  private forget(accountId: string): void {
     this.listedAt.delete(accountId);
-    if (!rows.length) return;
-    for (const cal of rows) await this.removeCalendar(cal);
-    this.syncSetChanged(accountId);
-  }
-
-  private async removeCalendar(cal: CalendarSyncRow): Promise<void> {
-    if (cal.channel_id && cal.channel_resource_id) {
-      await this.ctx.google
-        .calendar(cal.account_id)
-        .stopChannel({ id: cal.channel_id, resourceId: cal.channel_resource_id })
-        .catch((err: unknown) => this.log.debug("Could not stop a calendar push channel", { calendarId: cal.calendar_id, error: errorMessage(err) }));
-    }
-    deleteSyncCalendar(this.ctx.db, cal.account_id, cal.calendar_id);
+    for (const cal of syncRows(this.ctx.db, accountId)) deleteSyncCalendar(this.ctx.db, cal.account_id, cal.calendar_id);
   }
 
   // ───────────── One calendar ─────────────
@@ -509,12 +472,6 @@ function occurrenceTimes(series: CalendarEventSummary, original: CalendarDateTim
   if (!start || Number.isNaN(at) || Number.isNaN(length)) return null;
   const end = new Date(at + length).toISOString();
   return { start, end: original.date ? end.slice(0, 10) : end };
-}
-
-/** A verified, unexpired push channel that synced recently: polling can wait (PUSH_SAFETY_NET_MS). */
-function pushCovered(cal: CalendarSyncRow): boolean {
-  if (!cal.channel_verified_at || !cal.channel_expires_at || Date.parse(cal.channel_expires_at) <= Date.now()) return false;
-  return !!cal.last_sync_at && Date.now() - Date.parse(cal.last_sync_at) < PUSH_SAFETY_NET_MS;
 }
 
 /** Every page of events.list (singleEvents=false, as the sync token requires). */

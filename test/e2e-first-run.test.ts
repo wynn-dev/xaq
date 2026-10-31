@@ -77,7 +77,6 @@ describe("first run", () => {
       accountsConnected: 0,
       agentsCreated: 0,
       complete: false,
-      pubsub: { mode: "poll", topic: null, subscription: null },
     });
 
     // The redirect URI the operator must register follows publicUrl and the bound port.

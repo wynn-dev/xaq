@@ -8,7 +8,6 @@ import { AgentConnections } from "@/components/agents/agent-connections";
 import { AgentHeader } from "@/components/agents/agent-header";
 import { AgentListeners } from "@/components/agents/agent-listeners";
 import { AgentTools } from "@/components/agents/agent-tools";
-import { AgentWebhooks } from "@/components/agents/agent-webhooks";
 import { GrantEditor } from "@/components/agents/grant-editor";
 import { KeyReveal } from "@/components/agents/key-reveal";
 import { QueryError } from "@/components/common";
@@ -103,10 +102,7 @@ function AgentPage() {
 
       <AgentListeners agent={a} />
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <AgentWebhooks agentId={a.id} />
-        <AgentActivity agentId={a.id} />
-      </div>
+      <AgentActivity agentId={a.id} />
     </>
   );
 }

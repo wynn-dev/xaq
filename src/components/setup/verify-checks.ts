@@ -86,7 +86,7 @@ export interface ChecksState {
 }
 
 /**
- * Every required check is green: what shows "Setup complete" and, from then on, marks step 8 done in
+ * Every required check is green: what shows "Setup complete" and, from then on, marks step 7 done in
  * this browser (SetupDraft.verified) without waiting for "Finish setup". Reading the mail is optional.
  */
 export function checksComplete({ mcpDone, listenDone, skipListen, sent, received, delivered }: ChecksState): boolean {
@@ -96,7 +96,7 @@ export function checksComplete({ mcpDone, listenDone, skipListen, sent, received
 // ───────────── Revisiting a finished step ─────────────
 
 /**
- * What step 8 shows. Done when it was opened (SetupDraft.verified, or the server's SetupState.verified):
+ * What step 7 shows. Done when it was opened (SetupDraft.verified, or the server's SetupState.verified):
  * its completed state, since this browser's test email may be gone (another browser, or older than
  * TEST_TTL_MS) and re-running every check would look like setup came undone. "Run the checks again"
  * (`recheck`) shows the live checks without un-completing anything. A step that turns done while open
@@ -106,7 +106,7 @@ export function verifyMode(doneWhenOpened: boolean, recheck: boolean): "complete
   return doneWhenOpened && !recheck ? "complete" : "checks";
 }
 
-/** Step 8's footer. "Finish setup" is never disabled once the step is done: the stepper shows it ✓. */
+/** Step 7's footer. "Finish setup" is never disabled once the step is done: the stepper shows it ✓. */
 export function verifyFooter(stepDone: boolean, checksGreen: boolean): { nextDisabled: boolean; hint: string | null; skip: boolean } {
   if (stepDone || checksGreen) return { nextDisabled: false, hint: null, skip: false };
   return { nextDisabled: true, hint: "Finish turns on when every check is green", skip: true };

@@ -20,7 +20,7 @@ interface ConnectRequest {
   /** Reconnect an existing account (needs_reauth) instead of adding a new one. */
   reauthAccountId?: string;
   email?: string;
-  /** Extra Google access to request incrementally: ["pubsub"] for provisioning, ["calendar"] for "Add Google Calendar". */
+  /** Extra Google access to request incrementally: ["calendar"] for "Add Google Calendar". */
   scopes?: ExtraScopeName[];
   /**
    * Called once the account is connected (e.g. to retry what needed the extra access).
@@ -309,11 +309,10 @@ export function ConnectAccountHost() {
   const mailOnly = () => void start({ ...req, mailOnly: true });
   const reauthEmail = req.email;
 
-  const pubsub = !!req.scopes?.includes("pubsub");
   const calendar = !!req.scopes?.includes("calendar");
   const continueSetup = () => {
     close();
-    void navigate({ to: "/get-started", search: { step: "pubsub" } });
+    void navigate({ to: "/get-started", search: { step: "agent" } });
   };
 
   // Put focus on the button that moves things forward whenever the dialog changes state (not on X).
@@ -331,22 +330,18 @@ export function ConnectAccountHost() {
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>
-            {pubsub
-              ? `Grant Pub/Sub access${req.email ? ` for ${req.email}` : ""}`
-              : calendar
-                ? `Add Google Calendar${req.email ? ` to ${req.email}` : ""}`
-                : reauthEmail
-                  ? `Reconnect ${reauthEmail}`
-                  : "Connect a Google account"}
+            {calendar
+              ? `Add Google Calendar${req.email ? ` to ${req.email}` : ""}`
+              : reauthEmail
+                ? `Reconnect ${reauthEmail}`
+                : "Connect a Google account"}
           </DialogTitle>
           <DialogDescription>
             {phase?.kind === "waiting" && phase.res.callbackMode === "paste"
               ? "Sign in with Google in a new tab, then paste back the address you land on."
-              : pubsub
-                ? `Sign in as ${req.email ?? "the account xaq sets up Pub/Sub with"} (another account won't work) and tick the Pub/Sub box. xaq only uses it for its own topic and subscription in ${client.data?.projectId ?? "your project"}.`
-                : calendar
-                  ? `Sign in as ${req.email ?? "the account"} (another account won't work). Gmail stays connected and keeps working while you do this.`
-                  : reauthEmail
+              : calendar
+                ? `Sign in as ${req.email ?? "the account"} (another account won't work). Gmail stays connected and keeps working while you do this.`
+                : reauthEmail
                   ? `Sign in as ${reauthEmail} and allow access again.`
                   : calendarOn
                     ? "Sign in with Google and allow xaq to manage the mailbox and calendar."
@@ -401,17 +396,8 @@ export function ConnectAccountHost() {
         {phase?.kind === "done" && (
           <div className="flex flex-col items-center gap-2 py-6 text-center" role="status">
             <CheckCircle2Icon className="size-10 text-success" />
-            {pubsub ? (
-              <>
-                <div className="font-medium">Back from Google</div>
-                <p className="text-sm text-muted-foreground">Finishing real-time setup with {phase.email}…</p>
-              </>
-            ) : (
-              <>
-                <div className="font-medium">{phase.email} is connected</div>
-                <p className="text-sm text-muted-foreground">Mail starts syncing now.</p>
-              </>
-            )}
+            <div className="font-medium">{phase.email} is connected</div>
+            <p className="text-sm text-muted-foreground">Mail starts syncing now.</p>
           </div>
         )}
 
@@ -501,7 +487,7 @@ export function ConnectAccountHost() {
                   Connect another
                 </Button>
               )}
-              {inWizard && !pubsub ? (
+              {inWizard ? (
                 <Button onClick={continueSetup} ref={primaryRef}>
                   Continue setup
                 </Button>

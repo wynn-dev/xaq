@@ -17,7 +17,7 @@ afterEach(() => useExtensionStore(null));
 const ajv = new Ajv2020({ allErrors: true });
 const schemaValid = ajv.compile(MANIFEST_JSON_SCHEMA);
 
-const CTX: SetupContext = { publicUrl: "https://xaq.example", redirectUri: "https://xaq.example/oauth/connections/callback", webhookUrl: null };
+const CTX: SetupContext = { publicUrl: "https://xaq.example", redirectUri: "https://xaq.example/oauth/connections/callback" };
 const tool = (name: string, properties: Record<string, unknown> = {}, annotations?: ToolDef["annotations"]): ToolDef => ({
   name,
   description: "",
@@ -58,7 +58,6 @@ const code = (): Record<string, unknown> => ({
     { id: "app", title: "Create an app", body: "Use this redirect.", copy: { label: "Redirect URI", value: "{{redirectUri}}" } },
     { id: "id", title: "Client ID", body: "Paste it.", input: { key: "client_id", label: "Client ID", pattern: "^\\S{8,200}$" } },
     { id: "secret", title: "Client secret", body: "Paste it.", input: { key: "client_secret", label: "Client secret", secret: true } },
-    { id: "hook", title: "Webhooks", body: "Optional.", copy: { label: "Webhook URL", value: "{{webhookUrl}}" }, when: "webhookUrl" },
   ],
   risk: { tools: { get_recovery: { class: "read" } } },
 });
@@ -126,7 +125,7 @@ describe("validateManifest and the JSON Schema", () => {
     ["a target that isn't a pointer", "risk.tools.drop_thing.target", "id", /JSON Pointer/],
     ["an empty target list", "risk.tools.drop_thing.target", [], /must not be empty/],
     ["a step without a body", "setup.0.body", undefined, /missing "body"/],
-    ["an unknown when", "setup.0.when", "funnel", /when must be "webhookUrl"/],
+    ["a step with when", "setup.0.when", "webhookUrl", /when/],
     ["a non-https link", "setup.0.link", { label: "Open", url: "http://example.com" }, /https/],
     ["a secret that isn't a boolean", "setup.0.input", { key: "k", label: "K", secret: "yes" }, /true or false/],
   ])("refuses %s", (_what, path, value, why) => {
@@ -138,9 +137,8 @@ describe("validateManifest and the JSON Schema", () => {
 
   // Rules only the validator checks (the schema can't express them).
   it.each([
-    ["an unknown template variable", "setup.0.body", "Open {{consoleUrl}}.", /only \{\{publicUrl\}\}, \{\{redirectUri\}\} and \{\{webhookUrl\}\}/],
+    ["an unknown template variable", "setup.0.body", "Open {{consoleUrl}}.", /only \{\{publicUrl\}\} and \{\{redirectUri\}\}/],
     ["a stray brace", "setup.0.body", "Open {{publicUrl}.", /unbalanced/],
-    ["{{webhookUrl}} without when", "setup.0.copy", { label: "Webhook URL", value: "{{webhookUrl}}" }, /needs "when": "webhookUrl"/],
     ["an exempt name the table doesn't list", "risk.nameCheckExempt", ["send_it"], /doesn't list/],
     ["an exempt name that's already risky", "risk.nameCheckExempt", ["drop_thing"], /already risky/],
     ["a bad input pattern", "setup.0.input", { key: "k", label: "K", pattern: "(" }, /regular expression/],
@@ -180,16 +178,12 @@ describe("validateManifest and the JSON Schema", () => {
 });
 
 describe("setup copy", () => {
-  it("fills {{publicUrl}}, {{redirectUri}} and {{webhookUrl}}, and shows `when` steps only with that context", () => {
+  it("fills {{publicUrl}} and {{redirectUri}}", () => {
     const m = validateManifest(code());
-    const without = renderSetup(m.setup!, CTX);
-    expect(without.map((s) => s.id)).toEqual(["app", "id", "secret"]);
-    expect(without[0]!.copy).toEqual({ label: "Redirect URI", value: CTX.redirectUri });
-    expect(without[2]!.input).toEqual({ key: "client_secret", label: "Client secret", secret: true });
-    const withHook = renderSetup(m.setup!, { ...CTX, webhookUrl: "https://xaq.example/hooks/connections/whoopish" });
-    expect(withHook.map((s) => s.id)).toEqual(["app", "id", "secret", "hook"]);
-    expect(withHook[3]).not.toHaveProperty("when");
-    expect(withHook[3]!.copy!.value).toBe("https://xaq.example/hooks/connections/whoopish");
+    const steps = renderSetup(m.setup!, CTX);
+    expect(steps.map((s) => s.id)).toEqual(["app", "id", "secret"]);
+    expect(steps[0]!.copy).toEqual({ label: "Redirect URI", value: CTX.redirectUri });
+    expect(steps[2]!.input).toEqual({ key: "client_secret", label: "Client secret", secret: true });
     const link = validateManifest(patch(remote(), "setup.0.link", { label: "Open {{publicUrl}}", url: "{{publicUrl}}/settings" }));
     expect(renderSetup(link.setup!, CTX)[0]!.link).toEqual({ label: "Open https://xaq.example", url: "https://xaq.example/settings" });
   });
@@ -361,9 +355,8 @@ describe("review rules (tier L)", () => {
   });
 
   it("a template link must go on with /, ?, # or nothing, so the install's address can't become a user name", () => {
-    for (const url of ["{{publicUrl}}", "{{publicUrl}}/settings", "{{redirectUri}}?x=1", "{{webhookUrl}}#top"]) {
+    for (const url of ["{{publicUrl}}", "{{publicUrl}}/settings", "{{redirectUri}}?x=1", "{{redirectUri}}#top"]) {
       const m = patch(remote(), "setup.0.link", { label: "Open", url });
-      if (url.includes("webhookUrl")) (m.setup as Record<string, unknown>[])[0]!.when = "webhookUrl";
       expect(() => validateManifest(m), url).not.toThrow();
       expect(schemaValid(m), url).toBe(true);
     }

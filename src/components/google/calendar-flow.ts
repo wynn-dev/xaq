@@ -52,7 +52,7 @@ const MAIL_OK = "Mail works as usual.";
  * (CalendarSetupState.enabled); before that, an account without it is simply "Mail only".
  */
 export function accountCalendarView(
-  a: Pick<CalendarAccount, "status" | "missingScopes" | "syncedCalendars" | "push"> & { error?: string | null },
+  a: Pick<CalendarAccount, "status" | "missingScopes" | "syncedCalendars"> & { error?: string | null },
   enabled: boolean,
 ): AccountCalendarView {
   switch (a.status) {
@@ -62,7 +62,7 @@ export function accountCalendarView(
         tone: "good",
         description:
           a.syncedCalendars > 0
-            ? `Google Calendar is added. ${a.syncedCalendars === 1 ? "1 calendar syncs" : `${a.syncedCalendars} calendars sync`} ${a.push ? "in real time" : "by polling"}.`
+            ? `Google Calendar is added. ${a.syncedCalendars === 1 ? "1 calendar syncs" : `${a.syncedCalendars} calendars sync`}.`
             : "Google Calendar is added. Agents can use it once their access includes Calendar.",
         fix: null,
       };

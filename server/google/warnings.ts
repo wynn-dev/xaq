@@ -113,18 +113,6 @@ export function setupWarnings(ctx: Ctx): SetupWarning[] {
     }
   }
 
-  if (ctx.settings.get().ingestMode === "pubsub") {
-    const error = ctx.settings.getState("pubsub")?.lastError;
-    if (error) {
-      out.push({
-        code: "pubsub_failing",
-        severity: "error",
-        message: "Pub/Sub notifications are failing, so new mail may arrive late or not at all.",
-        hint: `${error} Or switch Settings → Ingest mode to Polling, which needs no Pub/Sub.`,
-      });
-    }
-  }
-
   out.push(...calendarWarnings(ctx, rows));
 
   return out.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);

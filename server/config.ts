@@ -18,14 +18,13 @@ export interface Config {
   version: string;
   /**
    * Base URLs for Google APIs. XAQ_GOOGLE_BASE (tests only) points all of them at test/fake-google.ts.
-   * Defaults: https://oauth2.googleapis.com, https://accounts.google.com, https://gmail.googleapis.com, https://pubsub.googleapis.com,
+   * Defaults: https://oauth2.googleapis.com, https://accounts.google.com, https://gmail.googleapis.com,
    * https://www.googleapis.com (Calendar: paths start with /calendar/v3), https://www.googleapis.com (Drive: /drive/v3).
    */
   google: {
     oauthBase: string;
     authBase: string;
     gmailBase: string;
-    pubsubBase: string;
     calendarBase: string;
     /**
      * Drive, Docs, Sheets and Slides (a code extension's API probe, server/google/apis.ts): one base for all of them
@@ -78,7 +77,6 @@ export function loadConfig(input: ConfigInput = {}, version = "0.0.0"): Config {
       oauthBase: google ?? "https://oauth2.googleapis.com",
       authBase: google ?? "https://accounts.google.com",
       gmailBase: google ?? "https://gmail.googleapis.com",
-      pubsubBase: google ?? "https://pubsub.googleapis.com",
       calendarBase: google ?? "https://www.googleapis.com",
       ...(google ? { apisBase: google } : {}),
     },

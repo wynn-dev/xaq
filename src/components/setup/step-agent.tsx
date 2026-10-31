@@ -14,7 +14,7 @@ import type { StepProps } from "./step-url";
 import { StepCard, StepFooter } from "./wizard-shell";
 
 /**
- * Step 7: pair the first agent from its terminal and approve it inline by typing its code. Approval
+ * Step 6: pair the first agent from its terminal and approve it inline by typing its code. Approval
  * moves straight on to the Verify step, which checks MCP, the listener and a test email live.
  * Creating an agent here with a copied key stays available as an advanced alternative.
  */
@@ -73,7 +73,7 @@ export function StepAgent({ index, onBack, onNext, total, nextLabel }: StepProps
               <div className="mt-3 space-y-3">
                 <p className="text-sm text-muted-foreground">
                   For agents that can't run <code className="font-mono">npx</code>, like a hosted app. You paste the key into its MCP settings yourself, and it
-                  can't use a listener (use a webhook instead).
+                  can't use a listener.
                 </p>
                 <AgentCreateForm
                   defaultName={existing.length ? "" : "My first agent"}

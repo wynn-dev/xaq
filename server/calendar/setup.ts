@@ -82,11 +82,7 @@ export function setupState(ctx: Pick<AppContext, "settings" | "db">): CalendarSe
   const api = apiState(s, rows);
   const sync = new Map(
     ctx.db
-      .all<{ account_id: string; n: number; push: number }>(
-        `SELECT account_id, COUNT(*) AS n, SUM(channel_verified_at IS NOT NULL AND channel_expires_at > ?) AS push
-         FROM calendar_sync GROUP BY account_id`,
-        now(),
-      )
+      .all<{ account_id: string; n: number }>(`SELECT account_id, COUNT(*) AS n FROM calendar_sync GROUP BY account_id`)
       .map((r) => [r.account_id, r]),
   );
   const accounts = rows.map((r) => ({
@@ -95,7 +91,6 @@ export function setupState(ctx: Pick<AppContext, "settings" | "db">): CalendarSe
     status: accountCalendar(r)?.status ?? "not_granted",
     missingScopes: missingScopes(accountScopes(r), CALENDAR_SCOPES),
     syncedCalendars: sync.get(r.id)?.n ?? 0,
-    push: (sync.get(r.id)?.push ?? 0) > 0,
   }));
   return {
     enabled: s.enabled,

@@ -40,7 +40,7 @@ network access. Node's permission model limits its files, child processes and wo
 ## More
 
 - [Reference](docs/reference.md): features, configuration, running as a service or behind a proxy, security model,
-  webhooks, data and backups, development
+  events, data and backups, development
 - [Waking local agents with `xaq listen`](docs/listen.md), e.g. `npx xaq-cli listen --recipe claude-code`
 
 ## License

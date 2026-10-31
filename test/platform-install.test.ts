@@ -448,7 +448,6 @@ describe("16: account connect options", () => {
     const google = () =>
       ({
         clientView: () => ({ clientId: null, hasSecret: false, projectId: null, appType: null, redirectUri: "", callbackMode: "direct" }),
-        pubsubState: () => ({ mode: "poll", topic: null, subscription: null, lastError: null, lastMessageAt: null }),
         startConnect: (opts: unknown) => {
           seen.push(opts);
           return { authUrl: "https://accounts.google.com/x", state: "s", callbackMode: "direct" };
@@ -457,9 +456,9 @@ describe("16: account connect options", () => {
     h = harness({ google });
     const cookie = await h.claim();
     const connect = (json: unknown) => h!.request("/api/accounts/connect", { method: "POST", headers: CSRF, cookie, json });
-    expect((await connect({ scopes: ["pubsub"], reauthAccountId: "acc_1" })).status).toBe(200);
+    expect((await connect({ scopes: ["calendar"], reauthAccountId: "acc_1" })).status).toBe(200);
     expect((await connect({})).status).toBe(200);
-    expect(seen).toEqual([{ scopes: ["pubsub"], reauthAccountId: "acc_1" }, { scopes: undefined, reauthAccountId: undefined }]);
+    expect(seen).toEqual([{ scopes: ["calendar"], reauthAccountId: "acc_1" }, { scopes: undefined, reauthAccountId: undefined }]);
     expect((await connect({ scopes: ["gmail"] })).status).toBe(400);
   });
 });

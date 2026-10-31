@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { ActivityIcon, BotIcon, MailIcon, ShieldAlertIcon, StampIcon, WebhookIcon, WrenchIcon } from "lucide-react";
+import { ActivityIcon, BotIcon, MailIcon, ShieldAlertIcon, StampIcon, WrenchIcon } from "lucide-react";
 import { PageHeader, QueryError, StatCard } from "@/components/common";
 import { ConnectionsNotice } from "@/components/connections/connections-notice";
 import { CalendarNotice } from "@/components/google/calendar-notice";
@@ -55,7 +55,7 @@ function Overview() {
       {stats.isError ? (
         <QueryError error={stats.error} onRetry={() => void stats.refetch()} />
       ) : (
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
           <StatCard
             label="Accounts"
             icon={MailIcon}
@@ -86,13 +86,6 @@ function Overview() {
             loading={loading}
             value={fmtNumber(s?.toolCalls24h)}
             hint={s && (s.denied24h ? <span className="text-warning">{s.denied24h} blocked by guardrails</span> : "none blocked")}
-          />
-          <StatCard
-            label="Webhook deliveries"
-            icon={WebhookIcon}
-            loading={loading}
-            value={fmtNumber(s?.deliveries24h.succeeded)}
-            hint={s && (s.deliveries24h.failed ? <span className="text-critical">{s.deliveries24h.failed} failed</span> : "none failed")}
           />
           <StatCard
             label="Approvals"

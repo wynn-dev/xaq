@@ -132,7 +132,7 @@ export interface InstanceLock {
 
 /**
  * Takes `<data>/xaq.lock`. Two processes on one data directory would both run ingest and
- * deliver every webhook twice, even on different ports. A lock whose process is gone (dead,
+ * emit every event twice, even on different ports. A lock whose process is gone (dead,
  * rebooted, or its pid reused by something else) is replaced.
  */
 export function acquireInstanceLock(config: Pick<Config, "dataDir" | "host" | "port">): InstanceLock {
@@ -194,7 +194,6 @@ function sampleCiphertext(dbPath: string): string | null {
   try {
     const queries = [
       "SELECT refresh_token_enc AS v FROM accounts WHERE refresh_token_enc LIKE 'v1:%' LIMIT 1",
-      "SELECT secret_enc AS v FROM webhooks WHERE secret_enc LIKE 'v1:%' LIMIT 1",
       "SELECT json_extract(value, '$.clientSecretEnc') AS v FROM settings WHERE key = 'google.client'",
     ];
     for (const sql of queries) {
@@ -213,7 +212,7 @@ function sampleCiphertext(dbPath: string): string | null {
 
 /**
  * Refuses to start with a master key that can't read the stored secrets: a missing master.key would
- * otherwise be regenerated, silently making every refresh token and webhook secret unreadable.
+ * otherwise be regenerated, silently making every refresh token and client secret unreadable.
  * `envKey` overrides XAQ_MASTER_KEY (used by `service install` to check the key it will install).
  */
 export function assertMasterKeyUsable(config: Pick<Config, "dbPath" | "masterKeyPath">, envKey = envVar("MASTER_KEY")): void {
