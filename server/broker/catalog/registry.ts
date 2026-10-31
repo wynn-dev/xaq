@@ -1,9 +1,9 @@
-// ToolRegistry over the catalog: per-agent tool lists with connection_grants.level applied. Synchronous and
+// The tool registry over the catalog: per-agent tool lists with connection_grants.level applied. Synchronous and
 // cached in memory; call invalidate() whenever connections, grants or the catalog change (Catalog.onChange does the
 // last one).
 
 import type { Db } from "../../db/index.ts";
-import type { AccessLevel, IntegrationPreset, RegisteredTool, ToolRegistry } from "../types.ts";
+import type { AccessLevel, IntegrationPreset, RegisteredTool } from "../types.ts";
 import { candidateKey, checkCollisions, exposedName, type NameRefusal } from "./names.ts";
 import type { CatalogStore } from "./store.ts";
 
@@ -49,7 +49,7 @@ interface AgentView {
   byName: Map<string, RegisteredTool>;
 }
 
-export class CatalogRegistry implements ToolRegistry {
+export class CatalogRegistry {
   private snapshot: Snapshot | null = null;
   private readonly agents = new Map<string, AgentView>();
 

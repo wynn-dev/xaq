@@ -1,5 +1,5 @@
 // `xaq ext add | list | update | remove`: run on xaq's machine, through the daemon's /api/extensions over the local
-// admin channel (server/connections-cli/admin.ts), so the daemon's own checks (and B2's usedBy) apply.
+// admin channel (server/connections-cli/admin.ts), so the daemon's own checks (and the broker's usedBy) apply.
 
 import type { Command } from "commander";
 import pc from "picocolors";

@@ -171,7 +171,7 @@ describe("/mcp aggregation", () => {
     await s.close();
   });
 
-  it("routes upstream calls to BrokerCalls and get_call_status to the policy; audits dynamic names", async () => {
+  it("routes upstream calls to the policy's calls and get_call_status to the policy; audits dynamic names", async () => {
     const t = setup();
     disposers.push(t.dispose);
     const { ctx, rec } = t;
@@ -198,7 +198,7 @@ describe("/mcp aggregation", () => {
     await s.close();
 
     expect(audits(ctx, agent.id)).toEqual([
-      { action: "notion__notion-search", outcome: "ok", reason: null }, // by BrokerCalls
+      { action: "notion__notion-search", outcome: "ok", reason: null }, // by the policy's calls
       { action: "get_call_status", outcome: "ok", reason: null },
       { action: "unknown_tool", outcome: "error", reason: "unknown_tool" },
       { action: "notion__notion-update-page", outcome: "error", reason: "internal" },

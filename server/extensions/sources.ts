@@ -6,6 +6,7 @@ import { execFile } from "node:child_process";
 import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
+import type { InstalledExtension } from "./store.ts";
 import { COMMIT_RE, EXTENSION_NAME_RE, type ExtensionUrls, OFFICIAL_OWNER, OFFICIAL_REPO } from "./registry.ts";
 import { bufferChunks, DEFAULT_LIMITS, type ExtractLimits, gunzipChunks, readTar, UnsafeArchiveError, writeFiles } from "./tar.ts";
 
@@ -15,13 +16,28 @@ export type SourceSpec =
   | { type: "git"; url: string; ref: string | null; path: string }
   | { type: "local"; path: string };
 
-export class SourceError extends Error {
+export type ExtensionErrorCode =
+  | "not_found"
+  | "in_use"
+  | "third_party_unconfirmed"
+  | "integrity_mismatch"
+  | "already_installed"
+  | "changed"
+  | "invalid"
+  | "bad_source"
+  | "fetch_failed"
+  | "rate_limited"
+  | "unsafe"
+  | "official_name";
+
+export class ExtensionError extends Error {
   constructor(
+    readonly code: ExtensionErrorCode,
     message: string,
-    readonly code: "bad_source" | "fetch_failed" | "rate_limited" | "not_found" = "fetch_failed",
+    readonly detail?: { usedBy?: string[]; warnings?: string[]; candidate?: InstalledExtension },
   ) {
     super(message);
-    this.name = "SourceError";
+    this.name = "ExtensionError";
   }
 }
 
@@ -51,7 +67,7 @@ function refuseUserinfo(s: string): void {
   }
   // ssh://git@host/… names the ssh user, not a secret; anything with a password, or a user on https, is refused.
   if (u.password || (u.username && u.protocol !== "ssh:")) {
-    throw new SourceError("Don't put credentials in the URL: xaq would store and show them. Use a URL without user:password@.", "bad_source");
+    throw new ExtensionError("bad_source", "Don't put credentials in the URL: xaq would store and show them. Use a URL without user:password@.");
   }
 }
 
@@ -61,33 +77,33 @@ function refuseUserinfo(s: string): void {
  */
 export function parseSource(source: string, opts: ParseOptions = {}): SourceSpec {
   const s = source.trim();
-  if (!s) throw new SourceError("Name an extension, a GitHub URL, a git URL or a directory.", "bad_source");
+  if (!s) throw new ExtensionError("bad_source", "Name an extension, a GitHub URL, a git URL or a directory.");
   if (EXTENSION_NAME_RE.test(s)) return { type: "registry", name: s };
   if (s === "." || s === ".." || s.startsWith("./") || s.startsWith("../") || s.startsWith("/") || s === "~" || s.startsWith("~/")) {
-    if (opts.absoluteOnly && !s.startsWith("/")) throw new SourceError(ABSOLUTE_PATH_MESSAGE, "bad_source");
+    if (opts.absoluteOnly && !s.startsWith("/")) throw new ExtensionError("bad_source", ABSOLUTE_PATH_MESSAGE);
     const expanded = s === "~" || s.startsWith("~/") ? join(homedir(), s.slice(1)) : s;
     return { type: "local", path: isAbsolute(expanded) ? resolve(expanded) : resolve(opts.cwd ?? process.cwd(), expanded) };
   }
   refuseUserinfo(s.split("#")[0]!);
   if (/^(?:http|git):\/\//i.test(s)) {
-    throw new SourceError(`${s.slice(0, s.indexOf(":"))}:// isn't allowed: it isn't encrypted or authenticated. Use an https:// or ssh URL.`, "bad_source");
+    throw new ExtensionError("bad_source", `${s.slice(0, s.indexOf(":"))}:// isn't allowed: it isn't encrypted or authenticated. Use an https:// or ssh URL.`);
   }
-  if (/^file:\/\//i.test(s) && !opts.allowFileGit) throw new SourceError("file:// git URLs aren't allowed. For a directory on xaq's machine, give its absolute path.", "bad_source");
+  if (/^file:\/\//i.test(s) && !opts.allowFileGit) throw new ExtensionError("bad_source", "file:// git URLs aren't allowed. For a directory on xaq's machine, give its absolute path.");
   const gh = /^https:\/\/github\.com\/([^/]+)\/([^/#?]+?)(?:\.git)?\/?(?:\/tree\/([^#?]+?))?\/?$/.exec(s);
   if (gh) {
     const [, owner, repo, tree] = gh;
-    if (!validGithubPart(owner!) || !validGithubPart(repo!)) throw new SourceError(`"${s}" isn't a GitHub repository URL.`, "bad_source");
+    if (!validGithubPart(owner!) || !validGithubPart(repo!)) throw new ExtensionError("bad_source", `"${s}" isn't a GitHub repository URL.`);
     let segs: string[];
     try {
       segs = tree ? tree.split("/").filter(Boolean).map(decodeURIComponent) : [];
     } catch {
-      throw new SourceError(`"${s}" has a badly encoded path.`, "bad_source");
+      throw new ExtensionError("bad_source", `"${s}" has a badly encoded path.`);
     }
-    if (segs.some((p) => p === ".." || p === "." || p.includes("\\"))) throw new SourceError(`"${s}" has a bad path.`, "bad_source");
+    if (segs.some((p) => p === ".." || p === "." || p.includes("\\"))) throw new ExtensionError("bad_source", `"${s}" has a bad path.`);
     return { type: "github", owner: owner!, repo: repo!, tree: segs };
   }
   if (/^https?:\/\/(?:www\.)?github\.com\//.test(s)) {
-    throw new SourceError(`Use a GitHub URL like https://github.com/<owner>/<repo> or https://github.com/<owner>/<repo>/tree/<ref>/<path>.`, "bad_source");
+    throw new ExtensionError("bad_source", `Use a GitHub URL like https://github.com/<owner>/<repo> or https://github.com/<owner>/<repo>/tree/<ref>/<path>.`);
   }
   const hash = s.indexOf("#");
   const url = hash === -1 ? s : s.slice(0, hash);
@@ -96,14 +112,11 @@ export function parseSource(source: string, opts: ParseOptions = {}): SourceSpec
     const colon = frag.indexOf(":");
     const ref = (colon === -1 ? frag : frag.slice(0, colon)) || null;
     const path = colon === -1 ? "" : frag.slice(colon + 1).replace(/^\/+|\/+$/g, "");
-    if (ref && (!GIT_REF.test(ref) || ref.startsWith("-") || ref.includes(".."))) throw new SourceError(`"${ref}" isn't a git ref xaq accepts.`, "bad_source");
-    if (path.split("/").some((p) => p === ".." || p.includes("\\"))) throw new SourceError(`"${path}" isn't a path inside the repository.`, "bad_source");
+    if (ref && (!GIT_REF.test(ref) || ref.startsWith("-") || ref.includes(".."))) throw new ExtensionError("bad_source", `"${ref}" isn't a git ref xaq accepts.`);
+    if (path.split("/").some((p) => p === ".." || p.includes("\\"))) throw new ExtensionError("bad_source", `"${path}" isn't a path inside the repository.`);
     return { type: "git", url, ref, path };
   }
-  throw new SourceError(
-    `"${s}" isn't an extension name, a GitHub URL, a git URL or a directory (write a directory as ./${s}).`,
-    "bad_source",
-  );
+  throw new ExtensionError("bad_source", `"${s}" isn't an extension name, a GitHub URL, a git URL or a directory (write a directory as ./${s}).`);
 }
 
 export interface FetchDeps {
@@ -144,15 +157,12 @@ async function readCapped(res: Response, max: number, what: string): Promise<Buf
 }
 
 /** GitHub's unauthenticated limit is 60 API requests an hour per address: say so plainly. */
-function rateLimitError(res: Response): SourceError | null {
+function rateLimitError(res: Response): ExtensionError | null {
   if ((res.status === 403 || res.status === 429) && (res.headers.get("x-ratelimit-remaining") === "0" || res.headers.has("retry-after"))) {
     const reset = Number(res.headers.get("x-ratelimit-reset") ?? "0");
     const retry = Number(res.headers.get("retry-after") ?? "0");
     const when = reset ? `after ${new Date(reset * 1000).toISOString().slice(11, 16)} UTC` : retry ? `in ${Math.ceil(retry / 60)} min` : "in a while";
-    return new SourceError(
-      `GitHub's API rate limit for this address is used up (60 requests an hour without a GitHub sign-in). Try again ${when}.`,
-      "rate_limited",
-    );
+    return new ExtensionError("rate_limited", `GitHub's API rate limit for this address is used up (60 requests an hour without a GitHub sign-in). Try again ${when}.`);
   }
   return null;
 }
@@ -161,7 +171,7 @@ async function githubGet(url: string, deps: FetchDeps, accept: string): Promise<
   try {
     return await deps.fetch(url, { headers: { accept, "user-agent": UA }, signal: AbortSignal.timeout(deps.timeoutMs ?? 60_000) });
   } catch (err) {
-    throw new SourceError(`Couldn't reach GitHub (${new URL(url).host}): ${(err as Error).message}`);
+    throw new ExtensionError("fetch_failed", `Couldn't reach GitHub (${new URL(url).host}): ${(err as Error).message}`);
   }
 }
 
@@ -174,8 +184,8 @@ async function resolveGithubRef(owner: string, repo: string, ref: string, deps: 
   if (limited) throw limited;
   const text = (await res.text()).trim();
   if (res.status === 404 || res.status === 422) return null;
-  if (!res.ok) throw new SourceError(`GitHub answered HTTP ${res.status} resolving ${owner}/${repo}@${ref}.`);
-  if (!COMMIT_RE.test(text)) throw new SourceError(`GitHub didn't return a commit for ${owner}/${repo}@${ref}.`);
+  if (!res.ok) throw new ExtensionError("fetch_failed", `GitHub answered HTTP ${res.status} resolving ${owner}/${repo}@${ref}.`);
+  if (!COMMIT_RE.test(text)) throw new ExtensionError("fetch_failed", `GitHub didn't return a commit for ${owner}/${repo}@${ref}.`);
   return text;
 }
 
@@ -186,7 +196,7 @@ async function resolveGithubRef(owner: string, repo: string, ref: string, deps: 
 export async function resolveGithubTree(spec: Extract<SourceSpec, { type: "github" }>, deps: FetchDeps): Promise<{ commit: string; ref: string; path: string }> {
   if (!spec.tree.length) {
     const commit = await resolveGithubRef(spec.owner, spec.repo, "HEAD", deps);
-    if (!commit) throw new SourceError(`GitHub has no repository ${spec.owner}/${spec.repo} (or it's private).`, "not_found");
+    if (!commit) throw new ExtensionError("not_found", `GitHub has no repository ${spec.owner}/${spec.repo} (or it's private).`);
     return { commit, ref: "HEAD", path: "" };
   }
   for (let i = 1; i <= spec.tree.length; i++) {
@@ -194,23 +204,23 @@ export async function resolveGithubTree(spec: Extract<SourceSpec, { type: "githu
     const commit = await resolveGithubRef(spec.owner, spec.repo, ref, deps);
     if (commit) return { commit, ref, path: spec.tree.slice(i).join("/") };
   }
-  throw new SourceError(`GitHub has no branch, tag or commit "${spec.tree.join("/")}" in ${spec.owner}/${spec.repo} (or the repository is private).`, "not_found");
+  throw new ExtensionError("not_found", `GitHub has no branch, tag or commit "${spec.tree.join("/")}" in ${spec.owner}/${spec.repo} (or the repository is private).`);
 }
 
 /** Downloads the codeload tarball of `owner/repo` at `commit` and writes the files under `path` into `dest`. */
 export async function fetchGithubTarball(owner: string, repo: string, commit: string, path: string, dest: string, deps: FetchDeps): Promise<Fetched> {
-  if (!COMMIT_RE.test(commit)) throw new SourceError(`"${commit}" isn't a commit.`, "bad_source");
+  if (!COMMIT_RE.test(commit)) throw new ExtensionError("bad_source", `"${commit}" isn't a commit.`);
   const url = `${deps.urls.codeload}/${owner}/${repo}/tar.gz/${commit}`;
   const res = await githubGet(url, deps, "application/x-gzip");
   const limited = rateLimitError(res);
   if (limited) throw limited;
   if (res.status === 404) {
     await res.body?.cancel().catch(() => {});
-    throw new SourceError(`GitHub has no commit ${commit.slice(0, 12)} in ${owner}/${repo}.`, "not_found");
+    throw new ExtensionError("not_found", `GitHub has no commit ${commit.slice(0, 12)} in ${owner}/${repo}.`);
   }
   if (!res.ok) {
     await res.body?.cancel().catch(() => {});
-    throw new SourceError(`GitHub answered HTTP ${res.status} for the ${owner}/${repo} tarball.`);
+    throw new ExtensionError("fetch_failed", `GitHub answered HTTP ${res.status} for the ${owner}/${repo} tarball.`);
   }
   const data = await readCapped(res, MAX_TARBALL, "The tarball");
   let files;
@@ -262,7 +272,7 @@ function run(file: string, args: string[], opts: { cwd?: string; env: NodeJS.Pro
       (err, stdout, stderr) => {
         if (err) {
           const msg = (stderr as Buffer | undefined)?.toString("utf8").trim().split("\n").slice(-3).join(" ") || err.message;
-          fail(new SourceError((err as { killed?: boolean }).killed ? `git timed out (${Math.round(opts.timeoutMs / 1000)} s).` : `git failed: ${msg}`));
+          fail(new ExtensionError("fetch_failed", (err as { killed?: boolean }).killed ? `git timed out (${Math.round(opts.timeoutMs / 1000)} s).` : `git failed: ${msg}`));
         } else ok(stdout as Buffer);
       },
     );
@@ -276,7 +286,7 @@ function run(file: string, args: string[], opts: { cwd?: string; env: NodeJS.Pro
  */
 export async function fetchGit(spec: Extract<SourceSpec, { type: "git" }>, work: string, dest: string, deps: FetchDeps): Promise<Fetched> {
   const timeoutMs = deps.timeoutMs ?? 120_000;
-  if (/^file:/i.test(spec.url) && !deps.allowFileGit) throw new SourceError("file:// git URLs aren't allowed.", "bad_source");
+  if (/^file:/i.test(spec.url) && !deps.allowFileGit) throw new ExtensionError("bad_source", "file:// git URLs aren't allowed.");
   const repo = join(work, "repo.git");
   const home = join(work, "home");
   mkdirSync(home, { mode: 0o700 });
@@ -294,7 +304,7 @@ export async function fetchGit(spec: Extract<SourceSpec, { type: "git" }>, work:
   await run(deps.git, [...safe, "init", "-q", "--bare", repo], { env, timeoutMs });
   await run(deps.git, [...safe, "-C", repo, "fetch", "-q", "--depth", "1", "--no-tags", "--", spec.url, spec.ref ?? "HEAD"], { env, timeoutMs });
   const commit = (await run(deps.git, [...safe, "-C", repo, "rev-parse", "--verify", "FETCH_HEAD^{commit}"], { env, timeoutMs })).toString("utf8").trim();
-  if (!COMMIT_RE.test(commit)) throw new SourceError("git didn't report a commit for the fetched ref.");
+  if (!COMMIT_RE.test(commit)) throw new ExtensionError("fetch_failed", "git didn't report a commit for the fetched ref.");
   const limits = { ...DEFAULT_LIMITS, ...deps.limits };
   const tar = await run(deps.git, [...safe, "-C", repo, "archive", "--format=tar", commit, ...(spec.path ? ["--", spec.path] : [])], {
     env,
@@ -317,9 +327,9 @@ export function fetchLocal(dir: string, dest: string, deps: Pick<FetchDeps, "lim
   try {
     st = lstatSync(dir);
   } catch {
-    throw new SourceError(`There's no directory ${dir}.`, "not_found");
+    throw new ExtensionError("not_found", `There's no directory ${dir}.`);
   }
-  if (!st.isDirectory()) throw new SourceError(`${dir} isn't a directory.`, "bad_source");
+  if (!st.isDirectory()) throw new ExtensionError("bad_source", `${dir} isn't a directory.`);
   let files = 0;
   let bytes = 0;
   const copy = (from: string, to: string, rel: string) => {
@@ -343,6 +353,6 @@ export function fetchLocal(dir: string, dest: string, deps: Pick<FetchDeps, "lim
     }
   };
   copy(dir, dest, "");
-  if (!files) throw new SourceError(`${dir} is empty.`, "bad_source");
+  if (!files) throw new ExtensionError("bad_source", `${dir} is empty.`);
   return { commit: null };
 }

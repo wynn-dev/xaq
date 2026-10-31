@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Db } from "../server/db/index.ts";
 import type { AuditInput } from "../server/audit.ts";
-import { brokerConnections, Catalog, CatalogRegistry, connectionGrants, pinHash, SqliteCatalogStore } from "../server/broker/catalog/index.ts";
+import { brokerConnections, Catalog, CatalogRegistry, CatalogStore, connectionGrants, pinHash } from "../server/broker/catalog/index.ts";
 import type { ToolDef } from "../server/broker/types.ts";
 
 const T = "2026-10-16T12:00:00.000Z";
 const tool = (name: string, extra: Partial<ToolDef> = {}): ToolDef => ({ name, description: `Does ${name}`, inputSchema: { type: "object" }, ...extra });
 
-describe("SqliteCatalogStore on migration 8", () => {
+describe("CatalogStore on migration 8", () => {
   let db: Db;
   beforeEach(() => {
     db = new Db(":memory:");
@@ -29,7 +29,7 @@ describe("SqliteCatalogStore on migration 8", () => {
 
   const make = () => {
     const audits: AuditInput[] = [];
-    const store = new SqliteCatalogStore(db);
+    const store = new CatalogStore(db);
     const catalog = new Catalog({
       store,
       connection: (id) => {

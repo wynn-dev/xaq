@@ -23,12 +23,13 @@ import { OFFICIAL_NAMES } from "../extensions/registry.ts";
 import { type ExtensionStore, extensionStore, LISTENER_ORDER } from "../extensions/store.ts";
 import { presetById, presetSource, presets, reloadPresets, useExtensionStore } from "../integrations/index.ts";
 import { removeConnectionState } from "../extensions/host/spawn.ts";
+import type { CredentialStore } from "./credentials/store.ts";
 import { googleConnectionState, googleConnectionView, googleTokenDeps, isGooglePreset, syncGoogleConnections } from "../extensions/google-auth.ts";
 import { forgetHandedTokens } from "../extensions/handed-tokens.ts";
 import { loopbackUrl } from "../urls.ts";
 import { conflict, errorMessage, notFound } from "../util/errors.ts";
 import { type ConnectionGrantRef, connectionGrantsOf } from "./access.ts";
-import { brokerConnections, Catalog, CatalogRegistry, connectionGrants, SqliteCatalogStore } from "./catalog/index.ts";
+import { brokerConnections, Catalog, CatalogRegistry, CatalogStore, connectionGrants } from "./catalog/index.ts";
 import { nativeDepsFor, registerNativeFlows, upstreamConnector } from "./connector.ts";
 import { type BrokerPassthrough, createPassthrough } from "./passthrough.ts";
 import { upstreams } from "./upstream/runtime.ts";
@@ -36,14 +37,11 @@ import { type BrokerPolicyRuntime, brokerPolicyOf, createBrokerPolicyRuntime } f
 import { isExpired } from "./policy/store.ts";
 import { type ReachabilityDeps, type WebhookReachability, reachabilityCache } from "./reachability.ts";
 import {
-  type BrokerCalls,
-  type CredentialStore,
   type IntegrationEvent,
   type IntegrationPreset,
   type NativeSourceDeps,
   type RegisteredTool,
   SourceError,
-  type ToolRegistry,
   type ToolResult,
   type ToolSource,
 } from "./types.ts";
@@ -71,10 +69,10 @@ export interface Connector {
 
 export interface BrokerParts {
   /** Catalog (server/broker/catalog/*). */
-  registry: ToolRegistry;
+  registry: Pick<CatalogRegistry, "forAgent" | "resolve">;
   /** Policy and approvals (server/broker/policy/*): the single call path. */
-  calls: BrokerCalls;
-  /** get_call_status(approval_id), from the policy workstream. */
+  calls: Pick<BrokerPolicyRuntime, "call">;
+  /** get_call_status(approval_id), from the policy runtime. */
   callStatus(agentId: string, approvalId: string): ToolResult | Promise<ToolResult>;
   /**
    * Runs an mcp.call approval already claimed ("approved"): re-checks agent, grant, pin and args hash, forwards
@@ -114,13 +112,13 @@ export interface BrokerOptions {
 export interface AgentBrokerView {
   /** The agent's connection grants (any level), by slug. */
   connections: ConnectionGrantRef[];
-  /** Tools from ToolRegistry.forAgent: levels applied. */
+  /** Tools from the registry's forAgent: levels applied. */
   tools: RegisteredTool[];
 }
 
 export interface BrokerService extends Lifecycle {
   view(agentId: string): AgentBrokerView;
-  calls: BrokerCalls;
+  calls: Pick<BrokerPolicyRuntime, "call">;
   callStatus(agentId: string, approvalId: string): Promise<ToolResult>;
   canRunApprovedCalls(): boolean;
   runApprovedCall(approval: McpCallApproval): Promise<void>;
@@ -141,7 +139,7 @@ export interface BrokerService extends Lifecycle {
   /** The kill switch, then the row (grants, pins, rules and approvals cascade). Audited. */
   remove(connectionId: string): Promise<void>;
   invalidate(scope: InvalidateScope): void;
-  /** The tool catalog (W5). */
+  /** The tool catalog. */
   catalog: Catalog;
   /** (Re)starts the catalog's tool listing for a connection (create, connect, URL change); no-op while disabled. */
   attach(connectionId: string): void;
@@ -182,7 +180,7 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
   const presetList = () => (given.presets ?? presets)();
   const presetFor = (presetId: string | null) => (presetId ? (presetList().find((p) => p.id === presetId) ?? null) : null);
 
-  // The upstream runtime (W3/W4): credential store, refresher, connect flow, remote sources. Created here, first,
+  // The upstream runtime: credential store, refresher, connect flow, remote sources. Created here, first,
   // so its connection events go to the outbox; native OAuth flows are registered before start() runs.
   const up = upstreams(ctx, {
     emit: (e) => {
@@ -196,9 +194,9 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
   registerNativeFlows(up, presetFor);
   const credentials = given.credentials ?? up.store;
 
-  // The catalog (W5): stored definitions and the per-agent registry over upstream_tools. A changed upstream tool is
+  // The catalog: stored definitions and the per-agent registry over upstream_tools. A changed upstream tool is
   // used at once; the catalog only audits it (no event, no hold).
-  const store = new SqliteCatalogStore(ctx.db);
+  const store = new CatalogStore(ctx.db);
   const catalog = new Catalog({
     store,
     connection: (id) => {
@@ -219,7 +217,7 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
   // A disabled (killed) connection's tools aren't listed; resolve still finds them, so a direct call gets the
   // policy's clear "turned off" answer. needs_reauth ones stay listed (calls say how to reconnect).
   const disabledIds = () => new Set(ctx.db.all<{ id: string }>("SELECT id FROM connections WHERE status = 'disabled'").map((r) => r.id));
-  const visibleRegistry: ToolRegistry = {
+  const visibleRegistry: BrokerParts["registry"] = {
     forAgent: (agentId) => {
       const off = disabledIds();
       const all = catalogRegistry.forAgent(agentId);
@@ -234,7 +232,7 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
     else catalogRegistry.invalidate();
   };
 
-  // The policy runtime (W6): BrokerCalls, get_call_status, approved calls, grant hooks and the kill switch.
+  // The policy runtime: calls, get_call_status, approved calls, grant hooks and the kill switch.
   const policy = createBrokerPolicyRuntime(ctx, {
     registry: base.registry,
     sources: { source: (id) => service.source(id), close: (id) => closeSource(id) },

@@ -1,5 +1,5 @@
 // What the code-extension host needs from the rest of the extensions system (docs/EXTENSIONS.md): the store's
-// InstalledExtension and its integrity re-check (B1, server/extensions/store.ts).
+// InstalledExtension and its integrity re-check (server/extensions/store.ts).
 
 import type { IntegrationEvent, NativeSourceDeps } from "../../broker/types.ts";
 import type { ExtensionStore } from "../store.ts";

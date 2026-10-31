@@ -5,4 +5,4 @@ export { canonicalize } from "./jcs.ts";
 export { checkCollisions, exposedName, MAX_EXPOSED_NAME, nativeNames, slugProblem, type NameRefusal } from "./names.ts";
 export { brokerConnections, CatalogRegistry, connectionGrants, type RegistryConnection, type RegistryDeps } from "./registry.ts";
 export { CATCH_ALL_PARAMS, toolSignals, type ToolSignal, type ToolSignalKind } from "./signals.ts";
-export { MemoryCatalogStore, SqliteCatalogStore, type CatalogState, type CatalogStore, type LegacyHeldTool, type PinnedTool } from "./store.ts";
+export { CatalogStore, type CatalogState, type LegacyHeldTool, type PinnedTool } from "./store.ts";

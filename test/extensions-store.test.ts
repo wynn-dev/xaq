@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Db } from "../server/db/index.ts";
 import { computeIntegrity, integrityDirName } from "../server/extensions/integrity.ts";
 import { gitEnv, parseSource } from "../server/extensions/sources.ts";
-import { ExtensionError, LISTENER_ORDER, ExtensionStore } from "../server/extensions/store.ts";
+import { ExtensionError } from "../server/extensions/sources.ts";
+import { ExtensionStore, LISTENER_ORDER } from "../server/extensions/store.ts";
 import { entriesFromDir, type FakeGithub, fakeSha, manifest, startFakeGithub, type TarEntry, writeTree } from "./extension-fakes.ts";
 
 let gh: FakeGithub;

@@ -36,9 +36,6 @@ import {
 } from "./state.ts";
 import { noteCalendarApi } from "./setup.ts";
 import { isInvitation, summarizeEvent } from "./summary.ts";
-import type { CalendarService } from "./types.ts";
-
-export type CalendarSync = Pick<CalendarService, "kick" | "syncAccount" | "start" | "stop">;
 
 export interface CalendarSyncOptions {
   /**
@@ -99,10 +96,10 @@ interface Pass {
 }
 
 export function createCalendarSync(ctx: AppContext, opts: CalendarSyncOptions = {}): CalendarSync {
-  return new Sync(ctx, opts);
+  return new CalendarSync(ctx, opts);
 }
 
-class Sync implements CalendarSync {
+export class CalendarSync {
   private readonly log;
   /** Started (polling, kicks honored). syncAccount works either way. */
   private running = false;

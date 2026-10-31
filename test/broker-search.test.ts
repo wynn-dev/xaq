@@ -7,7 +7,8 @@ import { isMcpToolAction } from "../shared/types.ts";
 import { overviewStats } from "../server/api/overview.ts";
 import { chooseMode, SEARCH_MODE_THRESHOLD } from "../server/broker/search/mode.ts";
 import { SEARCH_AUDIT_ACTION, SEARCH_INSTRUCTIONS } from "../server/broker/search/tools.ts";
-import type { BrokerCalls, RegisteredTool, ToolResult } from "../server/broker/types.ts";
+import type { BrokerService } from "../server/broker/service.ts";
+import type { RegisteredTool, ToolResult } from "../server/broker/types.ts";
 import type { AppContext } from "../server/context.ts";
 import { mcpRoutes } from "../server/mcp/index.ts";
 import { type BuildOptions, buildMcpServer, INSTRUCTIONS } from "../server/mcp/server.ts";
@@ -41,15 +42,15 @@ function registered(n: number): RegisteredTool[] {
 }
 
 /**
- * Stubs the broker's view and BrokerCalls on ctx.broker (the real /mcp seam, registerBrokerTools, stays). Like the real
- * BrokerCalls, `call` audits under the real name; risky tools come back pending_approval at once. The real wiring is
+ * Stubs the broker's view and calls on ctx.broker (the real /mcp seam, registerBrokerTools, stays). Like the real
+ * calls, `call` audits under the real name; risky tools come back pending_approval at once. The real wiring is
  * exercised end to end in the last test.
  */
 function fakeBroker(ctx: AppContext, tools: RegisteredTool[]) {
   const calls: { agentId: string; name: string; args: Record<string, unknown>; signal: AbortSignal }[] = [];
   const slugs = [...new Set(tools.map((t) => t.slug))];
   ctx.broker.view = () => ({ connections: slugs.map((slug) => ({ connectionId: `con_${slug}`, slug, name: slug, level: "ask" as const })), tools });
-  const brokerCalls: BrokerCalls = {
+  const brokerCalls: BrokerService["calls"] = {
     async call(agentId, name, args, signal): Promise<ToolResult> {
       calls.push({ agentId, name, args, signal });
       const tool = tools.find((t) => t.exposedName === name)!;
@@ -173,7 +174,7 @@ describe("search mode: the meta-tools", () => {
     ]);
   });
 
-  it("runs broker tools through BrokerCalls under the real name: a risky call still waits for approval", async () => {
+  it("runs broker tools through the broker's calls under the real name: a risky call still waits for approval", async () => {
     const { ctx, connect, reader } = setup();
     const f = fakeBroker(ctx, registered(100));
     const c = await connect();
@@ -259,7 +260,7 @@ describe("search mode: calling a tool by name", () => {
     expect(f.calls).toEqual([]);
   });
 
-  it("runs a broker tool called by name through BrokerCalls: a risky one is still pending approval", async () => {
+  it("runs a broker tool called by name through the broker's calls: a risky one is still pending approval", async () => {
     const { ctx, connect, reader } = setup();
     const f = fakeBroker(ctx, registered(100));
     const c = await connect();

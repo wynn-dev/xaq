@@ -6,7 +6,6 @@ import { isAbortError, sleep } from "../google/http.ts";
 import { ackPubsub, explainPubsubError, type PulledMessage, pubsubPrincipal, pullPubsub, readPubsub, writePubsub } from "../google/pubsub.ts";
 import { AccountNeedsReauthError, GoogleApiError } from "../google/types.ts";
 import { conflict, errorMessage } from "../util/errors.ts";
-import type { IngestService } from "./types.ts";
 import { boundedResync, syncHistory } from "./sync.ts";
 import { ensureWatches, startWatch, stopAllWatches, stopWatch } from "./watch.ts";
 
@@ -40,7 +39,7 @@ function untilAborted(p: Promise<unknown>, signal: AbortSignal): Promise<void> {
 }
 
 export function createIngestService(ctx: AppContext): IngestService {
-  return new Ingest(ctx);
+  return new IngestService(ctx);
 }
 
 interface Loop {
@@ -52,7 +51,8 @@ interface Loop {
   done: Promise<void>;
 }
 
-class Ingest implements IngestService {
+/** Gmail ingest: polling or Pub/Sub, per-account history syncs, resyncs, pause and resume. */
+export class IngestService {
   private readonly log;
   private loop: Loop | null = null;
   private stopped = false;
@@ -122,6 +122,7 @@ class Ingest implements IngestService {
     };
   }
 
+  /** Process new history now, e.g. right after an agent sent mail. Never throws. */
   kick(accountId?: string): void {
     if (this.stopped) return;
     const ids = accountId ? [accountId] : allRows(this.ctx).filter(syncable).map((r) => r.id);
@@ -130,6 +131,7 @@ class Ingest implements IngestService {
     }
   }
 
+  /** Records the baseline historyId and (in pubsub mode) starts the watch. Called by google.completeConnect. */
   async onAccountConnected(accountId: string): Promise<void> {
     const row = getRow(this.ctx, accountId);
     if (!row) return;
@@ -143,6 +145,7 @@ class Ingest implements IngestService {
     if (hadCursor) this.kick(accountId);
   }
 
+  /** Bounded resync (recent messages), resets the history cursor, emits sync.gap. */
   async resync(accountId: string): Promise<Account> {
     const account = this.ctx.accounts.require(accountId);
     if (account.status === "needs_reauth") {

@@ -1,5 +1,5 @@
 // Broker policy, calls and mcp.call approvals (docs/MCP-BROKER.md "Access and approvals", "Upstream output is
-// untrusted", "Security model"). BrokerCalls.call is the single entry point for running an upstream tool: resolve,
+// untrusted", "Security model"). BrokerPolicyRuntime.call is the single entry point for running an upstream tool: resolve,
 // validate against the pin, decide, then run (wrapped, scrubbed, audited) or queue an approval and return
 // `pending_approval` at once.
 
@@ -10,7 +10,10 @@ import { bool, json, now } from "../../db/index.ts";
 import { CANCELLED_PREFIX } from "../../mail/approvals.ts";
 import { cleanLine } from "../../mail/content.ts";
 import { badRequest, conflict, errorMessage, notFound } from "../../util/errors.ts";
-import type { BrokerCalls, CredentialStore, RegisteredTool, ToolRegistry, ToolResult, ToolSource, TokenRefresher } from "../types.ts";
+import type { CatalogRegistry } from "../catalog/registry.ts";
+import type { CredentialStore } from "../credentials/store.ts";
+import type { Refresher } from "../credentials/refresher.ts";
+import type { RegisteredTool, ToolResult, ToolSource } from "../types.ts";
 import { SourceError } from "../types.ts";
 import { fingerprint, redactArgs } from "./audit.ts";
 import { argumentPaths, atPointer, canonicalJson, isPointer } from "./canonical.ts";
@@ -75,10 +78,10 @@ export function approvalEventVisible(viewerAgentId: string, ev: Pick<ApprovalReq
 }
 
 export interface BrokerPolicyDeps {
-  registry: ToolRegistry;
+  registry: Pick<CatalogRegistry, "forAgent" | "resolve">;
   sources: SourceProvider;
-  credentials: CredentialStore;
-  refresher?: Pick<TokenRefresher, "untrack">;
+  credentials: Pick<CredentialStore, "tokens" | "header" | "client" | "clear">;
+  refresher?: Pick<Refresher, "untrack">;
   /** Delivers `approval.requested` (events outbox → webhooks and the listener). Must not throw. */
   onApprovalRequested?: (ev: ApprovalRequestedEvent) => void;
 }
@@ -138,7 +141,7 @@ interface Executed {
   sourceDetail: Record<string, unknown>;
 }
 
-export class BrokerPolicyRuntime implements BrokerCalls {
+export class BrokerPolicyRuntime {
   readonly policy: BrokerPolicyImpl;
   private readonly log;
 

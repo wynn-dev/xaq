@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CONNECTION_SLUG_RE, EXPOSED_TOOL_NAME_RE, type McpCallApproval } from "../shared/types.ts";
 import { Db } from "../server/db/index.ts";
 import { MIGRATIONS } from "../server/db/schema.ts";
-import type { IngestService } from "../server/ingest/types.ts";
+import type { IngestService } from "../server/ingest/index.ts";
 import { createAppContext, stopServices } from "../server/wire.ts";
 import { testConfig } from "./helpers.ts";
 import { FakeGoogle, fakeAccounts } from "./mail-fakes.ts";

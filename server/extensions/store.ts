@@ -14,7 +14,7 @@ import { bool, type Db, json, now } from "../db/index.ts";
 import type { Logger } from "../util/log.ts";
 import { computeIntegrity, integrityDirName, IntegrityError } from "./integrity.ts";
 import { defaultExtensionUrls, EXTENSION_NAME_RE, type ExtensionUrls, fetchIndex, OFFICIAL_NAMES, OFFICIAL_OWNER, OFFICIAL_REPO, type RegistryEntry, type RegistryIndex } from "./registry.ts";
-import { type FetchDeps, fetchGit, fetchGithubTarball, fetchLocal, fetchOfficial, parseSource, resolveGithubTree, SourceError, type SourceSpec } from "./sources.ts";
+import { ExtensionError, type FetchDeps, fetchGit, fetchGithubTarball, fetchLocal, fetchOfficial, parseSource, resolveGithubTree, type SourceSpec } from "./sources.ts";
 import { type Manifest, MANIFEST_FILE, ManifestError, validateManifest } from "./manifest.ts";
 import { type ExtractLimits, UnsafeArchiveError } from "./tar.ts";
 
@@ -64,31 +64,6 @@ function addListener<F>(list: Listener<F>[], l: Listener<F>): () => void {
     const i = list.indexOf(l);
     if (i >= 0) list.splice(i, 1);
   };
-}
-
-export type ExtensionErrorCode =
-  | "not_found"
-  | "in_use"
-  | "third_party_unconfirmed"
-  | "integrity_mismatch"
-  | "already_installed"
-  | "changed"
-  | "invalid"
-  | "bad_source"
-  | "fetch_failed"
-  | "rate_limited"
-  | "unsafe"
-  | "official_name";
-
-export class ExtensionError extends Error {
-  constructor(
-    readonly code: ExtensionErrorCode,
-    message: string,
-    readonly detail?: { usedBy?: string[]; warnings?: string[]; candidate?: InstalledExtension },
-  ) {
-    super(message);
-    this.name = "ExtensionError";
-  }
 }
 
 const MANIFEST_MAX_BYTES = 256 * 1024;
@@ -376,7 +351,6 @@ export class ExtensionStore {
       return await fn();
     } catch (err) {
       if (err instanceof ExtensionError) throw err;
-      if (err instanceof SourceError) throw new ExtensionError(err.code, err.message);
       if (err instanceof UnsafeArchiveError) throw new ExtensionError("unsafe", err.message);
       if (err instanceof IntegrityError) throw new ExtensionError("unsafe", err.message);
       if (err instanceof Error && err.name === "RegistryError") throw new ExtensionError("fetch_failed", err.message);

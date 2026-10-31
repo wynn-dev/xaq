@@ -174,7 +174,7 @@ export function registerBrokerTools(ctx: AppContext, server: McpServer, principa
   server.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const name = request.params.name;
     if (!state.dynamic.has(name)) return (await callNative(request, extra)) as CallToolResult;
-    // BrokerCalls resolves, decides, runs or queues, and audits under the exposed name.
+    // The broker's calls resolve, decide, runs or queues, and audits under the exposed name.
     state.handled.add(extra.requestId);
     const started = Date.now();
     const signal = state.signal ? AbortSignal.any([extra.signal, state.signal]) : extra.signal;

@@ -1,6 +1,6 @@
 // Search mode's meta-tools: search_tools, call_read_tool, call_write_tool (docs/MCP-BROKER.md, "One endpoint
 // with 100+ tools"). Inner calls run under their real names: native tools through their registered (audited)
-// handler, broker tools through BrokerCalls.call, so policy, approvals and audit see the real tool.
+// handler, broker tools through the broker's calls, so policy, approvals and audit see the real tool.
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, RequestId } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -8,7 +8,8 @@ import type { AuditInput } from "../../audit.ts";
 import { cleanLine } from "../../mail/content.ts";
 import { safeResult } from "../../mcp/broker.ts";
 import { errorMessage } from "../../util/errors.ts";
-import type { BrokerCalls, RegisteredTool } from "../types.ts";
+import type { BrokerPolicyRuntime } from "../policy/index.ts";
+import type { RegisteredTool } from "../types.ts";
 import { type SearchableTool, ToolIndex } from "./bm25.ts";
 
 export const META_TOOL_NAMES = ["search_tools", "call_read_tool", "call_write_tool"] as const;
@@ -54,9 +55,9 @@ export interface NativeEntry {
 export interface SearchDeps {
   agentId: string;
   natives: ReadonlyMap<string, NativeEntry>;
-  /** The agent's broker tools (AgentBrokerView.tools: ToolRegistry.forAgent, levels applied). */
+  /** The agent's broker tools (AgentBrokerView.tools: the registry's forAgent, levels applied). */
   brokerTools: readonly RegisteredTool[];
-  calls: BrokerCalls;
+  calls: Pick<BrokerPolicyRuntime, "call">;
   /** Aborted when the HTTP client disconnects. */
   signal?: AbortSignal;
   audit(input: AuditInput): void;
@@ -152,7 +153,7 @@ export function registerSearchTools(server: McpServer, deps: SearchDeps): void {
       return native.run(parsed.data, extra);
     }
 
-    // Broker tools: BrokerCalls resolves, decides (levels, approvals, caps) and audits under the real name, once.
+    // Broker tools: the policy resolves, decides (levels, approvals, caps) and audits under the real name, once.
     // Same handling as a direct call (server/mcp/broker.ts).
     const started = Date.now();
     const signal = deps.signal ? AbortSignal.any([extra.signal, deps.signal]) : extra.signal;

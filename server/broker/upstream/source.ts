@@ -14,7 +14,7 @@ import {
 import { errorMessage } from "../../util/errors.ts";
 import type { Logger } from "../../util/log.ts";
 import { type Refresher, untilAborted } from "../credentials/refresher.ts";
-import type { SqliteCredentialStore } from "../credentials/store.ts";
+import type { CredentialStore } from "../credentials/store.ts";
 import {
   type PromptDef,
   type PromptResult,
@@ -44,7 +44,7 @@ export interface RemoteSourceDeps {
   /** The current row; throws SourceError when the connection can't be used (disabled, needs_reauth). */
   connection: () => ConnectionRow & { url: string };
   fetch: FetchLike;
-  store: SqliteCredentialStore;
+  store: CredentialStore;
   refresher: Refresher;
   /** OAuth connections: the refresh exchange. */
   refresh: RefreshFn | null;

@@ -3,7 +3,7 @@ import type { AppEnv } from "../server/api/util.ts";
 import { type AppOptions, createApp } from "../server/app.ts";
 import { readSetupToken } from "../server/auth/setup-token.ts";
 import type { GoogleService } from "../server/google/types.ts";
-import type { IngestService } from "../server/ingest/types.ts";
+import type { IngestService } from "../server/ingest/index.ts";
 import type { ServiceOverrides } from "../server/wire.ts";
 import type { IngestStatus, PubsubState } from "../shared/types.ts";
 import { testContext } from "./helpers.ts";

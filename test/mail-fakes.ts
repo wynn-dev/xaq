@@ -19,7 +19,7 @@ import {
   type MimeTools,
   type ParsedMessage,
 } from "../server/google/types.ts";
-import type { IngestService } from "../server/ingest/types.ts";
+import type { IngestService } from "../server/ingest/index.ts";
 import { buildMcpServer } from "../server/mcp/server.ts";
 import { testContext } from "./helpers.ts";
 

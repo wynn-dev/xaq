@@ -6,7 +6,7 @@ import { type LookupFn, resolveTarget } from "../../webhooks/ssrf.ts";
 import { checkExpiries } from "../credentials/expiry.ts";
 import { Refresher } from "../credentials/refresher.ts";
 import { scrubText } from "../credentials/scrub.ts";
-import { type EmitConnectionEvent, type PendingAuth, SqliteCredentialStore } from "../credentials/store.ts";
+import { type EmitConnectionEvent, type PendingAuth, CredentialStore } from "../credentials/store.ts";
 import { type IntegrationPreset, type RefreshFn, SourceError, type StoredTokens, type ToolSource } from "../types.ts";
 import { connectionConsoleUrl, type ConnectionRow, getConnection, requireRemote } from "./connection.ts";
 import { discover, parseWwwAuthenticate } from "./discovery.ts";
@@ -137,7 +137,7 @@ type Ctx = Pick<CoreContext, "db" | "crypto" | "audit" | "log" | "settings" | "c
  * refresher, the connect flow (start/finish/probe) and the background sweep.
  */
 export class UpstreamRuntime {
-  readonly store: SqliteCredentialStore;
+  readonly store: CredentialStore;
   readonly refresher: Refresher;
   private readonly sources = new Map<string, RemoteToolSource>();
   private readonly fetches = new Map<string, { allow: string | null; fetch: GuardedFetch }>();
@@ -158,7 +158,7 @@ export class UpstreamRuntime {
         // Without an outbox (tests): logged, and audited by the caller.
         log.warn(`Connection event ${e.type}`, { connectionId: e.connectionId });
       });
-    this.store = new SqliteCredentialStore({
+    this.store = new CredentialStore({
       db: ctx.db,
       crypto: ctx.crypto,
       audit: ctx.audit,

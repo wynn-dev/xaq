@@ -27,7 +27,7 @@ export { codeManifestOf, DEFAULT_LIMITS } from "./types.ts";
 
 /**
  * A code extension's ToolSource from the broker's native-source deps (what IntegrationPreset.createSource gets):
- * the state directory under deps.dataDir, the outbox through deps.emit, and the store's integrity re-check. For B2's
+ * the state directory under deps.dataDir, the outbox through deps.emit, and the store's integrity re-check. For
  * presetFromManifest: `createSource: (deps) => codeExtensionSource(ext, deps, store)`.
  */
 export function codeExtensionSource(ext: InstalledExtension, deps: NativeSourceDeps, store: ExtensionVerifier): ToolSource {

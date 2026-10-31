@@ -1,14 +1,12 @@
-// In-process fakes for the broker policy tests: a DB-backed ToolRegistry over upstream_tools + connection_grants
-// (the catalog's job in production), a scripted ToolSource and an in-memory CredentialStore.
+// In-process fakes for the broker policy tests: a DB-backed registry over upstream_tools + connection_grants
+// (the catalog's job in production), a scripted ToolSource and in-memory credentials.
 
 import type {
   AccessLevel,
-  CredentialStore,
   RegisteredTool,
   StoredTokens,
   ToolCallContext,
   ToolDef,
-  ToolRegistry,
   ToolResult,
   ToolSource,
 } from "../server/broker/types.ts";
@@ -76,7 +74,7 @@ export function grant(ctx: AppContext, agentId: string, connectionId: string, le
 }
 
 /** Like the catalog's registry: granted connections, read level lists read tools only. */
-export class DbRegistry implements ToolRegistry {
+export class DbRegistry {
   /** Tests flip this to see that the policy denies non-read tools at the read level on its own. */
   filterRead = true;
   targetPaths = new Map<string, string>();
@@ -167,7 +165,7 @@ export class FakeSources {
   }
 }
 
-export class MemoryCredentials implements CredentialStore {
+export class MemoryCredentials {
   headers = new Map<string, { name: string; value: string }>();
   tokenMap = new Map<string, StoredTokens>();
   cleared: string[] = [];

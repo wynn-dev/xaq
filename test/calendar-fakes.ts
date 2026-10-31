@@ -17,7 +17,7 @@ import type {
 } from "../server/google/calendar.ts";
 import { CALENDAR_SCOPES, MAIL_SCOPES } from "../server/google/scopes.ts";
 import { GoogleApiError, type GoogleService } from "../server/google/types.ts";
-import type { IngestService } from "../server/ingest/types.ts";
+import type { IngestService } from "../server/ingest/index.ts";
 import { AgentMail, ToolError, type ToolTrace } from "../server/mail/agent.ts";
 import { PolicyDenied } from "../server/util/errors.ts";
 import { testContext } from "./helpers.ts";
