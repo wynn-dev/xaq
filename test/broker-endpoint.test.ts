@@ -259,7 +259,7 @@ describe("/mcp aggregation", () => {
 // ───────────── Events ─────────────
 
 describe("connection events", () => {
-  it("are visible to agents with a grant on the connection, only with the setting on; event tools without Gmail", async () => {
+  it("are visible to agents with a grant on the connection; event tools without Gmail", async () => {
     const t = setup();
     disposers.push(t.dispose);
     const { ctx } = t;
@@ -271,7 +271,6 @@ describe("connection events", () => {
     ctx.broker.emitConnectionEvent({ type: "whoop.recovery_updated", connectionId: "con_2", dedupeKey: "k2", detail: { cycleId: 1 } });
     expect(e1).toMatchObject({ type: "connection.auth_failed", accountId: "", accountEmail: "", connectionId: "con_1" });
 
-    expect(ctx.events.feed(a.id).events).toEqual([]); // setting off
     expect(ctx.events.feed(a.id).events.map((e) => e.type)).toEqual(["connection.auth_failed"]);
     expect(ctx.events.feed(b.id).events.map((e) => e.type)).toEqual(["whoop.recovery_updated"]);
 
@@ -390,7 +389,6 @@ describe("broker service", () => {
     const { agent } = ctx.policy.createAgent({ name: "Hermes" });
     seedConnection(ctx, { id: "con_w", slug: "whoop", name: "WHOOP", kind: "native_whoop", preset: "whoop", url: null }, { [agent.id]: "full" });
 
-    expect(await ctx.broker.pollEvents(10_000)).toBe(0); // setting off
     expect(await ctx.broker.pollEvents(10_000)).toBe(1);
     expect(await ctx.broker.pollEvents(10_500)).toBe(0); // not due yet
     expect(await ctx.broker.pollEvents(11_000)).toBe(1);

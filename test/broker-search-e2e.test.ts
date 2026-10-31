@@ -101,7 +101,6 @@ describe("search mode end to end (fake upstream)", () => {
     expect(JSON.stringify(rows)).not.toContain("wiki page");
 
     // Called by name, unlisted: the same broker path. A read runs; the risky one is pending at once, nothing sent.
-    expect(ctx.db.get<{ value: string }>("SELECT value FROM settings WHERE key = ?", `broker.search:${agent.id}`)?.value).toContain('"search"');
     expect(text(await client.callTool({ name: "wiki__get_record_4", arguments: { id: "r2" } }))).toContain("Record r2");
     const direct = await client.callTool({ name: "wiki__delete_page", arguments: { id: "p3" } });
     expect(text(direct)).toContain("pending_approval");

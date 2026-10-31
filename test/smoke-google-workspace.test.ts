@@ -162,7 +162,6 @@ async function world(opts: { attachments?: { filename: string; mimeType: string;
 async function expectClean(w: World, run: SmokeRun) {
   const agents = await w.s.admin.get<{ name: string }[]>("/api/agents");
   expect(agents.filter((a) => a.name.startsWith("xaq-smoke-"))).toEqual([]);
-  expect(w.s.ctx.db.get("SELECT 1 AS x FROM settings WHERE key LIKE 'broker.search:%'")).toBeUndefined();
   expect(w.s.fake.drafts(EMAIL)).toEqual([]);
   expect(w.s.fake.sent(EMAIL)).toEqual([]);
   expect((await w.admin.request<{ attachmentDirs: string[] }>("GET", "/api/settings")).attachmentDirs).toEqual([]);
@@ -546,16 +545,13 @@ describe.runIf(HAS_AGENTS)("xaq smoke google-workspace", () => {
     // In the ledger and created by it, but without the marker in the subject.
     await expect(w.admin.request("POST", "/api/smoke/drafts/delete", ownInput)).rejects.toThrow(/subject doesn't carry/);
     expect(w.s.fake.drafts(EMAIL)).toHaveLength(2);
-    // The smoke agent can't be named anything else, and deleting it removes its tool-mode setting.
+    // The smoke agent can't be named anything else.
     await expect(w.admin.request("POST", "/api/smoke/agents", { name: "hermes-2", accountId: w.account.id, connectionId: w.connection.id })).rejects.toThrow(/xaq-smoke/);
-    expect(w.s.ctx.db.get("SELECT 1 AS x FROM settings WHERE key = ?", `broker.search:${smoke.agent.id}`)).toBeDefined();
     // The leftover check without an agent of its own still lists every smoke agent, and finds drafts in the audit log.
     const noAgent = await w.admin.request<{ otherSmokeAgents: { name: string }[]; agent: boolean }>("POST", "/api/smoke/leftovers", { agentId: null, accountId: w.account.id, draftIds: [] });
     expect(noAgent).toMatchObject({ agent: false, otherSmokeAgents: [{ name: "xaq-smoke-20261019T000000Z" }] });
     const viaAudit = await w.admin.request<{ drafts: string[] }>("POST", "/api/smoke/leftovers", { agentId: smoke.agent.id, accountId: w.account.id, draftIds: [] });
     expect(viaAudit.drafts).toEqual([own.draftId]);
-    await w.admin.request("DELETE", `/api/agents/${smoke.agent.id}`);
-    expect(w.s.ctx.db.get("SELECT 1 AS x FROM settings WHERE key = ?", `broker.search:${smoke.agent.id}`)).toBeUndefined();
   });
 });
 
