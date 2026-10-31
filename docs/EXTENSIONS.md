@@ -171,10 +171,8 @@ repo's `scripts/validate.mjs`) checks the shape; a few rules below are only the 
   disables those connections. A third-party name also unbinds them (`connections.preset` is cleared), so a later
   extension of that name can't take them over. An official name keeps them bound: no third party can install under
   it, and re-adding the extension brings its rules back. Credentials are deleted only by removing the connections.
-- **Broken installs:** an installed extension whose manifest this xaq can't read is reported (logged, and listed by
-  `brokenExtensions()`) and offers no preset. An official one is replaced by its pinned build when the pin is
-  another build (`store.replacePinned`): the pinned build is fetched and verified first, then swapped in. Offline or
-  on a bad pin, the installed one stays as it was. Nothing is removed, and its connections stay bound and enabled.
+- **Broken installs:** an installed extension whose manifest this xaq can't read is reported (listed by
+  `brokenExtensions()`) and offers no preset. Nothing is removed; update or reinstall it.
 - **Console:** an Extensions page lists installed extensions with their version, commit, source, official or
   third-party, and the connections using each. It can add from the registry, update with the diff shown, and remove.
   Adding from a URL works with the same warning.
@@ -344,40 +342,22 @@ in. Core side: `server/extensions/google-auth.ts` (binding, connect, tokens, sta
     list asks every granted connection in parallel; one that fails or takes longer than 10 s is left out of that
     answer.
 
-## Migration from core presets (no re-auth)
+## Binding and startup
 
-- **Core:** the Notion, T3 Code and WHOOP presets leave core. Core keeps the generic machinery: remote MCP OAuth,
-  `user_app` OAuth with refresh, private-target allow, expiry, events and outbox.
-  - *Clarified (B3):* `user_app` OAuth is `server/broker/upstream/user-app.ts`, driven by the preset's auth (a code
-    manifest's `code.auth`): authorization code with the client secret in the body, no PKCE, https endpoints only.
-    The refresh request sends `scope=<code.auth.refreshScope>` when the manifest sets it, and no `scope` otherwise
-    (the originally granted scope applies, RFC 6749 §6). WHOOP's manifest sets `"refreshScope": "offline"`: WHOOP's
-    documented refresh request includes it, as the native code did. There's no user-id lookup: it only routed webhooks.
-    The generic `/hooks/connections/:id` route stays mounted but answers 404, because no preset in core handles webhooks.
-- **Pins, plus a data snapshot:** core carries `server/extensions/bootstrap.json`, the pins (name, commit, integrity)
-  of the official notion, t3code, whoop and brightspace extensions at release time. It also carries a data snapshot of
-  the official remote manifests for already-bound connections, `server/extensions/bootstrap/{notion,t3code}.json`.
-  They are byte-identical to the pinned repo files, a test checks that, and they hold no code.
-- **Upgrade, at startup:**
-  - each connection whose `preset` is one of these is bound to that extension;
-  - a missing extension is installed in the background from its bootstrap pin;
-  - until it's installed, a connection of notion or t3code works under the snapshot: its risk map, setup copy,
-    `userServer`/`sameOriginIssuer` and policies. Nothing gets looser than before the upgrade, and a reconnect still
-    works, so a T3 connection never dies at its 30-day expiry because an install failed;
-  - the snapshot serves only connections already bound to that name. It isn't offered in Add connection, since new
-    connections need the installed extension, and an installed extension always wins over it;
-  - any other bound remote connection runs on the generic rules, and a code one reads "Needs the <name> extension.
-    Install it with `xaq ext add <name>`, or from Extensions in the console." (shown as status `error`, not
-    stored), with its tools unavailable;
-  - *Clarified (B3):* a forced removal disables the connections. When an official extension is installed again,
-    its connections (still bound) return to `active` if their credentials are still there, or to `needs_reauth`;
-    no new sign-in is needed. A third-party one's connections were unbound, so they stay disabled;
-  - tokens, client records, grants, levels and always-allow rules are untouched: nobody re-authorizes.
+- **Core** keeps only the generic machinery: remote MCP OAuth, `user_app` OAuth with refresh, private-target allow,
+  expiry, events and outbox.
+  - `user_app` OAuth is `server/broker/upstream/user-app.ts`, driven by the preset's auth (a code manifest's
+    `code.auth`): authorization code with the client secret in the body, no PKCE, https endpoints only. The refresh
+    request sends `scope=<code.auth.refreshScope>` when the manifest sets it, and no `scope` otherwise (the originally
+    granted scope applies, RFC 6749 §6). WHOOP's manifest sets `"refreshScope": "offline"`.
 - **Binding:** `connections.preset` holds the extension's name. That is the binding, with no extra column.
-  `usedBy(name)` is the ids of the connections `WHERE preset = name` (`server/extensions/bootstrap.ts`).
-- **Reconnect before the install:** through the snapshot for notion and t3code. A bound connection with neither an
-  install nor a snapshot can't be reconnected: its sign-in waits for the extension's own rules instead of running
-  generic ones. Its tools keep working on the stored credential.
+  `usedBy(name)` is the ids of the connections `WHERE preset = name` (`server/broker/service.ts`).
+- **Without its extension**, a bound remote connection runs on the generic rules and can't be reconnected; a code one
+  reads "Needs the <name> extension. Install it with `xaq ext add <name>`, or from Extensions in the console." (shown
+  as status `error`, not stored), with its tools unavailable.
+- **Forced removal:** the connections are disabled. When an official extension is installed again, its connections
+  (still bound) return to `active` if their credentials are still there, or to `needs_reauth`; no new sign-in is
+  needed. A third-party one's connections were unbound, so they stay disabled.
 - **The registry:** `presets()` (`server/integrations/index.ts`) stays synchronous. It lists the installed extensions'
   presets, then what is still in core; an installed extension replaces a core preset of the same name.
 - **Startup wiring** (the broker's `start()`): `useExtensionStore(extensionStore(ctx))`, then `setHooks` with:
@@ -386,10 +366,5 @@ in. Core side: `server/extensions/google-auth.ts` (binding, connect, tokens, sta
     credentials stay until the connections are removed.
   - `onChange`: `reloadPresets()`, then the bound connections are re-listed, which re-classifies their pinned tools
     under the new manifest, or under the generic rules once it's gone.
-  A background install from a bootstrap pin re-lists the same way. The broker's `stop()` unregisters the store.
+  The broker's `stop()` unregisters the store.
 - **Validation:** the store's `checkManifest` is `validateManifest`; an invalid manifest is an `invalid` error.
-- **Placeholder pins:** an all-zero commit in `bootstrap.json` installs nothing. The release fills in the real pins.
-- **Test:** a DB fixture shaped like Wynn's install: `notion-personal` and `notion-work` (Notion preset), `whoop` (a
-  generic MCP connection to the dashboard URL with a bearer key) and `brightspace` (generic, bearer, `127.0.0.1`). After
-  the upgrade, all four list and call tools with the same credentials and exposed names, with Notion's rules intact
-  (spawning a Custom Agent asks, its reads stay listed at Read only), before and after the install.

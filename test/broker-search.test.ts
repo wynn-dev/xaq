@@ -11,7 +11,7 @@ import type { BrokerService } from "../server/broker/service.ts";
 import type { RegisteredTool, ToolResult } from "../server/broker/types.ts";
 import type { AppContext } from "../server/context.ts";
 import { mcpRoutes } from "../server/mcp/index.ts";
-import { type BuildOptions, buildMcpServer, INSTRUCTIONS } from "../server/mcp/server.ts";
+import { type BuildOptions, buildMcpServer } from "../server/mcp/server.ts";
 import { CATALOG } from "./broker-search-catalog.ts";
 import { grantInput, mailTestContext } from "./mail-fakes.ts";
 
@@ -132,7 +132,7 @@ describe("search mode: when it applies", () => {
 
 describe("search mode: the meta-tools", () => {
   it("search_tools returns the top 5 (max 10) native and broker tools with full schemas and read/risky flags", async () => {
-    const { ctx, connect, reader } = setup();
+    const { ctx, connect } = setup();
     fakeBroker(ctx, registered(100));
     const c = await connect();
     const found = (r: { text: string }) => (JSON.parse(r.text) as { tools: { name: string; kind: string; risky: boolean; inputSchema: Record<string, unknown> }[] }).tools;
@@ -233,7 +233,7 @@ describe("search mode: calling a tool by name", () => {
     );
 
   it("runs an unlisted tool called by name exactly like direct mode; unknown and ungranted names fail the same way", async () => {
-    const { ctx, connect, reader, auditRows } = setup();
+    const { ctx, connect, auditRows } = setup();
     const strip = (rows: ReturnType<typeof auditRows>) => rows.map(({ id: _i, ts: _t, durationMs: _d, ...rest }) => rest);
     // send_message: no send grant; github__nope: no such connection tool; get_mesage: a typo.
     const names = ["search_threads", "get_message", "send_message", "github__nope", "get_mesage"] as const;

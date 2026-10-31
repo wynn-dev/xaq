@@ -13,7 +13,7 @@ import type { AppContext } from "../context.ts";
 import { bool, type Db, json, now } from "../db/index.ts";
 import type { Logger } from "../util/log.ts";
 import { computeIntegrity, integrityDirName, IntegrityError } from "./integrity.ts";
-import { defaultExtensionUrls, EXTENSION_NAME_RE, type ExtensionUrls, fetchIndex, OFFICIAL_NAMES, OFFICIAL_OWNER, OFFICIAL_REPO, type RegistryEntry, type RegistryIndex } from "./registry.ts";
+import { defaultExtensionUrls, type ExtensionUrls, fetchIndex, OFFICIAL_NAMES, OFFICIAL_OWNER, OFFICIAL_REPO, type RegistryEntry, type RegistryIndex } from "./registry.ts";
 import { ExtensionError, type FetchDeps, fetchGit, fetchGithubTarball, fetchLocal, fetchOfficial, parseSource, resolveGithubTree, type SourceSpec } from "./sources.ts";
 import { type Manifest, MANIFEST_FILE, ManifestError, validateManifest } from "./manifest.ts";
 import { type ExtractLimits, UnsafeArchiveError } from "./tar.ts";

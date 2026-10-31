@@ -117,7 +117,6 @@ async function change(s: Setup, tool: FakeTool): Promise<void> {
 describe("a changed upstream tool keeps working", () => {
   it("description change: listed and callable; no event or ping; one audit entry with both hashes", async () => {
     const s = await setup();
-    const { ctx } = s.h;
     const a = await s.agent("Hermes", "full");
     const before = s.storedHash("get_page");
 
@@ -152,7 +151,6 @@ describe("a changed upstream tool keeps working", () => {
 
   it("input schema change: the new schema is used for validation, with no event", async () => {
     const s = await setup();
-    const { ctx } = s.h;
     const a = await s.agent("Hermes", "full");
     const before = s.storedHash("get_page");
     const schema = { type: "object", properties: { id: { type: "string" }, format: { type: "string", enum: ["md", "html"] } }, required: ["id", "format"] };

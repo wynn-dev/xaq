@@ -330,25 +330,20 @@ The design:
 1. **Default: per-agent allowlists with real namespaced names.** Annotations pass through, and the server
    instructions list the categories. Real names keep the clients' own approval mechanisms working: Codex's `writes`
    mode and Claude Code's permission rules. Deferring clients pay little for a long list.
-2. **Search mode** (`/mcp?mode=search`, or set per agent) for clients that don't defer, or when an agent's filtered
-   set exceeds about 30 tools or 10K tokens. The agent gets:
+2. **Search mode**, automatic once an agent can use more than 30 tools (native and connections). The agent gets:
    - `search_tools`: BM25 over names, descriptions and argument names, returning the top 5 with full schemas;
      LiveMCPBench found top-5 best ([arXiv 2508.01780](https://arxiv.org/html/2508.01780));
    - `call_read_tool` and `call_write_tool`, split the way Zapier does
      ([Zapier](https://docs.zapier.com/mcp/overview/how-tools-work));
-   - 3–5 "hot" tools exposed directly.
+   - `get_call_status`, listed directly.
 
    Every inner call is audited and governed under its real name, so search mode loses nothing on the broker side.
    Search mode only trims `tools/list`: every tool the agent could call in direct mode stays callable by its real
    name (scripts and prompts that call `search_threads` keep working), through the same handler, policy, approvals
    and audit; a name the agent can't use still gets -32602.
 
-   An agent's mode never changes under it. The per-agent setting (`broker.search:<agentId>`) is `direct` or
-   `search`; `auto` (no choice yet) is resolved on the agent's first `/mcp` request by the 30-tool threshold and
-   recorded, so a connection that adds 80 tools later leaves a direct agent direct. The agent page shows the mode,
-   lets the user switch it, and suggests search mode once a direct agent is over the threshold. On upgrade, a
-   one-time startup step (marker `broker.searchDirectPinned`) pins every existing agent without a setting to
-   `direct`: search mode is opt-in for them. A new install pins nobody.
+   There is no per-agent setting: the threshold decides on every request, so an agent's listing switches when its
+   tools cross it.
 3. **Code mode is deferred.** It cuts tokens the most
    ([Cloudflare](https://blog.cloudflare.com/enterprise-mcp/),
    [Anthropic](https://www.anthropic.com/engineering/code-execution-with-mcp)), but it needs a sandbox and hides each
@@ -386,11 +381,7 @@ The events outbox, webhooks, SSE stream and listener relay are generalised:
   `presets()` (`server/integrations/index.ts`) lists the installed extensions, then whatever is still in core, and is
   rebuilt on install, update and remove.
 - **Binding:** `connections.preset` holds the extension's name, which binds the connection to the extension.
-- **Upgrading needs no new sign-in:** existing Notion, T3 Code and WHOOP connections are bound at startup, and a
-  missing extension installs in the background from `server/extensions/bootstrap.json`. Until then, Notion and T3
-  Code connections run under core's data snapshot of those two official manifests. The snapshot keeps the same risk
-  rules, setup copy and sign-in rules, so Reconnect works. It serves bound connections only and is never offered for
-  new ones. Any other bound remote connection runs on the generic rules, and Reconnect waits for the install.
+- **Without its extension**, a bound remote connection runs on the generic rules and Reconnect waits for the install.
 - **Third-party extensions** can make tools stricter than the generic rules, never looser.
 
 The sections below describe each integration's design. Their data (URL, auth, setup copy, risk table) is now the
@@ -906,9 +897,7 @@ All questions are decided. Building proceeds M0 → M1 → M2 → M3.
 6. **Approvals on the phone:** a link to the one-tap approve page goes out in `approval.requested`. Chat replies can't
    approve.
 7. **Keys and data directory** (decision 6): `aib_` for every key; `~/.agentinbox` kept, with no automatic move.
-8. **Search mode:** on automatically for a new agent with more than about 30 tools when it first connects. Real
-   names are kept below that, and for agents that existed before search mode. The mode then changes only when the
-   user changes it.
+8. **Search mode:** automatic above 30 tools, with no per-agent setting. Real names are kept below that.
 9. **Order:** M2 WHOOP, then M3 search mode. If Hermes has more than about 50 tools after M1, M3 comes first.
 10. **T3 refresh tokens:** dated warnings and one-click Reconnect in M1, and a request to T3 Code to add the
     `refresh_token` grant.
