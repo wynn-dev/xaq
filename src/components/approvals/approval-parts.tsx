@@ -72,15 +72,11 @@ export function BodyPreview({ body, className }: { body: string; className?: str
   );
 }
 
-/** Where an attached file came from, in words: the path read, the source message, or the Drive file. */
+/** Where an attached file came from, in words. */
 export function attachmentSourceText(source: AttachmentSource | undefined): string | null {
   switch (source?.kind) {
-    case "path":
-      return `from ${source.path}${source.requested ? ` (asked for ${source.requested})` : ""} on xaq's machine`;
     case "message":
       return `from message ${source.messageId} (its attachment ${source.filename})`;
-    case "drive":
-      return `from Google Drive: ${source.name} (${source.fileId})${source.exportedAs ? `, exported as ${source.exportedAs.toUpperCase()}` : ""}`;
     case "forward":
       return `original file of message ${source.messageId}`;
     case "upload":

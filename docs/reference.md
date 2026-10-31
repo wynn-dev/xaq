@@ -21,8 +21,8 @@ running xaq in production, scripting it, and understanding what it does.
   Agents only ever see an `aib_…` key.
 - **MCP for every agent.** Streamable HTTP at `/mcp`: `search_threads`, `get_thread`, `reply`, `send_message`,
   `modify_labels`, `wait_for_events` and more. Each agent sees only the tools its grants allow. Drafts, replies, forwards
-  and new messages can carry files: bytes the agent has, a file from a directory you allow on xaq's machine, another
-  message's attachment, or a Google Drive file (see [Attachments](#attachments)). Received PDFs, Office documents and
+  and new messages can carry files: bytes the agent has, or another message's attachment (see
+  [Attachments](#attachments)). Received PDFs, Office documents and
   spreadsheets come back as text and tables (see [Reading attachments](#reading-attachments)).
 - **Real-time delivery.** New mail, replies to threads you sent into, and label changes arrive within seconds through
   Gmail push via a Pub/Sub *pull* subscription (no public URL needed), or within the poll interval (30 seconds by
@@ -321,7 +321,6 @@ xaq skill print [--url <public url>]
 xaq connections add|list|reconnect|rename|disable|remove …   # see Connections
 xaq ext add|list|update|remove …                             # see Extensions
 xaq smoke google-workspace --scratch [--account …] [--connection …] [--json] [--yes]   # see Live check
-xaq settings attachment-dirs list|add <dir>|remove <dir>     # see Attachments
 xaq connect <url> … / setup-mcp / listen …   # on agent machines, see listen.md
 ```
 
@@ -338,7 +337,7 @@ xaq connect <url> … / setup-mcp / listen …   # on agent machines, see listen
 | `--url` | `XAQ_URL` | the xaq running on this machine, else `http://localhost:8425` | `skill` commands only: the server URL written into SKILL.md |
 
 Everything else (public URL, ingest mode, poll interval, body size limit, retention, approval expiry, webhook allowlist,
-agent pairing, the directories agents may attach files from, the folder for saved attachments) is set in the console
+agent pairing) is set in the console
 under **Settings**.
 
 <!-- rename-xaq: keep-start -->
@@ -652,14 +651,12 @@ use allowlists for anything that sends directly.
 ### Attachments
 
 `create_draft`, `reply`, `send_message` and `forward` take an optional `attachments` array. Each item is exactly one
-of four sources:
+of two sources:
 
 | Item | Source |
 |---|---|
 | `{content_base64, filename, mime_type?}` | The bytes, base64-encoded inside the MCP tool call |
-| `{path, filename?, mime_type?}` | A file on xaq's own machine, inside a directory the owner allowed (below). Off by default |
 | `{message_id, attachment_id}` | An attachment of another message in the same account, with the ids `get_message` / `get_thread` show. Needs `read` on the grant, and the message must be in its label scope |
-| `{drive_file_id, export_as?}` | A Google Drive file of the account. Google Docs, Sheets, Slides and Drawings are exported, as PDF unless `export_as` says otherwise (Docs: `pdf`, `docx`, `txt`, `md`; Sheets: `pdf`, `xlsx`, `csv` (first sheet); Slides: `pdf`, `pptx`, `txt`; Drawings: `pdf`); other files are attached as they are. Needs two things. First, the agent's own grant (any level) on a Google Workspace connection bound to the same Google account; mail access alone isn't enough, or any agent that can send could mail out any Drive file. Without it: "This agent has no access to Google Drive for <account>: grant it the Google Workspace connection." Second, the account's Drive read access (`drive.readonly`, through the Google Workspace extension's Drive opt-in); without it: "Drive isn't enabled for <account>: install the google-workspace extension and enable Drive in xaq (Connections → Google Workspace)". The connection is bound by its Google setup (the account it works as). Drive is read with an access token limited to `drive.readonly`, never the account's full token |
 
 `forward` keeps `include_attachments` (the original's files) and can add new ones next to them. Every file is checked
 before anything is sent, and the agent gets a plain-words error otherwise:
@@ -667,44 +664,15 @@ before anything is sent, and the agent gets a plain-words error otherwise:
 | Check | |
 |---|---|
 | Count | At most 10 files per message (a forward's original files don't count) |
-| Size | 25 MB per message, body and files together, before encoding: Gmail's sending limit ("up to 25 MB in attachments", [Gmail help](https://support.google.com/mail/answer/6584)). The encoded message must also fit the 35 MB (`36700160` bytes) that the Gmail API's upload endpoint for `messages.send` and `drafts.create` accepts (xaq sends anything over 512 KB that way). 25 MB of files is about 34 MB encoded, so in practice only a long body can reach it: quoted-printable can double a text body. Sizes are checked before downloading wherever the source says (base64 length, the file's size on disk, Gmail's part size, Drive's `size`), and each download is cut off at what still fits, so nothing larger is ever held in memory. The composed message is then counted exactly. The error names the file and the sizes; for a Drive file it gives the file's Drive link to put in the body instead, and for an agent that can use Drive it suggests sharing from Drive |
+| Size | 25 MB per message, body and files together, before encoding: Gmail's sending limit ("up to 25 MB in attachments", [Gmail help](https://support.google.com/mail/answer/6584)). The encoded message must also fit the 35 MB (`36700160` bytes) that the Gmail API's upload endpoint for `messages.send` and `drafts.create` accepts (xaq sends anything over 512 KB that way). 25 MB of files is about 34 MB encoded, so in practice only a long body can reach it: quoted-printable can double a text body. Sizes are checked before downloading (base64 length, Gmail's part size), and each download is cut off at what still fits, so nothing larger is ever held in memory. The composed message is then counted exactly. The error names the file and the sizes |
 | Content | Standard or url-safe base64; empty files are refused |
 | Type | `mime_type` must be `type/subtype` (default: the source's type, else from the extension, else `application/octet-stream`); [file types Gmail blocks](https://support.google.com/mail/answer/6590) (`.exe`, `.js`, `.bat`, `.msi`, `.iso`, …, also gzipped) are refused, whatever the source. Gmail may still refuse archives that contain them |
 | Filename | Path removed; control, zero-width, bidi and tag characters stripped; delimiter tags defused; at most 120 characters with the extension kept; `attachment` (plus the type's extension) when nothing is left |
 
-**Files from a path** are a security boundary: an agent must never be able to mail xaq's own secrets or arbitrary
-files.
-
-- Off until the owner lists directories under **Settings → Attachments from files**, or with
-  `npx xaq-cli settings attachment-dirs add <dir>` (`list`, `remove`) on xaq's machine. Only the admin can change the
-  list (it's the `attachmentDirs` setting of `PATCH /api/settings`); no agent tool can. A directory must exist when it's
-  added. It can't be or contain your home directory or `/`. It also can't be, contain or sit inside any of the
-  refused places below. Pick a narrow folder such as `~/Documents/xaq-outbox`.
-- The path must be absolute and inside an allowed directory, both as given and after resolving symlinks and `..`
-  (a symlink is followed only when it stays inside).
-- These are refused even inside an allowed directory:
-  - xaq's own directories: the data directory (and `~/.xaq`, `~/.agentinbox`), and the CLI's config, state and data
-    directories, both where `XDG_*` points and at their default locations, so a daemon started by launchd or
-    systemd covers the profiles too;
-  - service files: all of `~/Library/LaunchAgents`, and the systemd unit directories;
-  - the agent tools' directories and the MCP configs `setup-mcp` writes with agent keys: `~/.codex`, `~/.cursor`,
-    `~/.claude` and `~/.claude.json`, and the Hermes home. Their `*.xaq-backup-*` copies are refused too;
-  - credential stores: `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.gnupg`, `~/Library/Keychains`, `~/.kube`, `~/.docker`,
-    `~/.netrc`, `~/.npmrc`;
-  - files named `master.key`, `*.db` (and SQLite's `-wal`, `-shm`, `-journal`), `.env` (`.env.*`), `id_*`, `*.pem`,
-    `*.key`, `.netrc`, `.npmrc`, `.pgpass`, `.claude.json`, `.mcp.json` or `*.xaq-backup-*`, anywhere.
-- Regular files only: no directories, FIFOs or devices, and no hard-linked files (a hard link can make any file look
-  like it's in an allowed directory). The file is opened without following a final symlink and without blocking. The
-  open file must be the very file that was checked (same device and inode). On Linux its actual path
-  (`/proc/self/fd`) must also still pass every check, so swapping the file between the check and the open fails.
-- Errors name the path the agent gave and sizes, never contents. They never say where a symlink leads: anything
-  refused through a symlink, including a missing target, gets the same answer.
-
 The grant applies unchanged: a draft needs `draft`, a send needs `send` and goes through its send mode, recipient
-allowlist, reply-only rule and caps. An approval card lists each file's name, type, size and source (the path that was
-read, the source message, or the Drive file's name and id and the export format), and approving sends the draft that
-carries them. The audit log records the same plus each file's SHA-256, never its content; a refused attempt records
-what was asked for (the path, message or Drive id).
+allowlist, reply-only rule and caps. An approval card lists each file's name, type, size and source (in the call, or
+the source message), and approving sends the draft that carries them. The audit log records the same plus each file's
+SHA-256, never its content; a refused attempt records what was asked for.
 
 Messages whose raw form is over 512 KB are sent to Gmail through its `/upload/` endpoint (`uploadType=media`, or
 `multipart` with the `threadId` for replies), since Google documents no size limit for the JSON `raw` field and has
@@ -727,43 +695,23 @@ returns an attachment as content an agent can use, wrapped as untrusted like a m
 | PowerPoint (`.pptx`, `.pptm`) | Text per slide, in presentation order, with speaker notes |
 | Text, HTML | Cleaned text, as before |
 | PNG, JPEG, GIF, WebP | MCP image content, up to 5 MB (not decoded or resized) |
-| Anything else | Name, type, size and id, plus the path of a saved copy |
+| Anything else | Name, type, size and id, plus why it isn't shown (below) |
 
 Long content comes in parts: `max_chars` sets the size (default and maximum: the **Max body length** setting, never
 over 100,000), and every answer ends with what it showed and how to get the next part, by `offset` or by `page` (PDF),
-`slide` (PowerPoint) or `sheet` (name or number). `format` picks what happens to a file:
+`slide` (PowerPoint) or `sheet` (name or number). `format: "base64"` returns the raw bytes of a file up to 5 MB as an
+embedded resource instead (the default is `inline`).
 
-| `format` | Answer |
-|---|---|
-| `auto` (default) | The content above; anything else is saved (see Saved files) and the answer gives the path |
-| `inline` | The same content, but **never saves**: no file is written and the saved folder and its quota are untouched (a save can delete older saved files). What can't be shown comes back as name, type, size, `message_id` and `attachment_id` plus the reason: "Couldn't read this PDF: The PDF is password-protected.", "The image is over 5.0 MB, so it isn't shown inline.", "This kind of file can't be shown inline." `structuredContent.attachment` then has `savedPath: null`, `notShown` (`unreadable`, `too_large` or `unsupported`) and `reason`; for `unreadable` also `parseFailure` (below) |
-| `file` | Saves any attachment and returns the path |
-| `base64` | The raw bytes of a file up to 5 MB as an embedded resource, as `get_attachment` used to for non-text files |
-
-When the parser couldn't read a document, `structuredContent.attachment.parseFailure` says why, with `auto` and
-`inline` alike:
+What can't be shown comes back as name, type, size, `message_id` and `attachment_id` plus the reason: "Couldn't read
+this PDF: The PDF is password-protected.", "The image is over 5.0 MB, so it isn't shown inline.", "This kind of file
+can't be shown inline." `structuredContent.attachment` then has `notShown` (`unreadable`, `too_large` or
+`unsupported`) and `reason`. When the parser couldn't read a document, `parseFailure` says why:
 
 - From the parser: `password` (a password-protected PDF), `encrypted` (an encrypted Office file), `corrupt` (damaged,
   or not the format it claims), `unsupported` (ZIP64, multi-part, an unsupported compression), `too_complex` (over a
   cap), `hostile` (a zip bomb, XML entities, a path outside the archive) or `parser_error` (anything else it threw).
 - From the daemon side: `timeout`, `crashed`, `memory`, `busy` or `unavailable` (the parser code couldn't be loaded
   or started).
-
-**Saved files.** With `auto`, files that aren't shown as text, files too large to read (images over 5 MB, documents
-over 25 MB) and files that couldn't be read ("Couldn't read this PDF: reading it took too long. Saved at: …") are
-saved (`format: "file"` saves any file; `inline` never saves) on the xaq server as `<folder>/<message id>/<file name>`, the name cleaned like an outgoing attachment's (no path, no hidden or
-control characters, no leading dot). The folder is **Settings → Attachment folder** (`attachmentSaveDir`, an absolute
-path), by default `attachments/` in the data directory. It must be a real directory owned by xaq's user and not
-writable by every user, or nothing is saved. A folder xaq creates (or finds empty) is made private (0700); files are
-0600, created without following symlinks, and a different file already under a name is never overwritten (the new one
-becomes `name (2).ext`). Every file xaq saves is recorded in `<folder>/.xaq-attachments` (path, size, inode, mtime,
-SHA-256, time),
-and **only recorded files that are still exactly what xaq wrote are ever deleted**: anything else in the folder, such as
-your own files in folders that look like message ids, or a saved file you replaced, is never touched. Recorded files
-are deleted **7 days** after they were last saved. At most 50 MB per file, and **1 GB for all recorded files
-together**: when a new file would go over, the oldest recorded files are deleted first; if that isn't enough, the file
-isn't saved and the answer says so, still with the file's name, type, size and id. The path is on the machine xaq runs
-on, so it's useful to agents running there.
 
 **Parsing runs out of process.** Every attachment is written by a third party, so documents are parsed in a
 short-lived child `node` started for each file, never in xaq itself:
@@ -785,7 +733,7 @@ short-lived child `node` started for each file, never in xaq itself:
   `OOMPolicy=continue`.
 - A hard 20-second deadline from the moment the file is queued (then SIGKILL), at most 16 MB of output, at most two
   children at once and eight waiting; the same file asked for twice at once is read once. A file whose read timed out,
-  crashed or ran out of memory isn't tried again for a while. Any of these only ends that one read, with the saved path
+  crashed or ran out of memory isn't tried again for a while. Any of these only ends that one read, with the reason
   in the answer. The child's answer is checked against the expected shape and cleaned again before it's shown.
 - Zip packages (DOCX, XLSX, PPTX) are read from their central directory, at most 2,000 entries, refused whole for an
   entry outside the archive, encryption or ZIP64; each entry is inflated with a hard output cap (32 MB, 64 MB in total)
@@ -816,7 +764,6 @@ Everything lives in the data directory (`~/.xaq` by default):
 | `app/` | The service's own install (`service install` only) |
 | `extensions/` | Installed extensions, one read-only directory per pinned version |
 | `extension-state/<extension>/<connection>/` | A code extension's own files for one connection (mode 0700), deleted with the connection |
-| `attachments/<message id>/` | Attachments `get_attachment` saved for agents (mode 0700, files 0600), deleted after 7 days; see [Reading attachments](#reading-attachments) |
 
 <!-- rename-xaq: keep-start -->
 A data directory created before the rename keeps its file names: `agentinbox.db`, `agentinbox.lock` and

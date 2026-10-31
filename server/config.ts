@@ -28,9 +28,8 @@ export interface Config {
     pubsubBase: string;
     calendarBase: string;
     /**
-     * Drive, Docs, Sheets and Slides (core's Drive client, server/google/drive.ts, and a code extension's API probe,
-     * server/google/apis.ts): one base for all of them (tests: the fake). Unset: Drive uses https://www.googleapis.com
-     * and the probe each API's own https://<service>.
+     * Drive, Docs, Sheets and Slides (a code extension's API probe, server/google/apis.ts): one base for all of them
+     * (tests: the fake). Unset: each API's own https://<service>.
      */
     apisBase?: string;
   };
@@ -120,7 +119,7 @@ export function loadConfig(input: ConfigInput = {}, version = "0.0.0"): Config {
 /** What our daemon keeps in its data directory (names only; nothing is read). */
 // (install.lock: the listeners' shared install directory holds app* and that lock; same rule there.)
 // (extensions, extension-state: installed extensions and code extensions' state, docs/EXTENSIONS.md.)
-// (attachments: files get_attachment saved for agents, server/mail/saved-attachments.ts.)
+// (attachments: files earlier versions of get_attachment saved for agents.)
 // (update: the console update job's status, lock, log and database snapshots, server/update.ts.)
 const OWN_ENTRY =
   /^(?:(?:xaq|agentinbox)\.(?:db(?:-wal|-shm|-journal)?|lock|log)|master\.key|setup-token|service\.env|app(?:\.new|\.old)?|install\.lock|units|backups?|update|extensions|extension-state|attachments)$/;

@@ -1,12 +1,8 @@
-import { realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
 import type { GoogleAppType, GoogleClientCheck as ClientCheck, IngestMode, PubsubState, Settings } from "../shared/types.ts";
 import type { Bus } from "./bus.ts";
 import type { Config } from "./config.ts";
 import { type Db, json } from "./db/index.ts";
-import { badRequest, HttpError } from "./util/errors.ts";
-import { ownDirs, protectedPaths, within } from "./util/own-dirs.ts";
+import { badRequest } from "./util/errors.ts";
 
 /**
  * Internal key/value state kept in the `settings` table next to the user-facing Settings.
@@ -101,8 +97,6 @@ export class SettingsStore {
       pairingEnabled: true,
       brokerUpstreams: true,
       calendarPollSeconds: 60,
-      attachmentSaveDir: "",
-      attachmentDirs: [],
     };
   }
 
@@ -134,8 +128,6 @@ export class SettingsStore {
   update(patch: Partial<Settings>): Settings {
     const before = this.get();
     const next = validate({ ...before, ...stripUndefined(patch) });
-    // Directories added now must exist and be xaq's to share (ones saved earlier may be gone, e.g. an unmounted disk).
-    for (const dir of next.attachmentDirs.filter((d) => !before.attachmentDirs.includes(d))) checkNewAttachmentDir(dir, this.config.dataDir);
     this.write(USER_KEY, next);
     this.bus.emit("settings", next);
     return next;
@@ -188,10 +180,6 @@ function validate(s: Settings): Settings {
   if (!allowlist || allowlist.length > 100 || allowlist.some((h) => h.length > 253 || /\s/.test(h))) {
     throw badRequest("Webhook allowlist must be a list of hostnames, IPs or CIDRs");
   }
-  const saveDir = typeof s.attachmentSaveDir === "string" ? s.attachmentSaveDir.trim() : "";
-  if (saveDir && (!isAbsolute(saveDir) || saveDir.length > 1024 || saveDir.includes("\0"))) {
-    throw badRequest("Attachment folder must be an absolute path", "For example /home/me/xaq-attachments; leave it empty for the default inside the data directory");
-  }
   return {
     publicUrl: url.origin + url.pathname.replace(/\/+$/, ""),
     ingestMode: s.ingestMode,
@@ -203,67 +191,7 @@ function validate(s: Settings): Settings {
     pairingEnabled: s.pairingEnabled !== false,
     brokerUpstreams: s.brokerUpstreams !== false,
     calendarPollSeconds: int(s.calendarPollSeconds, "Calendar poll interval", 15, 3600),
-    attachmentSaveDir: saveDir ? resolve(saveDir) : "",
-    attachmentDirs: attachmentDirs(s.attachmentDirs),
   };
-}
-
-/** At most this many attachment directories. */
-const MAX_ATTACHMENT_DIRS = 50;
-
-/** Settings.attachmentDirs: absolute paths, normalised (no trailing slash, no ".."), without duplicates. */
-function attachmentDirs(value: unknown): string[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value) || value.length > MAX_ATTACHMENT_DIRS) {
-    throw badRequest(`Attachment directories must be a list of at most ${MAX_ATTACHMENT_DIRS} absolute paths`);
-  }
-  const out: string[] = [];
-  for (const raw of value) {
-    const dir = typeof raw === "string" ? raw.trim() : "";
-    // oxlint-disable-next-line no-control-regex -- refusing control characters is the point here
-    if (!dir || dir.length > 4096 || /[\u0000-\u001f\u007f]/.test(dir) || !isAbsolute(dir)) {
-      throw badRequest(`"${String(raw).slice(0, 200)}" isn't an absolute directory path`, "Use a full path such as /home/me/Documents/outgoing.");
-    }
-    const norm = resolve(dir);
-    if (!out.includes(norm)) out.push(norm);
-  }
-  return out;
-}
-
-const NARROWER = "Pick a narrower folder, for example ~/Documents/xaq-outbox.";
-
-/**
- * A directory being added to attachmentDirs: it exists and is a directory; it isn't, and doesn't contain, your home
- * directory or /; and it isn't, doesn't contain and isn't inside xaq's own directories or a place xaq writes secrets
- * into or that holds credentials (server/util/own-dirs.ts). Checked as given and as its real path.
- */
-function checkNewAttachmentDir(dir: string, dataDir: string): void {
-  let real: string;
-  try {
-    real = realpathSync(dir);
-    if (!statSync(real).isDirectory()) throw badRequest(`${dir} isn't a directory`);
-  } catch (err) {
-    if (err instanceof HttpError) throw err;
-    throw badRequest(`${dir} doesn't exist (or xaq can't open it)`, "Create it first, as the user xaq runs as.");
-  }
-  const forms = [...new Set([resolve(dir), real])];
-  const formsOf = (p: string) => {
-    try {
-      return [resolve(p), realpathSync(p)];
-    } catch {
-      return [resolve(p)];
-    }
-  };
-  const contains = (target: string) => formsOf(target).some((t) => forms.some((f) => within(f, t)));
-  const inside = (target: string) => formsOf(target).some((t) => forms.some((f) => within(t, f)));
-  if (forms.includes("/") || contains(homedir())) {
-    throw badRequest(`${dir} is too broad: it ${forms.includes("/") ? "is the root directory" : "is or contains your home directory"}, with xaq's keys and other credentials in it`, NARROWER);
-  }
-  const own = ownDirs(dataDir).find((d) => contains(d) || inside(d));
-  if (own) throw badRequest(`${dir} is, contains or is inside xaq's own directory ${own}, which holds its keys, database and agent keys`, NARROWER);
-  const p = protectedPaths(dataDir);
-  const secret = p.dirs.find((d) => contains(d) || inside(d)) ?? p.files.find((f) => contains(f));
-  if (secret) throw badRequest(`${dir} is, contains or is inside ${secret}, where credentials, service definitions or agent keys are kept`, NARROWER);
 }
 
 function stripUndefined<T extends object>(o: T): Partial<T> {

@@ -29,10 +29,8 @@ Calendar scopes on the consent screen, Calendar added to each account, and `cale
 `calendar.write`) on the agent's grant. The console's setup covers all of it; existing installs use Overview → "Add
 Google Calendar". Details: [docs/calendar.md](docs/calendar.md).
 
-Agents can attach files to drafts, replies, forwards and new mail: bytes they have, a file from a directory you allow
-on xaq's machine (off by default: Settings → Attachments from files, or `npx xaq-cli settings attachment-dirs add <dir>`),
-another message's attachment, or a Google Drive file (with the agent granted the account's Google Workspace connection, and Drive enabled for the account). Gmail's 25 MB per message
-applies. Details: [Attachments](docs/reference.md#attachments).
+Agents can attach files they have, or another message's attachment, to drafts, replies, forwards and new mail.
+Details: [Attachments](docs/reference.md#attachments).
 
 ## Extensions
 

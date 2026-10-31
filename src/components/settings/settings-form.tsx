@@ -29,10 +29,8 @@ interface FormValues {
   retentionDays: string;
   approvalTtlHours: string;
   webhookAllowlist: string[];
-  attachmentDirs: string[];
   pairingEnabled: boolean;
   brokerUpstreams: boolean;
-  attachmentSaveDir: string;
 }
 
 const toForm = (s: Settings): FormValues => ({
@@ -44,10 +42,8 @@ const toForm = (s: Settings): FormValues => ({
   retentionDays: String(s.retentionDays),
   approvalTtlHours: String(s.approvalTtlHours),
   webhookAllowlist: s.webhookAllowlist,
-  attachmentDirs: s.attachmentDirs ?? [],
   pairingEnabled: s.pairingEnabled,
   brokerUpstreams: s.brokerUpstreams,
-  attachmentSaveDir: s.attachmentSaveDir,
 });
 
 // The patch below only carries changed fields.
@@ -60,10 +56,8 @@ const fromForm = (v: FormValues): Settings => ({
   retentionDays: Number(v.retentionDays),
   approvalTtlHours: Number(v.approvalTtlHours),
   webhookAllowlist: v.webhookAllowlist,
-  attachmentDirs: v.attachmentDirs,
   pairingEnabled: v.pairingEnabled,
   brokerUpstreams: v.brokerUpstreams,
-  attachmentSaveDir: v.attachmentSaveDir.trim(),
 });
 
 const intError = (label: string, min: number, max: number) => (v: string) => {
@@ -75,7 +69,6 @@ const intError = (label: string, min: number, max: number) => (v: string) => {
 
 const allowlistError = (v: string) => (v.length > 253 ? "too long" : /[/]/.test(v) && !/^[\d.:a-f]+\/\d{1,3}$/i.test(v) ? "use a hostname, IP or CIDR like 10.0.0.0/8" : null);
 
-const dirError = (v: string) => (!v.startsWith("/") && !/^[a-z]:[\\/]/i.test(v) ? "use an absolute path, like /home/me/Documents" : v.length > 4096 ? "too long" : null);
 
 export function SettingsForm({ settings, system }: { settings: Settings; system: SystemInfo | undefined }) {
   const qc = useQueryClient();
@@ -100,7 +93,6 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
 
   const initial = JSON.stringify(toForm(settings));
   const [allowTyping, setAllowTyping] = useState(false);
-  const [dirTyping, setDirTyping] = useState(false);
 
   return (
     <form
@@ -251,33 +243,6 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
                 <NumberField field={field} label="Keep history for" unit="days" description="Events, webhook deliveries, audit entries and decided approvals older than this are deleted." />
               )}
             </form.Field>
-            <form.Field
-              name="attachmentSaveDir"
-              validators={{ onChange: ({ value }) => (value.trim() && !value.trim().startsWith("/") ? "Use an absolute path, or leave it empty." : undefined) }}
-            >
-              {(field) => (
-                <Field data-invalid={!field.state.meta.isValid} className="sm:col-span-2">
-                  <FieldLabel htmlFor={field.name}>Attachment folder</FieldLabel>
-                  <Input
-                    id={field.name}
-                    className="font-mono"
-                    spellCheck={false}
-                    placeholder="attachments/ in the data directory"
-                    value={field.state.value}
-                    onBlur={field.handleBlur}
-                    onChange={(e) => field.handleChange(e.target.value)}
-                    aria-invalid={!field.state.meta.isValid}
-                  />
-                  {!field.state.meta.isValid ? (
-                    <FieldError>{field.state.meta.errors.join(" ")}</FieldError>
-                  ) : (
-                    <FieldDescription>
-                      Where get_attachment saves files it can't show as text, on this server. Only files xaq saved there are ever deleted: after 7 days, or oldest first past 1 GB in total. It must be yours and not writable by everyone.
-                    </FieldDescription>
-                  )}
-                </Field>
-              )}
-            </form.Field>
           </FieldGroup>
         </CardContent>
       </Card>
@@ -363,58 +328,18 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
         </CardContent>
       </Card>
 
-      <Card id="attachment-dirs" className="scroll-mt-20">
-        <CardHeader>
-          <CardTitle>Attachments from files</CardTitle>
-          <CardDescription>
-            Directories on this machine whose files agents may attach to mail by path. Empty: agents can't attach files by path (they can still send
-            bytes they have, another message's attachment or a Drive file).
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form.Field name="attachmentDirs">
-            {(field) => (
-              <Field>
-                <FieldLabel htmlFor="attachment-dirs-input">Allowed directories</FieldLabel>
-                <ChipsInput
-                  id="attachment-dirs-input"
-                  lines
-                  value={field.state.value}
-                  onChange={field.handleChange}
-                  placeholder="e.g. /home/me/Documents/outgoing (Enter to add)"
-                  validate={dirError}
-                  onPendingChange={setDirTyping}
-                />
-                <FieldDescription className="flex items-start gap-1.5">
-                  <InfoIcon className="mt-0.5 size-3.5 shrink-0" />
-                  <span>
-                    Absolute paths, one per entry; files in subdirectories count. Symlinks are followed only when they stay inside an allowed directory.
-                    xaq's own data and configuration and files named like keys, databases or <code className="font-mono">.env</code> are always refused.
-                    Also: <code className="font-mono">npx xaq-cli settings attachment-dirs add &lt;dir&gt;</code>.
-                  </span>
-                </FieldDescription>
-              </Field>
-            )}
-          </form.Field>
-        </CardContent>
-      </Card>
-
       <form.Subscribe selector={(s) => [JSON.stringify(s.values) !== initial, s.canSubmit, s.isSubmitting] as const}>
         {([changed, canSubmit, submitting]) =>
           changed ? (
             <div className="sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-background/95 p-3 shadow-lg backdrop-blur">
               <span className="text-sm">
-                {allowTyping
-                  ? "Add or clear the host you're typing in the allowlist first."
-                  : dirTyping
-                    ? "Add or clear the directory you're typing first."
-                    : "You have unsaved changes."}
+                {allowTyping ? "Add or clear the host you're typing in the allowlist first." : "You have unsaved changes."}
               </span>
               <div className="flex gap-2">
                 <Button type="button" variant="ghost" onClick={() => form.reset()}>
                   Discard
                 </Button>
-                <Button type="submit" disabled={!canSubmit || submitting || allowTyping || dirTyping}>
+                <Button type="submit" disabled={!canSubmit || submitting || allowTyping}>
                   {submitting && <Spinner />} Save settings
                 </Button>
               </div>
