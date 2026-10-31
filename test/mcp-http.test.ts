@@ -10,7 +10,7 @@ import { overviewStats } from "../server/api/overview.ts";
 import { CALENDAR_TOOL_NAMES, INSTRUCTIONS, rejectedCall, TOOL_NAMES } from "../server/mcp/server.ts";
 import { mcpRoutes } from "../server/mcp/index.ts";
 import { HttpError } from "../server/util/errors.ts";
-import { grantInput, mailTestContext } from "./mail-fakes.ts";
+import { grantInput, mailTestContext } from "./helpers.ts";
 
 let cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {

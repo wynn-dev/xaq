@@ -13,7 +13,7 @@ import type { AppContext } from "../server/context.ts";
 import { mcpRoutes } from "../server/mcp/index.ts";
 import { type BuildOptions, buildMcpServer } from "../server/mcp/server.ts";
 import { CATALOG } from "./broker-search-catalog.ts";
-import { grantInput, mailTestContext } from "./mail-fakes.ts";
+import { grantInput, mailTestContext } from "./helpers.ts";
 
 let cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {

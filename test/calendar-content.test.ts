@@ -13,7 +13,7 @@ import { cleanLine, escapeDelimiters, stripInvisible, wrapUntrusted } from "../s
 import { formatCalendarEvent } from "../server/mcp/format.ts";
 import type { ContentFixture } from "./fixtures/content/fixture.ts";
 import { interleave, tags, ZWSP } from "./fixtures/content/fixture.ts";
-import { mailTestContext } from "./mail-fakes.ts";
+import { mailTestContext } from "./helpers.ts";
 
 const ME = "me@acme.test";
 const ACCOUNT = { id: "acc_a", email: ME } as Parameters<typeof formatCalendarEvent>[0];

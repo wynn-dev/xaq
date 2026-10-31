@@ -12,9 +12,8 @@ import { parseTypes, resolveListen } from "../server/listen/options.ts";
 import { STDIN_PROMPT } from "../server/listen/recipes.ts";
 import { matchesFilter, normalizeFilter, eventFilterSchema } from "../server/events/filter.ts";
 import { buildPayload, scopeBodyCheck } from "../server/events/payload.ts";
-import { testContext } from "./helpers.ts";
+import { grantInput, testContext } from "./helpers.ts";
 import { makeEvent } from "./listen-client-fake.ts";
-import { grantInput } from "./mail-fakes.ts";
 
 let dispose: (() => Promise<void>) | undefined;
 afterEach(async () => {

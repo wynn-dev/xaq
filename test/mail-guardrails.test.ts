@@ -3,7 +3,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { GrantInput } from "../shared/types.ts";
 import { GoogleApiError } from "../server/google/types.ts";
-import { connectAgent, decodeRaw, grantInput, mailTestContext } from "./mail-fakes.ts";
+import { connectAgent, grantInput, mailTestContext } from "./helpers.ts";
+import { decodeRaw } from "./fake-google.ts";
 
 let cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {

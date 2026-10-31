@@ -14,8 +14,7 @@ import { ToolError } from "../server/mail/agent.ts";
 import { formatAccounts, formatCalendarEvent, formatCalendarEvents, formatWhen } from "../server/mcp/format.ts";
 import { CALENDAR_TOOL_NAMES, INSTRUCTIONS, TOOL_NAMES } from "../server/mcp/server.ts";
 import { PolicyDenied } from "../server/util/errors.ts";
-import { calendarTestContext } from "./calendar-fakes.ts";
-import { connectAgent, grantInput, mailTestContext } from "./mail-fakes.ts";
+import { calendarTestContext, connectAgent, grantInput, mailTestContext } from "./helpers.ts";
 
 const ME = "me@acme.com";
 

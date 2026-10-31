@@ -7,8 +7,7 @@ import { Hono } from "hono";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mcpRoutes } from "../server/mcp/index.ts";
 import { connectFakeAccount, type FakeGoogle, startFakeGoogle } from "./fake-google.ts";
-import { testContext } from "./helpers.ts";
-import { grantInput } from "./mail-fakes.ts";
+import { grantInput, testContext } from "./helpers.ts";
 
 let fake: FakeGoogle;
 beforeAll(async () => {

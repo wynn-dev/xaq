@@ -12,8 +12,7 @@ import { CALENDAR_SCOPES } from "../shared/google-scopes.ts";
 import { HttpError } from "../server/util/errors.ts";
 import type { CalendarSetupState, SetupWarning } from "../shared/types.ts";
 import { CALENDAR_ACTIVATION_URL as ACTIVATION_URL, connectFakeAccount, consent, FAKE_CLIENT, type FakeGoogle, MAIL_ONLY, recordingEvents, startFakeGoogle } from "./fake-google.ts";
-import { testContext } from "./helpers.ts";
-import { grantInput } from "./mail-fakes.ts";
+import { grantInput, testContext } from "./helpers.ts";
 
 const OPS = "ops@example.com";
 const WYNN = "wynn@example.com";

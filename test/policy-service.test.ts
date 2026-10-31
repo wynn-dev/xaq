@@ -3,7 +3,7 @@ import { sha256 } from "../server/crypto.ts";
 import { parseGrantInput } from "../server/policy/grants.ts";
 import { matchesGlob } from "../server/util/glob.ts";
 import { disallowedRecipients, threadLabels } from "../server/policy/enforce.ts";
-import { grantInput, mailTestContext } from "./mail-fakes.ts";
+import { grantInput, mailTestContext } from "./helpers.ts";
 
 let dispose: (() => Promise<void>) | undefined;
 afterEach(async () => {

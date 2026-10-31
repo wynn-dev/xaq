@@ -8,8 +8,7 @@ import type { AppContext } from "../server/context.ts";
 import { GMAIL_SCOPE } from "../shared/google-scopes.ts";
 import type { GmailMessage } from "../server/google/types.ts";
 import { connectFakeAccount, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";
-import { testContext } from "./helpers.ts";
-import { connectAgent, grantInput } from "./mail-fakes.ts";
+import { connectAgent, grantInput, testContext } from "./helpers.ts";
 
 const ME = "office@example.com";
 const IDENTITY = ["openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile"];

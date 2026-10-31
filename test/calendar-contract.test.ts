@@ -17,8 +17,7 @@ import { CALENDAR_SCOPES } from "../shared/google-scopes.ts";
 import { GoogleApiError } from "../server/google/types.ts";
 import { attendeeImpact } from "../server/policy/calendar.ts";
 import { type GrantRow, toGrant } from "../server/policy/grants.ts";
-import { testContext } from "./helpers.ts";
-import { grantInput, mailTestContext } from "./mail-fakes.ts";
+import { grantInput, mailTestContext, testContext } from "./helpers.ts";
 
 let dispose: (() => Promise<void>) | undefined;
 afterEach(async () => {

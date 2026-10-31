@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { GrantInput } from "../shared/types.ts";
-import { connectAgent, decodeRaw, type FakeGmail, grantInput, mailTestContext } from "./mail-fakes.ts";
+import { connectAgent, grantInput, mailTestContext } from "./helpers.ts";
+import { decodeRaw, type FakeGmail } from "./fake-google.ts";
 
 let cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {

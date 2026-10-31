@@ -2,8 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AppContext } from "../server/context.ts";
 import { consent, FAKE_CLIENT, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";
-import { testContext } from "./helpers.ts";
-import { grantInput } from "./mail-fakes.ts";
+import { grantInput, testContext } from "./helpers.ts";
 
 const OPS = "ops@example.com";
 const WYNN = "wynn@example.com";

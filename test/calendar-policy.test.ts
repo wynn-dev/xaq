@@ -6,8 +6,7 @@ import type { GrantInput, MessageContent } from "../shared/types.ts";
 import { GoogleApiError } from "../server/google/types.ts";
 import { HttpError } from "../server/util/errors.ts";
 import { attendeeImpact } from "../server/policy/calendar.ts";
-import { calendarTestContext, messageOf, tool } from "./calendar-fakes.ts";
-import { grantInput } from "./mail-fakes.ts";
+import { calendarTestContext, grantInput, messageOf, tool } from "./helpers.ts";
 
 // C's worker-pool cleaning isn't on this branch; the description passes through.
 vi.mock("../server/calendar/content.ts", async (orig) => ({
