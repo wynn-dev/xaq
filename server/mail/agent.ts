@@ -5,8 +5,6 @@
 import type { Account, Address, Approval, Attachment, Capability, GmailLabel, GoogleApproval, Grant, MessageSummary } from "../../shared/types.ts";
 import type { AppContext } from "../context.ts";
 import type { GmailClient, GmailMessage, GmailPart, GmailThread, ParsedMessage } from "../google/types.ts";
-import { canReadDrive, createDriveClient, type DriveClient } from "../google/drive.ts";
-import { agentCanReadDrive, driveNotGrantedMessage } from "../google/drive-access.ts";
 import { isOutcomeUnknown, rejectedBeforeProcessing, ResponseTooLargeError } from "../google/http.ts";
 import { AccountNeedsReauthError, GoogleApiError } from "../google/types.ts";
 import {
@@ -23,9 +21,17 @@ import type { AgentPrincipal } from "../policy/types.ts";
 import { PolicyDenied } from "../util/errors.ts";
 import { matchesGlob } from "../util/glob.ts";
 import { Approvals, type ApprovalPayload, draftFingerprint } from "./approvals.ts";
-import { checkAttachmentInputs, largeFileHint, type MessagePart, requestedSources, resolveAttachments } from "./attach-sources.ts";
-import { AttachmentError, type AttachmentInput, attachmentMeta, ENCODED_LIMIT_WORDS, MAX_ENCODED_BYTES, mb, type OutgoingAttachment } from "./attachments.ts";
-import { driveNotEnabled } from "./drive-files.ts";
+import { checkAttachmentInputs, type MessagePart, requestedSources, resolveAttachments } from "./attach-sources.ts";
+import {
+  AttachmentError,
+  type AttachmentInput,
+  attachmentMeta,
+  ENCODED_LIMIT_WORDS,
+  MAX_ENCODED_BYTES,
+  mb,
+  type OutgoingAttachment,
+  SMALLER_FILES_HINT,
+} from "./attachments.ts";
 import { type BuiltContent, formatAddresses } from "./content.ts";
 import { contentPool } from "./pool.ts";
 
@@ -537,8 +543,6 @@ export class AgentMail {
     const files = await this.attachments(a, args.attachments, args.body);
     const raw = this.checkEncodedSize(
       await this.ctx.google.mime.compose({ from: this.from(a), to, cc, bcc, subject: args.subject, text: args.body, ...threading, attachments: files }),
-      a,
-      files,
     );
     const draft = await a.gmail.createDraft(raw, args.threadId ?? null);
     this.trace.target = draft.id;
@@ -562,24 +566,18 @@ export class AgentMail {
    */
   private async attachments(a: Access, input: AttachmentInput[] | undefined, body: string, originals?: MessagePart[]): Promise<OutgoingAttachment[]> {
     if (!input?.length && !originals?.length) return [];
-    const drive = this.driveFor(a);
-    // What was asked for, so a refused attempt (a path outside the allowed directories, say) is audited too.
+    // What was asked for, so a refused attempt (another message's file the agent can't read, say) is audited too.
     // Replaced by the files' own records (attachmentMeta) once they're all fetched.
     if (input?.length) this.trace.detail.attachmentsRequested = requestedSources(input);
     try {
       const files = await resolveAttachments(input, {
-        accountEmail: a.account.email,
         bodyBytes: Buffer.byteLength(body),
         messagePart: (messageId, attachmentId) => this.messagePart(a, messageId, attachmentId),
-        drive,
-        paths: { allowedDirs: this.ctx.settings.get().attachmentDirs ?? [], dataDir: this.ctx.config.dataDir },
         originals,
       });
       delete this.trace.detail.attachmentsRequested;
       return files;
     } catch (err) {
-      // No Drive grant is a guardrail (audited as denied), not an input mistake.
-      if (err instanceof AttachmentError && err.code === "drive_not_granted") throw new PolicyDenied("capability", err.message);
       if (err instanceof AttachmentError) throw new ToolError(err.code, err.message);
       throw err;
     }
@@ -618,28 +616,14 @@ export class AgentMail {
   }
 
   /**
-   * The account's Drive for this agent, or why not: a grant on a Google Workspace connection bound to the account
-   * (agentCanReadDrive), then the account's Drive read scope.
-   */
-  private driveFor(a: Access): DriveClient | AttachmentError {
-    if (!agentCanReadDrive(this.ctx, this.principal.agentId, a.account.id)) return new AttachmentError("drive_not_granted", driveNotGrantedMessage(a.account.email));
-    if (!canReadDrive(this.ctx, a.account.id)) return driveNotEnabled(a.account.email);
-    return createDriveClient(this.ctx, a.account.id);
-  }
-
-  /**
    * The composed message against the API's 35 MB for an encoded message (MAX_ENCODED_BYTES, Google's documented
    * upload maximum for messages.send and drafts.create). The sources were sized before fetching with an estimate of
    * the encoding; this is the exact count, and the only one that sees a quoted-printable body's growth.
    */
-  private checkEncodedSize(raw: string, a: Access, files: OutgoingAttachment[] = []): string {
+  private checkEncodedSize(raw: string): string {
     const bytes = Math.floor((raw.length * 3) / 4);
     if (bytes > MAX_ENCODED_BYTES) {
-      const links = files.filter((f) => f.driveLink).map((f) => `${f.filename}: ${f.driveLink}`);
-      const hint = links.length
-        ? `Put the Drive links in the body instead of attaching: ${links.join(", ")}.`
-        : largeFileHint({ driveUsable: !(this.driveFor(a) instanceof AttachmentError) });
-      throw new ToolError("too_large", `The message is ${mb(bytes)} once encoded for email, and ${ENCODED_LIMIT_WORDS}. A long body counts too. ${hint}`);
+      throw new ToolError("too_large", `The message is ${mb(bytes)} once encoded for email, and ${ENCODED_LIMIT_WORDS}. A long body counts too. ${SMALLER_FILES_HINT}`);
     }
     return raw;
   }
@@ -821,7 +805,7 @@ export class AgentMail {
       inReplyTo: m.inReplyTo ?? null,
       references: m.references ?? [],
       attachments,
-    }), a, attachments);
+    }));
 
     if (a.grant.sendMode === "direct") {
       const sent = await this.uncertain(() => a.gmail.send(raw, m.threadId), "sent");

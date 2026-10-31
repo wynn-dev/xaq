@@ -9,7 +9,7 @@ import { getRow } from "../server/google/accounts.ts";
 import { probeGoogleApis } from "../server/google/apis.ts";
 import { extensionConsentConnection, startConnect } from "../server/google/oauth.ts";
 import { googleRuntime } from "../server/google/runtime.ts";
-import { accountHasScopes, accountMissingScopes, googleAccessToken, grantedScopes } from "../server/google/scoped.ts";
+import { accountMissingScopes, googleAccessToken, grantedScopes } from "../server/google/scoped.ts";
 import { DOCS_SCOPE, DRIVE_FILE_SCOPE, DRIVE_READONLY_SCOPE, GMAIL_SCOPE, SHEETS_SCOPE, SLIDES_SCOPE, WORKSPACE_SCOPES } from "../server/google/scopes.ts";
 import { DownscopeError, ScopesNotGrantedError } from "../server/google/types.ts";
 import { HttpError } from "../server/util/errors.ts";
@@ -220,7 +220,7 @@ describe("downscoped tokens (the refresh grant's scope)", () => {
     const err = await googleAccessToken(ctx, account.id, [DRIVE_READONLY_SCOPE]).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ScopesNotGrantedError);
     expect((err as ScopesNotGrantedError).missing).toEqual([DRIVE_READONLY_SCOPE]);
-    expect(accountHasScopes(ctx, account.id, [DRIVE_READONLY_SCOPE])).toBe(false);
+    expect(accountMissingScopes(ctx, account.id, [DRIVE_READONLY_SCOPE])).toEqual([DRIVE_READONLY_SCOPE]);
   });
 });
 
@@ -269,14 +269,13 @@ describe("the token cache", () => {
   });
 });
 
-describe("core's helper (Gmail's attach-from-Drive)", () => {
-  it("accountHasScopes and googleAccessToken for a scope subset", async () => {
+describe("googleAccessToken", () => {
+  it("mints a token for a scope subset", async () => {
     const account = await connectFakeAccount(ctx, fake, ME);
-    expect(accountHasScopes(ctx, account.id, [GMAIL_SCOPE])).toBe(true);
-    expect(accountHasScopes(ctx, account.id, [DRIVE_READONLY_SCOPE])).toBe(false);
-    expect(accountHasScopes(ctx, "acc_missing", [GMAIL_SCOPE])).toBe(false);
+    expect(accountMissingScopes(ctx, account.id, [GMAIL_SCOPE])).toEqual([]);
+    expect(accountMissingScopes(ctx, account.id, [DRIVE_READONLY_SCOPE])).toEqual([DRIVE_READONLY_SCOPE]);
     await (await allow(account.id, ME)).complete();
-    expect(accountHasScopes(ctx, account.id, [DRIVE_READONLY_SCOPE])).toBe(true);
+    expect(accountMissingScopes(ctx, account.id, [DRIVE_READONLY_SCOPE])).toEqual([]);
     const t = await googleAccessToken(ctx, account.id, [DRIVE_READONLY_SCOPE]);
     expect(t.scopes).toEqual([DRIVE_READONLY_SCOPE]);
     fake.drive.addFile(ME, { id: "f1", name: "Budget", mimeType: "application/vnd.google-apps.spreadsheet" });

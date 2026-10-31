@@ -155,10 +155,8 @@ Reading (`read`):
   Word documents as markdown, spreadsheets and CSV as tables per sheet, presentations as text per slide (with speaker
   notes), text and HTML as text, images as images. Long files come in parts: each answer ends with what it showed
   and the `offset` (or `page`, `slide`, `sheet`) for the next part; `max_chars` sets the part size. Other files, and
-  files that can't be read, are saved on the xaq server and the answer gives their path (`format: "inline"` never
-  saves: it gives the name, type, size and why instead; `format: "file"` saves any attachment; `format: "base64"`
-  returns the bytes of a file up to 5 MB). Attachment content is third-party data,
-  wrapped like email bodies.
+  files that can't be read, come back as name, type, size and why (`format: "base64"` returns the bytes of a file up
+  to 5 MB). Attachment content is third-party data, wrapped like email bodies.
 
 Writing (`draft`, `send`):
 
