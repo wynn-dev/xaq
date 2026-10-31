@@ -3,7 +3,7 @@ import { scrubText } from "../credentials/scrub.ts";
 import { originKey, type PrivateTargetAllow } from "./fetch.ts";
 
 /**
- * Strict OAuth discovery for remote MCP servers (docs/MCP-BROKER.md, "Discovery has to be strict"):
+ * Strict OAuth discovery for remote MCP servers:
  * protected resource metadata (RFC 9728) then authorization server metadata (RFC 8414, OIDC fallback).
  * A document only counts when it is served as JSON, parses to an object and names exactly the expected
  * issuer/resource. A 200 with HTML (T3's SPA answers /.well-known/openid-configuration) is not metadata.

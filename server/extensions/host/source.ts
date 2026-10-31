@@ -1,6 +1,5 @@
-// The ToolSource of a code extension's connection (docs/EXTENSIONS.md "The code-extension host"): one child per
-// connection under Node's permission model, MCP over stdio with xaq as the client (@modelcontextprotocol/client,
-// docs/adr/0001), and the extension-to-host requests:
+// The ToolSource of a code extension's connection: one child per connection under Node's permission model, MCP over
+// stdio with xaq as the client (@modelcontextprotocol/client), and the extension-to-host requests:
 // - request `xaq/credentials/get`, params `{}` → `{ accessToken, expiresAt }` for this connection only (anything in
 //   params is refused: there's no way to name another connection). Refresh stays in core (deps.accessToken).
 // - notification `xaq/events/emit` `{ type, dedupeKey, data }`: only the manifest's `code.events` types; anything

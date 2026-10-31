@@ -1,5 +1,5 @@
 // Google Calendar REST client contract (https://developers.google.com/workspace/calendar/api/v3/reference).
-// Owned by workstream A (docs/calendar.md). Mirrors server/google/gmail.ts: one client per account, built
+// Owned by workstream A. Mirrors server/google/gmail.ts: one client per account, built
 // on GoogleRuntime.request (token refresh, 401 retry, backoff, AccountNeedsReauthError), base URL
 // ctx.config.google.calendarBase + "/calendar/v3".
 

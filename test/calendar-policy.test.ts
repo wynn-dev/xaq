@@ -1,4 +1,4 @@
-// Calendar policy (workstream B, docs/calendar.md "Grants and policy"): account and capability resolution,
+// Calendar policy (workstream B): account and capability resolution,
 // calendar scope on every method, write modes, attendees against allowTo and replyOnly, send caps shared
 // with mail, audit detail, Google errors in words, and grant input back-compat.
 

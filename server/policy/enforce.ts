@@ -130,7 +130,7 @@ export function assertRecipientsAllowed(grant: Grant, emails: string[], hint?: s
 /**
  * Sends by this agent on this account since `sinceIso` (from the audit log): send/reply/forward calls, and
  * calendar writes that emailed someone or put the event on new attendees' calendars (detail.emailed,
- * detail.invited; docs/calendar.md "Send caps"). Successful ones, plus failures that may still have gone
+ * detail.invited). Successful ones, plus failures that may still have gone
  * out (detail.maybeSent).
  */
 export function sendsSince(db: Db, agentId: string, accountId: string, sinceIso: string): number {

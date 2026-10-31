@@ -1,5 +1,4 @@
-// A Google extension's connections, end to end and offline (docs/EXTENSIONS.md "Google accounts for code
-// extensions"): the echo test extension dressed as google-workspace is installed through the store from a fake
+// A Google extension's connections, end to end and offline: the echo test extension dressed as google-workspace is installed through the store from a fake
 // official registry, its setup view lists the accounts, API links, gcloud command and Check again, a connection is
 // bound to one account and connected through the fake Google consent, and its child calls `xaq/credentials/get`: the
 // token is downscoped, for that connection's account only, accepted by the fake Drive and refused by Gmail.

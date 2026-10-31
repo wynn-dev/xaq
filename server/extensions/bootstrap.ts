@@ -1,4 +1,4 @@
-// Migration from core presets to extensions, with no re-auth (docs/EXTENSIONS.md "Migration from core presets").
+// Migration from core presets to extensions, with no re-auth.
 //
 // A connection is bound to an extension by `connections.preset`, which holds the extension's name: the Notion,
 // T3 Code and WHOOP presets' ids are those extensions' names, so their connections are bound as they are. Nothing in

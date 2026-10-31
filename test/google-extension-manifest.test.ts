@@ -1,5 +1,4 @@
-// `"code.auth": { "type": "google" }` in the extension manifest (docs/EXTENSIONS.md "Google accounts for code
-// extensions"): accepted for official extensions only, never with a Gmail, Calendar, Pub/Sub or Cloud scope, checked
+// `"code.auth": { "type": "google" }` in the extension manifest: accepted for official extensions only, never with a Gmail, Calendar, Pub/Sub or Cloud scope, checked
 // the same by the validator and the JSON Schema the extensions repo copies; refused at install for a third-party
 // source; and core's four Google setup steps, with {{projectId}} kept to google manifests.
 

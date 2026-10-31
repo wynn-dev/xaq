@@ -1,4 +1,4 @@
-// The upgrade from core presets to extensions, with no re-auth (docs/EXTENSIONS.md "Migration from core presets").
+// The upgrade from core presets to extensions, with no re-auth.
 // A DB fixture shaped like Wynn's install:
 // - notion-personal and notion-work: the Notion preset, with OAuth tokens;
 // - whoop: a generic MCP connection to his dashboard's URL with a bearer key (not the WHOOP preset);

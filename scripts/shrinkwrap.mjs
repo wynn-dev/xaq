@@ -6,8 +6,8 @@
 //   node scripts/shrinkwrap.mjs
 //
 // It resolves package.json's runtime dependencies with npm (in a scratch directory: npm can't read pnpm's
-// node_modules), so the versions are npm's resolution of the same ranges, not necessarily pnpm-lock.yaml's
-// (docs/FOLLOWUPS.md). Dev dependencies are left out: they are never installed from the package.
+// node_modules), so the versions are npm's resolution of the same ranges, not necessarily pnpm-lock.yaml's.
+// Dev dependencies are left out: they are never installed from the package.
 
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";

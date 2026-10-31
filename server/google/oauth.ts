@@ -255,7 +255,7 @@ const calendarNotGranted = (email: string, missing: string[]) => {
 };
 
 /**
- * A code extension's incremental consent (docs/EXTENSIONS.md "Google accounts for code extensions"): exactly its
+ * A code extension's incremental consent: exactly its
  * manifest's scopes, on top of what one connected account already granted, for one connection. `onDone` runs once
  * Google answered and the account's tokens and granted scopes were saved (with what was granted).
  */

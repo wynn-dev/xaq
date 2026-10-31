@@ -1,4 +1,4 @@
-// When /mcp serves search mode instead of every tool (docs/MCP-BROKER.md, "One endpoint with 100+ tools").
+// When /mcp serves search mode instead of every tool.
 import { type Db, json } from "../../db/index.ts";
 import type { SettingsStore } from "../../settings.ts";
 

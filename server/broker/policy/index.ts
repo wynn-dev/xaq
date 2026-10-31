@@ -1,5 +1,4 @@
-// Broker policy, calls and mcp.call approvals (docs/MCP-BROKER.md "Access and approvals", "Upstream output is
-// untrusted", "Security model"). BrokerCalls.call is the single entry point for running an upstream tool: resolve,
+// Broker policy, calls and mcp.call approvals. BrokerCalls.call is the single entry point for running an upstream tool: resolve,
 // validate against the pin, decide, then run (wrapped, scrubbed, audited) or queue an approval and return
 // `pending_approval` at once.
 

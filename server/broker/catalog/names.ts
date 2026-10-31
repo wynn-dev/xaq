@@ -1,4 +1,4 @@
-// Namespacing: upstream tools are exposed as `<slug>__<name>` (docs/MCP-BROKER.md "Names").
+// Namespacing: upstream tools are exposed as `<slug>__<name>`.
 
 import { TOOL_NAMES } from "../../mcp/server.ts";
 import { sha256Hex } from "./jcs.ts";

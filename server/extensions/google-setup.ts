@@ -1,5 +1,4 @@
-// The setup steps core renders for a code extension with `"code.auth": { "type": "google" }` (docs/EXTENSIONS.md
-// "Google accounts for code extensions"), before the manifest's own steps. Pure: everything comes from SetupContext,
+// The setup steps core renders for a code extension with `"code.auth": { "type": "google" }`, before the manifest's own steps. Pure: everything comes from SetupContext,
 // so the console (PresetView.setupSteps) and the CLI (`connections add`) show the same four steps:
 //   1. pick the Google account (from xaq's connected accounts; a link to add one);
 //   2. turn on the APIs in the user's own Cloud project (a link per API, a gcloud command, "Check again");

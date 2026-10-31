@@ -1,4 +1,4 @@
-// The code-extension host (docs/EXTENSIONS.md "The code-extension host"). See source.ts for the protocol and the
+// The code-extension host. See source.ts for the protocol and the
 // lifecycle, spawn.ts for the argv, environment and state directory, transport.ts for the stdio pipe.
 
 import { type NativeSourceDeps, SourceError, type ToolSource } from "../../broker/types.ts";

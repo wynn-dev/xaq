@@ -1,4 +1,4 @@
-// /api/connections: the MCP broker's connections admin API (docs/MCP-BROKER.md, routes in shared/types.ts).
+// /api/connections: the MCP broker's connections admin API (routes in shared/types.ts).
 // Console session + CSRF like every /api router (server/app.ts). 404 while Settings.brokerUpstreams is off.
 // Credentials never cross this boundary: a static header goes in through /connect and is never returned.
 

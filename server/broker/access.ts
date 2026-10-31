@@ -1,4 +1,4 @@
-// Connection grants as the events side sees them (docs/MCP-BROKER.md "Events from integrations").
+// Connection grants as the events side sees them.
 // Plain reads of connection_grants (migration 8), so policy, events and the listener stream can ask
 // without depending on the broker service being wired.
 

@@ -5,8 +5,7 @@ import { type LookupFn, normalizeIp, resolveTarget, type ResolvedTarget, SsrfErr
 import { SourceError } from "../types.ts";
 
 /**
- * The broker's one outbound fetch for upstream MCP servers and their OAuth endpoints (docs/MCP-BROKER.md,
- * "Outbound fetch is pinned and SSRF-guarded"):
+ * The broker's one outbound fetch for upstream MCP servers and their OAuth endpoints:
  * - every hop is checked with the webhook guard `resolveTarget` and the connection is pinned to the checked
  *   address (an undici Agent whose `connect.lookup` only ever answers that address: no DNS rebinding);
  * - redirects are manual, re-checked at every hop, at most MAX_REDIRECTS; credentials are dropped when a

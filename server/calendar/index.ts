@@ -1,4 +1,4 @@
-// Google Calendar service: composes the per-workstream parts (docs/calendar.md). Each part lives in its
+// Google Calendar service: composes the per-workstream parts. Each part lives in its
 // own file with one owner; this file only wires them.
 
 import type { AppContext } from "../context.ts";

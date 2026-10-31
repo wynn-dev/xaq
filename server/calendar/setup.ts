@@ -1,4 +1,4 @@
-// "Add Google Calendar" state and probes (workstream D, docs/calendar.md "OAuth, setup and the upgrade flow").
+// "Add Google Calendar" state and probes (workstream D).
 // Whether Calendar is part of the install lives in InternalState "calendar.setup"; per-account state in
 // accounts.scopes (granted, backfilled on every token refresh) and accounts.calendar_* (what Google said).
 

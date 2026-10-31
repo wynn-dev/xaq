@@ -1,4 +1,4 @@
-// Every OAuth scope xaq asks Google for, in one place (docs/calendar.md, "Google facts").
+// Every OAuth scope xaq asks Google for, in one place.
 // Scopes are compared as full URLs; Google's token responses name the identity scopes as
 // "openid", ".../userinfo.email" and ".../userinfo.profile".
 
@@ -28,7 +28,7 @@ export const CALENDAR_FREEBUSY_SCOPE = `${G}calendar.events.freebusy`;
 export const DRIVE_READONLY_SCOPE = `${G}drive.readonly`;
 
 /**
- * Google Calendar: the minimal set covering every calendar tool (docs/calendar.md). All three are needed
+ * Google Calendar: the minimal set covering every calendar tool. All three are needed
  * for Account.calendar.status "active"; with granular consent a user can untick some (missingScopes).
  */
 export const CALENDAR_SCOPES: readonly string[] = [CALENDAR_EVENTS_SCOPE, CALENDAR_LIST_SCOPE, CALENDAR_FREEBUSY_SCOPE];
@@ -52,7 +52,7 @@ export const CALENDAR_SCOPE_WORDS: Record<string, string> = {
 export const describeScopes = (scopes: readonly string[]): string => scopes.map((s) => CALENDAR_SCOPE_WORDS[s] ?? s).join(", ");
 
 // ───────────── Google Workspace files (Drive, Docs, Sheets, Slides) ─────────────
-// Used by the official google-workspace code extension (docs/EXTENSIONS.md "Google accounts for code extensions")
+// Used by the official google-workspace code extension
 // and by core's own Drive use (Gmail's attach-from-Drive). Never part of what an account is connected with: they're
 // added incrementally (include_granted_scopes) when the user opts in. DRIVE_READONLY_SCOPE is defined above.
 

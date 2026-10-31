@@ -1,5 +1,5 @@
 // "Add Google Calendar" decisions as pure functions of the server's CalendarSetupState and SetupWarnings
-// (docs/calendar.md, "OAuth, setup and the upgrade flow"), so they can be tested directly. Relative
+//, so they can be tested directly. Relative
 // imports only: vitest and the server typecheck load this module too.
 
 import type { AccountCalendarStatus, CalendarSetupState, SetupWarning } from "../../../shared/types.ts";

@@ -1,4 +1,4 @@
-// Broker policy, calls and mcp.call approvals (docs/MCP-BROKER.md "Access and approvals"): the three levels × risk,
+// Broker policy, calls and mcp.call approvals: the three levels × risk,
 // "always allow" rules (with and without a target, array targets), caps, exact-bytes approvals with the TOCTOU
 // re-checks, get_call_status, expiry, output wrapping and delimiter escaping, token scrubbing, SourceError
 // mapping and the kill switch. Offline: an in-process registry, source and credential store.

@@ -1,5 +1,4 @@
-// Google access for code extensions, against the fake Google (docs/EXTENSIONS.md "Google accounts for code
-// extensions"): the incremental consent (exactly the extension's scopes, the account keeps what it had, a partial grant
+// Google access for code extensions, against the fake Google: the incremental consent (exactly the extension's scopes, the account keeps what it had, a partial grant
 // in plain words), downscoped tokens through the refresh grant's `scope` (RFC 6749 §6) with Google's answer checked,
 // the per-account-and-scope-set cache with expiry and single flight, the helper core's own Drive use takes (A1), and
 // the API-enabled probe. Tests reach only the fake on 127.0.0.1 (test/setup-no-network.ts refuses anything else).

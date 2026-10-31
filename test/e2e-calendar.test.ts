@@ -1,4 +1,4 @@
-// E2E: Google Calendar through the real app (docs/calendar.md, workstream G). The fake Calendar API
+// E2E: Google Calendar through the real app. The fake Calendar API
 // (test/fake-google.ts) stands in for Google; everything else is the real server driven over HTTP:
 // syncToken sync → events, MCP calendar tools (read, direct and approval writes, allowTo), console
 // approvals, webhook calendarIds filters, calendar.read listener streams, and the upgrade of a

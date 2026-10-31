@@ -35,7 +35,7 @@ import { errorMessage } from "./util/errors.ts";
 import { compareVersions } from "./util/semver.ts";
 
 /**
- * One-click update from the console (docs/adr/0002-console-self-update.md). The console asks; the app checks
+ * One-click update from the console. The console asks; the app checks
  * the admin password and starts the update job, a separate transient systemd unit or launchd job, and the
  * job does the work: stage the new version with the supply-chain checks, stop the service, snapshot the
  * database, swap `app` for the new install (the current one becomes `app.old`), start, wait for /api/health

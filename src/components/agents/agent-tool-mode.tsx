@@ -19,7 +19,7 @@ const MODE_INFO: Record<Mode, { label: string; description: (n: number) => strin
   },
 };
 
-/** Agent page (broker on): whether /mcp lists every tool or search mode, chosen by the user (docs/MCP-BROKER.md). */
+/** Agent page (broker on): whether /mcp lists every tool or search mode, chosen by the user. */
 export function AgentToolMode({ agentId }: { agentId: string }) {
   const q = useQuery(queries.agentToolMode(agentId));
   const set = useApiMutation({

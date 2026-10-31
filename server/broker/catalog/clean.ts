@@ -1,5 +1,4 @@
-// Cleaning of upstream tool definitions before they are pinned and shown to agents (docs/MCP-BROKER.md, "Tools:
-// namespacing, catalog, pinning"). The pin hash covers the cleaned definition: exactly what agents see.
+// Cleaning of upstream tool definitions before they are pinned and shown to agents. The pin hash covers the cleaned definition: exactly what agents see.
 
 import { stripInvisible, truncateText } from "../../mail/content.ts";
 import type { ToolAnnotations, ToolDef } from "../types.ts";

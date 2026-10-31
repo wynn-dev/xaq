@@ -4,7 +4,7 @@ import type { ConnectionsApi } from "./api.ts";
 import type { Prompter } from "./prompt.ts";
 import { safeText } from "../listen/ui.ts";
 
-/** The one access question (docs/MCP-BROKER.md "Access and approvals") and which agents get it. */
+/** The one access question and which agents get it. */
 
 export const ACCESS_LEVELS: { value: AccessLevel; label: string; short: string }[] = [
   { value: "full", label: "Full access: every tool, never asks", short: "Full access" },

@@ -1,4 +1,4 @@
-// Upstream output is untrusted (docs/MCP-BROKER.md "Upstream output is untrusted"): every text block is cleaned
+// Upstream output is untrusted: every text block is cleaned
 // (ANSI, invisible characters), scrubbed of this connection's secrets, truncated and nonce-wrapped, with every
 // xaq delimiter escaped inside. structuredContent is validated against the pinned outputSchema.
 

@@ -19,7 +19,7 @@ import { type InstanceInfo, runningInstance } from "../instance.ts";
  *
  * Console sessions slide forward on use up to SESSION_MAX_AGE_MS after created_at. The CLI's row is written with
  * created_at = expiry − SESSION_MAX_AGE_MS, so that hard limit is the 15-minute expiry and the row can never be
- * extended (see docs/FOLLOWUPS.md: a session kind column would say this directly).
+ * extended (a session kind column would say this directly).
  */
 
 export const CLI_SESSION_TTL_MS = 15 * 60_000;

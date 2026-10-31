@@ -1,4 +1,4 @@
-// Calendar MCP tools (server/mcp/calendar.ts, docs/calendar.md workstream C): registration by capability,
+// Calendar MCP tools (server/mcp/calendar.ts): registration by capability,
 // argument checking and mapping onto AgentCalendar (B), result formatting, error wording and auditing.
 // AgentCalendar's operations are stubbed: these tests pin the MCP layer, not the policy behind it.
 

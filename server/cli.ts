@@ -261,7 +261,7 @@ registerListenCommands(program);
 // Daemon side, behind the brokerUpstreams setting: `connections …` and `import --from …` (server/connections-cli).
 const { registerConnectionsCommands } = await import("./connections-cli/commands.ts");
 registerConnectionsCommands(program);
-// `ext add | list | update | remove` (docs/EXTENSIONS.md), through the daemon's /api/extensions.
+// `ext add | list | update | remove`, through the daemon's /api/extensions.
 const { registerExtensionCommands } = await import("./extensions/cli.ts");
 registerExtensionCommands(program);
 // `smoke google-workspace --scratch`: the live end-to-end check (server/smoke), through the daemon's admin API and /mcp.

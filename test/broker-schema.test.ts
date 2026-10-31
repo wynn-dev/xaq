@@ -1,4 +1,4 @@
-// Migration 8 (docs/MCP-BROKER.md, M1 PR 2): the broker tables and the approvals rebuild. An install at
+// Migration 8: the broker tables and the approvals rebuild. An install at
 // migration 7 keeps every row, index and cascade; a fresh install gets the same schema; the CHECKs hold.
 
 import { mkdtempSync, rmSync } from "node:fs";

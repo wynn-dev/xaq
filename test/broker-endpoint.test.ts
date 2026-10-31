@@ -1,4 +1,4 @@
-// M1 PR 7 (docs/MCP-BROKER.md): upstream tools on /mcp next to the unchanged native ones, get_call_status,
+// M1 PR 7: upstream tools on /mcp next to the unchanged native ones, get_call_status,
 // the instructions, connection events (visibility, the listener stream without Gmail, webhook filters), the
 // broker service (hooks, poll, kill switch) and mcp.call approvals. The registry, calls and policy are fakes
 // standing in for the catalog and policy workstreams.

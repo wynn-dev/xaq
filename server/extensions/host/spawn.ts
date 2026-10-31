@@ -1,4 +1,4 @@
-// How a code extension's child is started (docs/EXTENSIONS.md "The code-extension host"): the exact argv, the
+// How a code extension's child is started: the exact argv, the
 // environment built from nothing, and the per-connection state directory.
 //
 // The flags were checked on Node 22.13.0, 22.23.3, 24.22.0 and 26.12.0:

@@ -1,4 +1,4 @@
-// Calendar domain contract (docs/calendar.md). Each member names the workstream that implements it.
+// Calendar domain contract. Each member names the workstream that implements it.
 // Members marked FROZEN are used across workstreams: do not rename or change them. Adding members is fine.
 
 import type {

@@ -1,4 +1,4 @@
-// The Google Calendar contract (docs/calendar.md): migration 7 on existing data, grant fields, event
+// The Google Calendar contract: migration 7 on existing data, grant fields, event
 // visibility, the event store and the pure helpers every workstream builds on.
 
 import { mkdtempSync, rmSync } from "node:fs";

@@ -1,5 +1,4 @@
-// The catalog: fetches each connection's tool list, cleans, classifies, hashes and stores it (docs/MCP-BROKER.md
-// "Catalog" and "Tool changes"). A changed or new tool is simply used: the only trace is one audit entry with the old
+// The catalog: fetches each connection's tool list, cleans, classifies, hashes and stores it. A changed or new tool is simply used: the only trace is one audit entry with the old
 // and new definition hash (the owner removed the hold on 2026-10-16). Behind the `brokerUpstreams` setting: pass
 // `enabled` and attach() is a no-op while it's off.
 

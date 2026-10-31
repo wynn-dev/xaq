@@ -1,4 +1,4 @@
-// The code-extension host (server/extensions/host, docs/EXTENSIONS.md "The code-extension host"), against the echo
+// The code-extension host (server/extensions/host), against the echo
 // fixture (test/fixtures/extensions/echo): the exact spawn, the environment, the sandbox (every escape attempt fails),
 // the extension-to-host protocol, prompts and resources, the lifecycle (integrity, crash restarts, SIGTERM/SIGKILL)
 // and the limits. Real child processes, no network.

@@ -1,4 +1,4 @@
-// Calendar events on the delivery surfaces (docs/calendar.md, workstream G): webhook filters and bodies,
+// Calendar events on the delivery surfaces: webhook filters and bodies,
 // listener streams for calendar.read-only agents, and what a listener hands its command.
 
 import { afterEach, describe, expect, it } from "vitest";

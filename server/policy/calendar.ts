@@ -1,4 +1,4 @@
-// Calendar guardrails as pure functions over a Grant (workstream B; docs/calendar.md "Grants and policy").
+// Calendar guardrails as pure functions over a Grant (workstream B).
 // Callers (server/calendar/agent.ts, server/calendar/approvals.ts) throw these as PolicyDenied.
 
 import { randomBytes } from "node:crypto";
@@ -40,7 +40,7 @@ export function assertCalendarInScope(grant: Grant, calendarId: string): void {
 const isResource = (email: string) => /@resource\.calendar\.google\.com$/i.test(email);
 
 /**
- * Who a write puts in touch with whom (docs/calendar.md "Attendees and allowTo"). Emails are compared
+ * Who a write puts in touch with whom. Emails are compared
  * lower-cased; the account itself and rooms never count.
  * - `emailed`: addresses Google emails when notifying (sendUpdates "all"). Create/update: every attendee
  *   after the change plus removed ones (they get a cancellation) and the organizer when it's someone else.

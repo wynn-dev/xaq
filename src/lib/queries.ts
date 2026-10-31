@@ -59,13 +59,13 @@ export const keys = {
   /** Paged history on /events and /audit: kept out of per-message invalidation (the pages merge live rows themselves and can be paused), refetched on mount and after a reconnect. */
   eventHistory: ["event-history"] as const,
   auditLog: ["audit-log"] as const,
-  // MCP broker (docs/MCP-BROKER.md).
+  // MCP broker.
   connections: ["connections"] as const,
   connection: (id: string) => ["connections", id] as const,
   presets: ["connection-presets"] as const,
   agentConnections: (agentId: string) => ["agent-connections", agentId] as const,
   approvalRules: ["approval-rules"] as const,
-  // Extensions (docs/EXTENSIONS.md).
+  // Extensions.
   extensions: ["extensions"] as const,
   extensionRegistry: ["extension-registry"] as const,
 };

@@ -1,4 +1,4 @@
-// Where an extension comes from (docs/EXTENSIONS.md, "Sources, pinning and the registry"): a registry name, a GitHub
+// Where an extension comes from: a registry name, a GitHub
 // URL (the codeload tarball of the resolved commit), any other git URL (the git CLI), or a local directory. Each
 // fetch lands in a fresh directory the caller owns; nothing else on disk is touched.
 

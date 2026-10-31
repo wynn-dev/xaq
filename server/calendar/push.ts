@@ -1,4 +1,4 @@
-// Optional Calendar push channels (workstream D, docs/calendar.md "Push"). Only when publicUrl is public
+// Optional Calendar push channels (workstream D). Only when publicUrl is public
 // https; polling stays on as the safety net. Channels live in calendar_sync.channel_*.
 
 import { timingSafeEqual } from "node:crypto";

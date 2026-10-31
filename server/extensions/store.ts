@@ -1,4 +1,4 @@
-// Installed extensions (docs/EXTENSIONS.md): fetched and verified into a temp directory under
+// Installed extensions: fetched and verified into a temp directory under
 // <dataDir>/extensions/.tmp, then renamed into <dataDir>/extensions/<name>/<integrity-hex-prefix>/ and made read-only.
 // The `extensions` table records the source, commit, integrity, version and manifest. Nothing updates on its own, and
 // nothing outside <dataDir>/extensions is ever written or removed.
@@ -153,7 +153,7 @@ export function checkManifest(raw: unknown, opts: { official: boolean }): Manife
 export const manifestFacts = (ext: Pick<InstalledExtension, "manifest">): ManifestFacts => checkManifest(ext.manifest, { official: true });
 
 /**
- * The warning a third-party extension gets before install (docs/EXTENSIONS.md): its source, kind, declared network
+ * The warning a third-party extension gets before install: its source, kind, declared network
  * hosts, and that its code runs on this machine with network access. Empty for an official one.
  */
 export function thirdPartyWarning(ext: Pick<InstalledExtension, "official" | "source" | "manifest" | "commit">): string[] {

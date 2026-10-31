@@ -1,4 +1,4 @@
-// Contracts for the MCP broker (docs/MCP-BROKER.md). Parallel workstreams build against these:
+// Contracts for the MCP broker. Parallel workstreams build against these:
 // - the upstream manager (server/broker/upstream/*) implements ToolSource for remote MCP servers;
 // - native integrations (server/integrations/<id>/*) implement IntegrationPreset (+ ToolSource when native);
 // - the catalog (server/broker/catalog/*) implements ToolRegistry and pinning;
@@ -88,7 +88,7 @@ export interface ToolSource {
   /** Releases sessions/processes. Idempotent. */
   close(): Promise<void>;
   /**
-   * Additive (extensions, docs/EXTENSIONS.md "Prompts and resources"): the upstream's prompts and resources, passed
+   * Additive (extensions): the upstream's prompts and resources, passed
    * through /mcp. Optional: a source without them (or whose server doesn't declare the capability) has none. Errors as
    * for listTools (SourceError).
    */
@@ -133,7 +133,7 @@ export interface ResourceReadResult {
   contents: ({ uri: string; mimeType?: string } & ({ text: string } | { blob: string }))[];
 }
 
-/** Prompts and resources of one source (all "read" class; docs/EXTENSIONS.md). */
+/** Prompts and resources of one source (all "read" class). */
 export interface PromptSource {
   listPrompts(signal: AbortSignal): Promise<PromptDef[]>;
   getPrompt(name: string, args: Record<string, string>, signal: AbortSignal): Promise<PromptResult>;
@@ -223,7 +223,7 @@ export type PresetAuth =
    */
   | { type: "mcp_oauth"; broadScopes?: readonly string[]; scopeNotes?: readonly { scope: string; note: string }[] }
   /**
-   * Additive (official code extensions, docs/EXTENSIONS.md "Google accounts for code extensions"): the connection is
+   * Additive (official code extensions): the connection is
    * bound to one of xaq's connected Google accounts (connections.google_account_id) and gets access tokens downscoped
    * to `scopes`, added to the account by incremental consent. `apis` must be on in the user's Cloud project.
    */

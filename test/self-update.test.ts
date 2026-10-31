@@ -1,4 +1,4 @@
-// One-click update from the console (server/update.ts, docs/adr/0002-console-self-update.md): staging a
+// One-click update from the console (server/update.ts): staging a
 // given version with the supply-chain checks, the update job's swap and automatic rollback, the
 // password-gated API with its audit entries, and the console's polling verdict. Nothing here reaches npm:
 // npm and the service manager are fakes.

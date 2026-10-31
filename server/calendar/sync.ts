@@ -1,4 +1,4 @@
-// Calendar sync engine (workstream A, docs/calendar.md "Sync"). Polls events.list with syncToken per synced
+// Calendar sync engine (workstream A). Polls events.list with syncToken per synced
 // calendar, turns changes into calendar.* events via ctx.events.emit, keeps calendar_sync and
 // calendar_event_state up to date and records account calendar status (accounts.calendar_*).
 //
@@ -392,7 +392,7 @@ class Sync implements CalendarSync {
   }
 
   /**
-   * One changed event: emit what it means (docs/calendar.md "Incremental polling"), then store what was seen.
+   * One changed event: emit what it means, then store what was seen.
    * `since` is the previous successful sync: unknown events created after it (less the grace) are new.
    */
   private apply(accountId: string, cal: CalendarSyncRow, raw: CalendarEventRaw, prev: EventState | null, since: string | null): void {

@@ -27,7 +27,7 @@ export function projectIdProblem(raw: string): string | null {
   return null;
 }
 
-/** The Google Calendar API's service name (docs/calendar.md, "API id"). */
+/** The Google Calendar API's service name. */
 export const CALENDAR_API = "calendar-json.googleapis.com";
 
 /**

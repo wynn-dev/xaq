@@ -12,7 +12,7 @@ export const CLI_NAME = "xaq";
 /** What an agent may do with a mailbox. `read` also grants search, labels, attachments and the event feed. */
 export const MAIL_CAPABILITIES = ["read", "draft", "send", "organize", "trash"] as const;
 /**
- * What an agent may do with the account's Google Calendar (see docs/calendar.md). Independent of the mail
+ * What an agent may do with the account's Google Calendar. Independent of the mail
  * capabilities: existing grants have none of these (mail-only).
  * - calendar.read: list calendars, list/search/get events, free/busy, and calendar.* events in the feed.
  * - calendar.write: create, update and delete events and respond to invitations. How a write executes is
@@ -73,7 +73,7 @@ export const EVENT_TYPES = [
 export type NativeEventType = (typeof EVENT_TYPES)[number];
 
 /**
- * MCP broker events (docs/MCP-BROKER.md "Events from integrations"). They concern a connection, not an
+ * MCP broker events. They concern a connection, not an
  * account: MailEvent.connectionId is set and accountId/accountEmail are "". Visible to agents with a grant
  * on that connection, while the brokerUpstreams setting is on.
  */
@@ -353,7 +353,7 @@ export interface Settings {
    */
   attachmentDirs: string[];
   /**
-   * The MCP broker's upstream connections (docs/MCP-BROKER.md): the Connections page, connection access on agents,
+   * The MCP broker's upstream connections: the Connections page, connection access on agents,
    * `mcp.call` approvals and first run with Google optional. On by default since the console shipped (M1 PR 8).
    */
   brokerUpstreams: boolean;
@@ -650,7 +650,7 @@ export interface Grant {
   allowTo: string[];
   /** Only allow sending replies inside threads the agent can already see. */
   replyOnly: boolean;
-  /** Counts mail sends and calendar writes that email people (see docs/calendar.md, "Send caps"). */
+  /** Counts mail sends and calendar writes that email people. */
   maxSendsPerHour: number | null;
   maxSendsPerDay: number | null;
   /**
@@ -687,7 +687,7 @@ export interface AgentTestResult {
   message: string;
 }
 
-/** GET /api/agents/:id/tool-mode: how /mcp lists this agent's tools (docs/MCP-BROKER.md, search mode). */
+/** GET /api/agents/:id/tool-mode: how /mcp lists this agent's tools. */
 export interface AgentToolMode {
   /** The stored choice; "auto" until the agent's first /mcp request decides it. */
   setting: "auto" | "direct" | "search";
@@ -1028,7 +1028,7 @@ export const MAIL_APPROVAL_KINDS = ["send", "reply", "forward"] as const;
 export const CALENDAR_APPROVAL_KINDS = ["calendar.create", "calendar.update", "calendar.delete", "calendar.rsvp"] as const;
 export type MailApprovalKind = (typeof MAIL_APPROVAL_KINDS)[number];
 export type CalendarApprovalKind = (typeof CALENDAR_APPROVAL_KINDS)[number];
-/** A risky upstream tool call at the "ask" level (docs/MCP-BROKER.md). Goes through a connection, not an account. */
+/** A risky upstream tool call at the "ask" level. Goes through a connection, not an account. */
 export const MCP_APPROVAL_KINDS = ["mcp.call"] as const;
 export type McpApprovalKind = (typeof MCP_APPROVAL_KINDS)[number];
 /** The kinds that act on a Google account (an Approval with accountId set). */
@@ -1220,7 +1220,7 @@ export interface McpCallApproval extends ApprovalCommon {
 export type Approval = GoogleApproval | McpCallApproval;
 
 // ───────────────────────────── MCP broker: connections ─────────────────────────────
-// docs/MCP-BROKER.md. Stored since migration 8; nothing serves these until the broker PRs land (behind the
+// Stored since migration 8; nothing serves these until the broker PRs land (behind the
 // brokerUpstreams setting). Credentials never cross the API boundary: there's no DTO for them.
 // AccessLevel and ToolAnnotations mirror server/broker/types.ts: the console can't import that file (it uses
 // Node's Buffer, and tsconfig.app has no Node types). Keep them in step.

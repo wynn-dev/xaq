@@ -1,4 +1,4 @@
-// SourceError → plain words for the agent (docs/MCP-BROKER.md "Every failure names its fix").
+// SourceError → plain words for the agent.
 
 import { boundPreset } from "../../integrations/index.ts";
 import { SourceError, type SourceErrorCode } from "../types.ts";

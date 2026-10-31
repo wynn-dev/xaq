@@ -236,7 +236,7 @@ export const MIGRATIONS: string[] = [
     SELECT 'setup.verifiedAt', json_quote(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     WHERE EXISTS (SELECT 1 FROM agents WHERE last_mcp_at IS NOT NULL);
   `,
-  /* 7: Google Calendar (docs/calendar.md). Additive only: mail keeps working untouched. */ `
+  /* 7: Google Calendar. Additive only: mail keeps working untouched. */ `
   -- Grants: calendar.read / calendar.write live in grants.capabilities; existing grants have neither (mail-only).
   ALTER TABLE grants ADD COLUMN calendar_scope TEXT;   -- JSON string[] of calendar ids | NULL (= every calendar)
   ALTER TABLE grants ADD COLUMN calendar_write_mode TEXT NOT NULL DEFAULT 'approval'; -- 'direct' | 'approval'
@@ -297,7 +297,7 @@ export const MIGRATIONS: string[] = [
     SELECT 'calendar.setup', '{"enabled":false}'
     WHERE EXISTS (SELECT 1 FROM accounts);
   `,
-  /* 8: MCP broker (docs/MCP-BROKER.md, M1 PR 2). New tables, events.connection_id and the approvals rebuild; nothing reads them yet. */ `
+  /* 8: MCP broker. New tables, events.connection_id and the approvals rebuild; nothing reads them yet. */ `
   -- One upstream with its credential. Gmail/Calendar stay in accounts (M1 doesn't move them).
   CREATE TABLE connections (
     id TEXT PRIMARY KEY,                       -- con_…
@@ -478,7 +478,7 @@ export const MIGRATIONS: string[] = [
   -- NULL: only the agents picked (connection_grants). Per-agent levels still live in connection_grants.
   ALTER TABLE connections ADD COLUMN all_agents INTEGER CHECK (all_agents IS NULL OR all_agents = 1);
   `,
-  /* 11: extensions (docs/EXTENSIONS.md). Additive: a new table. */ `
+  /* 11: extensions. Additive: a new table. */ `
   -- One row per installed extension: what it was installed from and exactly what was installed. Its files are in
   -- <dataDir>/extensions/<name>/<first 16 hex of the integrity digest>/, read-only (server/extensions/store.ts).
   -- source: a registry name, a GitHub or other repository URL, or an absolute directory. commit_sha: the resolved
@@ -496,7 +496,7 @@ export const MIGRATIONS: string[] = [
     installed_at TEXT NOT NULL
   );
   `,
-  /* 12: code extensions with a Google account (docs/EXTENSIONS.md "Google accounts for code extensions"). Additive. */ `
+  /* 12: code extensions with a Google account. Additive. */ `
   -- The connected Google account a connection of an extension with "code.auth": { "type": "google" } works as, picked
   -- in its setup. Its tokens stay the account's (accounts.refresh_token_enc): the connection only gets downscoped
   -- access tokens. NULL for every other connection, and once the account is removed from xaq (it then needs setup).

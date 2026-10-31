@@ -1,5 +1,4 @@
-// Core's side of code extensions with `"code.auth": { "type": "google" }` (docs/EXTENSIONS.md "Google accounts for
-// code extensions"). Official extensions only (validateManifest refuses the rest).
+// Core's side of code extensions with `"code.auth": { "type": "google" }`. Official extensions only (validateManifest refuses the rest).
 //
 // - Binding: a connection works as ONE of xaq's connected Google accounts, picked in setup and kept in
 //   connections.google_account_id. Nothing per connection is stored besides that id: the refresh token stays the

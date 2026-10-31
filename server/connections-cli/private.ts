@@ -3,7 +3,7 @@ import { BlockList, isIP } from "node:net";
 import { type LookupFn, normalizeIp, urlHost } from "../webhooks/ssrf.ts";
 
 /**
- * Which upstream URLs need the private-target allow (docs/MCP-BROKER.md#private-targets), decided on the CLI side
+ * Which upstream URLs need the private-target allow, decided on the CLI side
  * so the admin can confirm the exact origins before anything is created. The daemon's guard still decides; this
  * only knows what to ask.
  */

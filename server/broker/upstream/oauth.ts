@@ -4,7 +4,7 @@ import type { AuthServerMetadata } from "./discovery.ts";
 import { scrubText } from "../credentials/scrub.ts";
 
 /**
- * MCP OAuth for upstream connections (docs/MCP-BROKER.md "The authorization flow"): client registration
+ * MCP OAuth for upstream connections: client registration
  * (pre-registered → client ID metadata document → DCR), PKCE S256 with our own `state`, `resource` on
  * both requests, `offline_access` when advertised, and the token/refresh exchanges. Every request goes
  * through the connection's guarded fetch.

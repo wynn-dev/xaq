@@ -1,4 +1,4 @@
-// /api/extensions DTOs (server/api/extensions.ts), shared by the console and the CLI. docs/EXTENSIONS.md.
+// /api/extensions DTOs (server/api/extensions.ts), shared by the console and the CLI.
 
 export type ExtensionKind = "remote" | "code";
 

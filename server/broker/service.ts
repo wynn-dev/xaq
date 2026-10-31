@@ -1,4 +1,4 @@
-// The MCP broker as an AppContext service (docs/MCP-BROKER.md). It holds one ToolSource per connection, the
+// The MCP broker as an AppContext service. It holds one ToolSource per connection, the
 // tool registry, the policy's call path and the connector, and owns the lifecycle and the kill switch.
 //
 // The parts come from other workstreams (server/broker/types.ts lists who builds what). The policy runtime
@@ -658,7 +658,7 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
     },
 
     start() {
-      // Agents from before search mode keep their full tool list (once per install; docs/MCP-BROKER.md).
+      // Agents from before search mode keep their full tool list (once per install).
       try {
         const pinned = pinExistingAgentsDirect(ctx.db, ctx.settings);
         if (pinned) ctx.log.child("broker").info("Kept the full tool list for existing agents", { agents: pinned });
@@ -672,7 +672,7 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
       } catch (err) {
         log.error("Couldn't release tools held by an older version", { error: errorMessage(err) });
       }
-      // Extensions (docs/EXTENSIONS.md): presets() reads the installed ones; the store asks us which connections use
+      // Extensions: presets() reads the installed ones; the store asks us which connections use
       // one, disables them on a forced removal, and reloads presets() after every change. Then the startup upgrade:
       // connections of the former core presets are bound, and missing extensions install in the background.
       try {
@@ -808,7 +808,7 @@ export const missingExtensionMessage = (name: string) => `Needs the ${name} exte
 /**
  * The list/get shape: tool count, agents and days to expiry. With `presets`, a non-remote connection whose preset
  * (extension) isn't installed reads as `error` with missingExtensionMessage, not `active` with failing calls. A
- * remote one keeps working as a generic MCP connection meanwhile (docs/EXTENSIONS.md "Migration").
+ * remote one keeps working as a generic MCP connection meanwhile.
  */
 export function connectionView(ctx: Pick<AppContext, "db">, c: Connection, at = Date.now(), presets?: readonly IntegrationPreset[]): ConnectionView {
   if (presets && c.kind !== "remote_http" && c.preset && c.status !== "disabled" && !presets.some((p) => p.id === c.preset)) {

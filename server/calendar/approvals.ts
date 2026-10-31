@@ -1,4 +1,4 @@
-// Applying calendar changes (workstream B, docs/calendar.md "Approvals"). The approval state machine stays
+// Applying calendar changes (workstream B). The approval state machine stays
 // in server/mail/approvals.ts; it calls these for calendar.* kinds. Direct-mode writes (AgentCalendar) go
 // through the same applyChange and afterFailure, so both paths send the same requests to Google and judge
 // a failed attempt the same way.

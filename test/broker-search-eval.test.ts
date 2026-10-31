@@ -1,4 +1,4 @@
-// Search-mode eval (docs/MCP-BROKER.md, M3): does search_tools put the right tool in front of the agent?
+// Search-mode eval: does search_tools put the right tool in front of the agent?
 // Deterministic: BM25 over a fixed synthetic catalog, no model involved.
 import { describe, expect, it } from "vitest";
 import { ToolIndex, tokenize } from "../server/broker/search/bm25.ts";

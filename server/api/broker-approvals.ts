@@ -1,4 +1,4 @@
-// Admin API for mcp.call approvals, "always allow" rules and the connection kill switch (docs/MCP-BROKER.md).
+// Admin API for mcp.call approvals, "always allow" rules and the connection kill switch.
 // Mounted before approvalsApi: the /approvals/:id routes answer for mcp.call ids and pass anything else on to the
 // mail/calendar handlers. Same admin session and CSRF guard as the rest of /api (server/app.ts).
 //

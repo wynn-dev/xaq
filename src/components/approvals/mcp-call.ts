@@ -1,4 +1,4 @@
-// The `mcp.call` approval card's words as pure functions (docs/MCP-BROKER.md, "Exact arguments"). The server's
+// The `mcp.call` approval card's words as pure functions. The server's
 // McpCallApprovalView already carries the escaped bytes, the pretty form, recipients and URLs; this adds what the
 // console says around them: the target checkbox, warnings and the done states. Relative imports only.
 

@@ -1,4 +1,4 @@
-// Console decisions for the Extensions page (docs/EXTENSIONS.md) as pure functions, tested directly.
+// Console decisions for the Extensions page as pure functions, tested directly.
 // No React and relative imports only: vitest loads this module too.
 
 import type { ExtensionRegistryEntryView, ExtensionView } from "../../../shared/extensions.ts";

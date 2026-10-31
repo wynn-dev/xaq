@@ -40,14 +40,13 @@ running xaq in production, scripting it, and understanding what it does.
 ## Connections (MCP broker)
 
 Besides Gmail and Calendar, xaq brokers other MCP servers. Each agent still has one endpoint (`/mcp`) and one
-key; the broker holds every upstream credential and lists only the tools the agent is allowed. Design and decisions:
-[MCP-BROKER.md](MCP-BROKER.md).
+key; the broker holds every upstream credential and lists only the tools the agent is allowed.
 
 - **Add one**: in the console, Connections → Add connection (it offers the official extensions that aren't installed
   yet, with an Install button); or on the daemon's machine, `npx xaq-cli ext add notion` first, then
   `npx xaq-cli connections add notion` (or `connections add <url>` for any MCP server). Pre-made connections are
   **extensions** from
-  [wynn-dev/xaq-extensions](https://github.com/wynn-dev/xaq-extensions) ([EXTENSIONS.md](EXTENSIONS.md)): Notion
+  [wynn-dev/xaq-extensions](https://github.com/wynn-dev/xaq-extensions): Notion
   (its hosted MCP, two clicks), T3 Code (below), Brightspace (your own
   [Brightspace MCP server](https://github.com/wynn-dev/brightspace-mcp-server): its address and its bearer token;
   every tool reads) and WHOOP (a code extension: install it with `npx xaq-cli ext add whoop` or from Extensions in
@@ -102,7 +101,7 @@ key; the broker holds every upstream credential and lists only the tools the age
   named `<connection>__<name>`; resource templates work the same way. They count as reads: an agent sees them with
   any access level on the connection. Each `prompts/get` and `resources/read` is in the audit log (actions
   `prompts/get` and `resources/read`), and the connection's secrets are scrubbed from what comes back.
-- **Extensions**: pre-built connections are extensions ([EXTENSIONS.md](EXTENSIONS.md)). A *remote* extension is a
+- **Extensions**: pre-built connections are extensions. A *remote* extension is a
   proxied MCP server. A *code* extension (WHOOP) is a Node file that xaq runs as a child process, one per connection,
   under Node's permission model: it can read only its own install and its own state directory, can write only that
   state directory, can't start processes, workers or native addons, and gets an empty environment except four
@@ -127,7 +126,7 @@ key; the broker holds every upstream credential and lists only the tools the age
 
 ## Extensions
 
-Integrations come as extensions ([EXTENSIONS.md](EXTENSIONS.md)): a manifest-only `remote` one (Notion, T3 Code) or
+Integrations come as extensions: a manifest-only `remote` one (Notion, T3 Code) or
 a `code` one with a bundled MCP server that xaq runs out of process (WHOOP). Official extensions come from
 [wynn-dev/xaq-extensions](https://github.com/wynn-dev/xaq-extensions); its `index.json` pins each to a commit and an
 integrity hash, and xaq installs exactly that.
@@ -507,7 +506,6 @@ Extensions and listeners aren't updated. Foreground and source runs keep the com
 - The restart drops pending Google consents (start them again), in-flight MCP calls (agents retry), and the
   in-memory list of handed-out tokens to scrub. Listener streams resume where they were.
 - The unit file isn't rewritten. Run `service install` when a release says it changed the unit.
-- Design: [ADR 0002](adr/0002-console-self-update.md).
 
 | Endpoint | What |
 |---|---|

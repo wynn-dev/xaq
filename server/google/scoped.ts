@@ -1,5 +1,4 @@
-// Downscoped Google access for core code and for code extensions (docs/EXTENSIONS.md "Google accounts for code
-// extensions"). A connected account's refresh token covers everything it granted xaq (Gmail at least); a caller that
+// Downscoped Google access for core code and for code extensions. A connected account's refresh token covers everything it granted xaq (Gmail at least); a caller that
 // needs only Drive gets a token for Drive only, minted with the refresh grant's `scope` (TokenManager.scopedAccessToken).
 //
 // For core code (Gmail's attach-from-Drive):

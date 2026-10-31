@@ -1,4 +1,4 @@
-// Broker M1 PRs 3/4 (docs/MCP-BROKER.md): the upstream manager and the credential store, against the fake upstream
+// Broker M1 PRs 3/4: the upstream manager and the credential store, against the fake upstream
 // (test/fake-mcp-upstream.ts). Offline and deterministic: every server listens on 127.0.0.1, DNS is a fake lookup.
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";

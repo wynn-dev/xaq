@@ -31,7 +31,6 @@ const EXCLUDE = [
   /^package\.json$/, // hand-written: name, bin, URLs
   /^\.github\//, // hand-written: nightly.yml, shim.yml
   /^shim\//, // the agentinbox-cli shim is about the old name
-  /^docs\/(HANDOFF|STATUS|FOLLOWUPS|MCP-BROKER|calendar)\.md$/, // history and plans: they describe what was
   /^server\/db\/schema\.ts$/, // applied migrations are never edited
   /^src\/routeTree\.gen\.ts$/,
   /^LICENSE$/,

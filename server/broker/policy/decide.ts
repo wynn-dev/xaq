@@ -1,4 +1,4 @@
-// BrokerPolicy (docs/MCP-BROKER.md "Access and approvals", Wynn's model): the level, the tool's risk, the
+// BrokerPolicy: the level, the tool's risk, the
 // "always allow" rules and the per-agent caps on risky calls. Never runs the call.
 
 import type { Db } from "../../db/index.ts";

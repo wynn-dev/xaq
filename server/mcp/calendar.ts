@@ -1,4 +1,4 @@
-// Google Calendar MCP tools (workstream C, docs/calendar.md "C: MCP tools"). Registered by buildMcpServer
+// Google Calendar MCP tools (workstream C). Registered by buildMcpServer
 // strictly by capability; each handler builds `new AgentCalendar(ctx, mail.principal, mail.trace)`
 // (server/calendar/agent.ts, B: grants, calendar scope, write mode, allowTo, send caps) and formats its
 // result. This layer owns argument shapes: times are checked and normalized here so the policy layer and

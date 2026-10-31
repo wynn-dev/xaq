@@ -1,4 +1,4 @@
-// /api/extensions: install, list, update and remove extensions (docs/EXTENSIONS.md). Console session + CSRF like
+// /api/extensions: install, list, update and remove extensions. Console session + CSRF like
 // every /api router (server/app.ts). The `xaq ext` CLI uses these routes through its local admin channel.
 
 import type { Context } from "hono";

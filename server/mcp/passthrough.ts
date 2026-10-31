@@ -1,4 +1,4 @@
-// Upstream prompts and resources on /mcp (docs/EXTENSIONS.md "Prompts and resources"): the prompts and resources
+// Upstream prompts and resources on /mcp: the prompts and resources
 // capabilities, and their five handlers over ctx.broker.passthrough (server/broker/passthrough.ts). Only with the
 // broker on and at least one connection grant; the same in direct and search mode (search mode trims only tools/list).
 // Each listing is checked against the SDK's own schema, so one odd upstream entry can't break the whole list.

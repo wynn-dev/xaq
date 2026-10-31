@@ -27,7 +27,7 @@ servers behind the broker. Details: [Connections](docs/reference.md#connections-
 For Gmail, Google Calendar is supported too (optional). It needs the Calendar API enabled in your Google Cloud project, the
 Calendar scopes on the consent screen, Calendar added to each account, and `calendar.read` (and, to make changes,
 `calendar.write`) on the agent's grant. The console's setup covers all of it; existing installs use Overview → "Add
-Google Calendar". Details: [docs/calendar.md](docs/calendar.md).
+Google Calendar". Details: [Events and webhooks](docs/reference.md#events-and-webhooks).
 
 Agents can attach files to drafts, replies, forwards and new mail: bytes they have, a file from a directory you allow
 on xaq's machine (off by default: Settings → Attachments from files, or `npx xaq-cli settings attachment-dirs add <dir>`),
@@ -115,7 +115,6 @@ didn't create.
 - [Reference](docs/reference.md): features, configuration, running as a service or behind a proxy, security model,
   webhooks, data and backups, development
 - [Waking local agents with `xaq listen`](docs/listen.md), e.g. `npx xaq-cli listen --recipe claude-code`
-- [Screenshots](docs/screenshots/README.md)
 
 ## License
 

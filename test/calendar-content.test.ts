@@ -1,4 +1,4 @@
-// Event text as untrusted content (server/calendar/content.ts, docs/calendar.md workstream C). Invitations
+// Event text as untrusted content (server/calendar/content.ts). Invitations
 // are an injection vector: anyone can put an event with any title, location, names and description on the
 // account's calendar. The description is cleaned like a mail body and wrapped in <calendar_content untrusted>.
 

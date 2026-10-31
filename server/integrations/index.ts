@@ -1,4 +1,4 @@
-// The preset registry (docs/MCP-BROKER.md "Pre-made integrations", docs/EXTENSIONS.md). Pre-made connections are
+// The preset registry. Pre-made connections are
 // extensions: each installed extension's manifest becomes an IntegrationPreset (server/extensions/manifest.ts). No
 // preset is left in core (WHOOP is a code extension, run by server/extensions/host). The broker service, the
 // connections API (presets list, create from a preset) and the classifier read them from here.

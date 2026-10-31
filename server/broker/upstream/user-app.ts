@@ -1,4 +1,4 @@
-// Generic `user_app` OAuth (docs/EXTENSIONS.md "Migration": core keeps "user_app OAuth with refresh"): a provider
+// Generic `user_app` OAuth: a provider
 // whose user registers their own app and pastes its client id and secret (WHOOP was the first). Everything comes from
 // the preset's auth (a code extension's manifest `code.auth`): the authorize and token URLs, the scopes and the input
 // keys holding the client id and secret. Authorization code with the client secret in the body

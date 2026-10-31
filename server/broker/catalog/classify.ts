@@ -1,4 +1,4 @@
-// Risk classification, per docs/MCP-BROKER.md "What counts as risky". The word lists below are the single source:
+// Risk classification. The word lists below are the single source:
 // the doc quotes them, keep the two in sync.
 
 import type { IntegrationPreset, ToolClass, ToolDef } from "../types.ts";

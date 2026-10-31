@@ -1,5 +1,4 @@
-// Search mode's meta-tools: search_tools, call_read_tool, call_write_tool (docs/MCP-BROKER.md, "One endpoint
-// with 100+ tools"). Inner calls run under their real names: native tools through their registered (audited)
+// Search mode's meta-tools: search_tools, call_read_tool, call_write_tool. Inner calls run under their real names: native tools through their registered (audited)
 // handler, broker tools through BrokerCalls.call, so policy, approvals and audit see the real tool.
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult, RequestId } from "@modelcontextprotocol/sdk/types.js";

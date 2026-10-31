@@ -17,7 +17,7 @@ import { ApiError, UNAUTHORIZED_EVENT } from "@/lib/api";
 import { keys, queries } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 
-// The one-tap approve page (docs/MCP-BROKER.md): the link in approval.requested opens it, e.g. texted by Hermes.
+// The one-tap approve page: the link in approval.requested opens it, e.g. texted by Hermes.
 // Outside the app shell, mobile-first; it needs the admin session, and sign-in comes back here.
 export const Route = createFileRoute("/approve/$id")({
   beforeLoad: async ({ context, location }) => {

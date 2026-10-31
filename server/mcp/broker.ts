@@ -1,4 +1,4 @@
-// The MCP broker's side of /mcp (docs/MCP-BROKER.md, M1 PR 7): upstream tools listed next to the
+// The MCP broker's side of /mcp: upstream tools listed next to the
 // native ones, called through BrokerCalls, plus get_call_status. Only with Settings.brokerUpstreams on
 // (ctx.broker.view is null otherwise); native tools, their names, behaviour and audit are untouched.
 //

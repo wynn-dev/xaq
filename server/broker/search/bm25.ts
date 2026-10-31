@@ -1,4 +1,4 @@
-// BM25 over tool definitions (docs/MCP-BROKER.md, "One endpoint with 100+ tools"). Pure and deterministic:
+// BM25 over tool definitions. Pure and deterministic:
 // no I/O, ties broken by name. Built per /mcp request (stateless), which is cheap for a few hundred tools.
 
 /** A tool as search mode sees it, native or broker. */

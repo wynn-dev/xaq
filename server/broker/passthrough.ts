@@ -1,5 +1,4 @@
-// Upstream prompts and resources on /mcp, for every connection, remote and code (docs/EXTENSIONS.md "Prompts and
-// resources"):
+// Upstream prompts and resources on /mcp, for every connection, remote and code:
 // - prompts are `<slug>__<name>`;
 // - resources are `xaq://<slug>/<encodeURIComponent(original uri)>`, their names `<slug>__<name>`;
 // - resource templates the same way: the literal parts of the template are encoded, the `{…}` expressions kept, so

@@ -1,4 +1,4 @@
-// Agent-facing calendar actions (workstream B, docs/calendar.md "Grants and policy"). Like AgentMail: each
+// Agent-facing calendar actions (workstream B). Like AgentMail: each
 // method resolves the agent's grant, enforces capabilities, calendar scope, write mode, attendee allowTo
 // and send caps, and returns structured data that server/mcp/calendar.ts (C) formats. Denials throw
 // PolicyDenied (audited as "denied" with the reason); fixable input problems throw ToolError.

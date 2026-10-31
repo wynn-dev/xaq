@@ -1,4 +1,4 @@
-// Calendar approvals (workstream B, docs/calendar.md "Approvals"): approving applies the stored change with
+// Calendar approvals (workstream B): approving applies the stored change with
 // If-Match, rejecting and expiring discard it, the grant is re-checked at approval, a retried create never
 // duplicates the event, and malformed changes fail for good.
 

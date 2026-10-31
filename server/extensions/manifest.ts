@@ -1,4 +1,4 @@
-// The extension manifest, `xaq-extension.json` (docs/EXTENSIONS.md): its type, a strict validator, the JSON Schema
+// The extension manifest, `xaq-extension.json`: its type, a strict validator, the JSON Schema
 // the xaq-extensions repo checks manifests with (scripts/validate.mjs), and `presetFromManifest`, which turns an
 // installed extension into the IntegrationPreset the broker, policy, catalog and console already use.
 //
@@ -50,8 +50,7 @@ export type CodeAuth =
   | { type: "none" }
   /**
    * Official extensions only: a connection is bound to one of xaq's connected Google accounts and gets access tokens
-   * downscoped to exactly `scopes`, added to the account by incremental consent (docs/EXTENSIONS.md "Google accounts
-   * for code extensions"). Never Gmail, Calendar or Pub/Sub scopes.
+   * downscoped to exactly `scopes`, added to the account by incremental consent. Never Gmail, Calendar or Pub/Sub scopes.
    */
   | { type: "google"; scopes: string[]; apis: GoogleApi[] }
   | {

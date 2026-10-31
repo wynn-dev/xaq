@@ -1,6 +1,6 @@
-// First run with Google optional (docs/MCP-BROKER.md, "Setup UX"): the wizard first asks what to connect. Gmail &
+// First run with Google optional: the wizard first asks what to connect. Gmail &
 // Calendar enters today's Google steps unchanged; Notion or a custom MCP server go to Add connection, then the agent
-// step. WHOOP is an extension now (docs/EXTENSIONS.md), so it isn't a first-run card. Pure functions of the server's SetupState and this browser's draft. Relative imports only.
+// step. WHOOP is an extension now, so it isn't a first-run card. Pure functions of the server's SetupState and this browser's draft. Relative imports only.
 
 import type { SetupState } from "../../../shared/types.ts";
 import type { SetupDraft } from "./steps.ts";

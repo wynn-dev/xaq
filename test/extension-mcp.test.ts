@@ -1,4 +1,4 @@
-// Prompts and resources on /mcp for every upstream, remote and code (docs/EXTENSIONS.md "Prompts and resources"),
+// Prompts and resources on /mcp for every upstream, remote and code,
 // end to end and offline: a code-extension connection (the echo fixture, a real child) and a remote one (the fake
 // upstream), an agent at "read", both tool-list modes, routing, namespacing, audit, the kill switch, events through
 // the outbox, and the state directory going with the connection.

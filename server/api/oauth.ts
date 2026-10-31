@@ -80,7 +80,7 @@ interface PageInput {
   code?: string | null;
   /** postMessage target origin for the opener (the console). */
   targetOrigin: string;
-  /** An upstream connection's sign-in (docs/MCP-BROKER.md) instead of a Google account's. */
+  /** An upstream connection's sign-in instead of a Google account's. */
   connection?: { id: string | null; name: string | null };
 }
 
@@ -154,7 +154,7 @@ export function oauthRoutes(ctx: AppContext) {
     const url = new URL(c.req.url);
     // The console that opened the popup lives at publicUrl (in dev, Vite serves it from another port).
     const targetOrigin = ctx.config.dev ? "*" : new URL(ctx.settings.publicUrl()).origin;
-    // A code extension's Google consent (docs/EXTENSIONS.md "Google accounts for code extensions"): the page reports to
+    // A code extension's Google consent: the page reports to
     // the console's connection sign-in (agentinbox:connection-oauth with the connection), so a cancel or nothing ticked
     // ends its wait at once, and a partial grant counts as connected (the connection says what's missing).
     const extConnection = extensionConsentConnection(ctx, url.searchParams.get("state") ?? "");

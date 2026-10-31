@@ -1,4 +1,4 @@
-// Console decisions for broker connections (docs/MCP-BROKER.md) as pure functions, so they can be tested directly:
+// Console decisions for broker connections as pure functions, so they can be tested directly:
 // a connection's status in plain words, the Add connection draft and the request sequence it turns into, what a
 // probe found and access levels. Built on the /api/connections DTOs in shared/types.ts.
 // No React and relative imports only: vitest and the server typecheck load this module too.

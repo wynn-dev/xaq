@@ -1,6 +1,6 @@
 // Adversarial prompt-injection corpus for the content cleaner (server/mail/content.ts).
 //
-// Philosophy (docs/HANDOFF.md, "Guardrail philosophy"): clean, don't censor. Hidden payloads must be
+// Philosophy: clean, don't censor. Hidden payloads must be
 // removed and flagged; legitimate mail must come through with full fidelity and no false signals.
 // Fixtures live in test/fixtures/content/{adversarial,legit}/*.ts; each documents its own expectation.
 // Fixtures with a `bug` field document a known cleaner defect and run as `it.fails` until fixed.
