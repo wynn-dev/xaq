@@ -3,8 +3,8 @@ import type { PairingStart } from "../shared/agent-api.ts";
 import type { ConsoleStreamMessage, PairingRequest } from "../shared/types.ts";
 import { type AgentApiOptions, agentApi, sweepPairings } from "../server/agentapi/index.ts";
 import { sha256 } from "../server/crypto.ts";
-import { addAccount, readGrant } from "./listen-server-helpers.ts";
-import { CSRF, type Harness, harness, json } from "./platform-helpers.ts";
+import { addAccount } from "./listen-server-helpers.ts";
+import { CSRF, grantInput, type Harness, harness, json } from "./helpers.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {
@@ -32,7 +32,7 @@ async function setup(opts: AgentApiOptions = {}) {
       r("/agent/v1/pairings", { method: "POST", headers: ipHeaders(ip), json: body }),
     poll: (deviceCode: string, ip = "10.0.0.1") => r("/agent/v1/pairings/poll", { method: "POST", headers: ipHeaders(ip), json: { deviceCode } }),
     /** Sends the request's real user code unless the body has one. */
-    approve: (id: string, body: Record<string, unknown> = { grants: [readGrant("acc_a")] }) => {
+    approve: (id: string, body: Record<string, unknown> = { grants: [grantInput("acc_a")] }) => {
       const userCode = h!.ctx.db.get<{ user_code: string }>("SELECT user_code FROM pairings WHERE id = ?", id)?.user_code ?? "XXXX-XXXX";
       return r(`/api/pairings/${id}/approve`, { method: "POST", cookie, headers: CSRF, json: { userCode, ...body } });
     },
@@ -115,7 +115,7 @@ describe("pairing poll", () => {
     expect(await json(await s.poll(p.deviceCode))).toEqual({ status: "pending" });
     s.clock.advance(13_000);
 
-    const approved = await s.approve(p.id, { name: "Hermes", grants: [readGrant("acc_a")] });
+    const approved = await s.approve(p.id, { name: "Hermes", grants: [grantInput("acc_a")] });
     expect(approved.status).toBe(200);
     const agentText = await approved.text();
     const agent = JSON.parse(agentText);
@@ -155,9 +155,9 @@ describe("pairing poll", () => {
     const p = await started(s);
     // No mailbox grant is fine (installs with only connections), but an unknown connection isn't.
     expect((await s.approve(p.id, { grants: [], connections: [{ connectionId: "con_nope", level: "read" }] })).status).toBe(400);
-    expect((await s.approve(p.id, { grants: [{ ...readGrant("acc_a"), level: "ask" as never }] })).status).toBe(400);
-    expect((await s.approve(p.id, { grants: [readGrant("acc_missing")] })).status).toBe(404);
-    expect((await s.approve(p.id, { grants: [readGrant("acc_a"), readGrant("acc_a")] })).status).toBe(400);
+    expect((await s.approve(p.id, { grants: [{ ...grantInput("acc_a"), level: "ask" as never }] })).status).toBe(400);
+    expect((await s.approve(p.id, { grants: [grantInput("acc_missing")] })).status).toBe(404);
+    expect((await s.approve(p.id, { grants: [grantInput("acc_a"), grantInput("acc_a")] })).status).toBe(400);
     expect(s.h.ctx.policy.listAgents()).toHaveLength(0);
     expect((await s.list("pending")).map((x) => x.id)).toEqual([p.id]);
     expect((await s.approve("par_nope")).status).toBe(404);
@@ -253,13 +253,13 @@ describe("approval checks", () => {
   it("requires the user code from the terminal, ignoring case and dashes", async () => {
     const s = await setup();
     const p = await started(s);
-    expect((await s.approve(p.id, { userCode: "", grants: [readGrant("acc_a")] })).status).toBe(400);
-    const wrong = await s.approve(p.id, { userCode: "AAAA-AAAA", grants: [readGrant("acc_a")] });
+    expect((await s.approve(p.id, { userCode: "", grants: [grantInput("acc_a")] })).status).toBe(400);
+    const wrong = await s.approve(p.id, { userCode: "AAAA-AAAA", grants: [grantInput("acc_a")] });
     expect(wrong.status).toBe(409);
     expect((await json(wrong)).error).toMatchObject({ code: "user_code_mismatch", message: expect.stringMatching(/doesn't match/) });
     expect(s.actions("pairing.approved")[0]).toMatchObject({ outcome: "denied", reason: "user_code_mismatch", target: p.id });
     expect(s.h.ctx.policy.listAgents()).toHaveLength(0);
-    const ok = await s.approve(p.id, { userCode: ` ${p.userCode.replace("-", "").toLowerCase()} `, grants: [readGrant("acc_a")] });
+    const ok = await s.approve(p.id, { userCode: ` ${p.userCode.replace("-", "").toLowerCase()} `, grants: [grantInput("acc_a")] });
     expect(ok.status).toBe(200);
   });
 

@@ -20,8 +20,7 @@ import { hostSlugPart, presetServerSlug } from "../shared/user-server.ts";
 import type { LookupFn } from "../server/util/ssrf.ts";
 import { type FakeMcpUpstream, type FakeTool, startFakeMcpUpstream } from "./fake-mcp-upstream.ts";
 import { fixtureManifest, useFixtureExtensions } from "./extension-fixtures.ts";
-import { testContext } from "./helpers.ts";
-import { CSRF, harness, json } from "./platform-helpers.ts";
+import { CSRF, harness, json, testContext } from "./helpers.ts";
 
 afterAll(useFixtureExtensions());
 const t3codePreset = presetById("t3code")!;

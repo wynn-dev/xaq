@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { computeIntegrity } from "../server/extensions/integrity.ts";
 import { extensionStore } from "../server/extensions/store.ts";
 import { entriesFromDir, type FakeGithub, fakeSha, manifest, startFakeGithub, writeTree } from "./extension-fakes.ts";
-import { CSRF, type Harness, harness, json } from "./platform-helpers.ts";
+import { CSRF, type Harness, harness, json } from "./helpers.ts";
 
 let gh: FakeGithub;
 let h: Harness;

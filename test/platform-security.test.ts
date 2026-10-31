@@ -8,8 +8,8 @@ import { BAN_MS, clientKey, GLOBAL_MAX_FAILURES, LoginLimiter, MAX_ATTEMPTS, MAX
 import { SESSION_MAX_AGE_MS, SESSION_TTL_MS, SessionStore } from "../server/auth/sessions.ts";
 import { acquireInstanceLock, assertMasterKeyUsable, bootId, lockPath, processStartTime, resetPasswordCommand, runningInstance } from "../server/instance.ts";
 import { startServer } from "../server/server.ts";
-import { testConfig } from "./helpers.ts";
-import { CSRF, fakeGoogle, fakeIngest, type Harness, harness, json, PASSWORD } from "./platform-helpers.ts";
+import { CSRF, fakeIngest, type Harness, harness, json, PASSWORD, testConfig } from "./helpers.ts";
+import { fakeGoogle } from "./fake-google.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {

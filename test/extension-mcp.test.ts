@@ -21,7 +21,7 @@ import type { AppContext } from "../server/context.ts";
 import { codeExtensionNodeProblem, codeExtensionSource, extensionStateDir, type InstalledExtension } from "../server/extensions/host/index.ts";
 import { extensionStore } from "../server/extensions/store.ts";
 import { type FakeMcpUpstream, startFakeMcpUpstream } from "./fake-mcp-upstream.ts";
-import { CSRF, harness, json } from "./platform-helpers.ts";
+import { CSRF, harness, json } from "./helpers.ts";
 
 const FIXTURE = resolve(import.meta.dirname, "fixtures/extensions/echo");
 const cleanup: (() => Promise<unknown>)[] = [];

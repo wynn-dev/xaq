@@ -22,8 +22,7 @@ import { presets } from "../server/integrations/index.ts";
 import { entriesFromDir, type FakeGithub, fakeSha, startFakeGithub } from "./extension-fakes.ts";
 import { connectFakeAccount, FAKE_CLIENT, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";
 import { googleEcho, WORKSPACE_APIS } from "./google-extension-fixtures.ts";
-import { testContext } from "./helpers.ts";
-import { CSRF, PASSWORD, sessionCookie } from "./platform-helpers.ts";
+import { CSRF, PASSWORD, sessionCookie, testContext } from "./helpers.ts";
 
 const ME = "me@example.com";
 const OPS = "ops@example.com";

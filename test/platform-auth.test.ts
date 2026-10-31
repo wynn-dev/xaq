@@ -4,7 +4,7 @@ import { setupTokenPath } from "../server/auth/setup-token.ts";
 import { BAN_MS, LoginLimiter } from "../server/auth/lockout.ts";
 import { SESSION_TTL_MS, SessionStore } from "../server/auth/sessions.ts";
 import { resetAdminPassword } from "../server/auth/index.ts";
-import { CSRF, harness, type Harness, json, PASSWORD, sessionCookie } from "./platform-helpers.ts";
+import { CSRF, harness, type Harness, json, PASSWORD, sessionCookie } from "./helpers.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {

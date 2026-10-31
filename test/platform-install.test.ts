@@ -20,8 +20,7 @@ import {
   userManagerConfigHome,
 } from "../server/service.ts";
 import { defaultPublicUrl } from "../server/settings.ts";
-import { testConfig, testContext } from "./helpers.ts";
-import { CSRF, type Harness, harness } from "./platform-helpers.ts";
+import { CSRF, type Harness, harness, testConfig, testContext } from "./helpers.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 function cli(args: string[], env: Record<string, string> = {}) {

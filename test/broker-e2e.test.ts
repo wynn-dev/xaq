@@ -8,7 +8,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { afterEach, describe, expect, it } from "vitest";
 import { upstreams } from "../server/broker/upstream/runtime.ts";
 import { type FakeMcpUpstream, startFakeMcpUpstream } from "./fake-mcp-upstream.ts";
-import { CSRF, harness, json } from "./platform-helpers.ts";
+import { CSRF, harness, json } from "./helpers.ts";
 
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {

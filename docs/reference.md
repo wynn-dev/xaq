@@ -151,6 +151,11 @@ A mail grant with full access can also have **allowed recipients** (exact addres
 then every send and every calendar invite may only go to them. There are no approvals: what a grant allows goes
 through at once, and what it doesn't is refused with the reason, in the audit log.
 
+**Upgrading from a version with approvals**: grants keep full access only where the agent already sent mail or
+changed calendars without a person (send mode direct, calendar writes direct). Drafts-only, approval and
+organize-only grants, and connections at "ask before risky actions", become read only; label-scoped grants now see the
+whole mailbox. Check each agent's page in the console and give full access where it's needed.
+
 A send whose outcome is unknown (a 5xx, timeout or reset) counts as sent: the tool fails with `send_uncertain` and the
 agent is told to check `in:sent` before retrying.
 

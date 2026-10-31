@@ -7,7 +7,7 @@ import { makeScrubber, processResult } from "../server/broker/policy/output.ts";
 import { SourceError, type ToolResult } from "../server/broker/types.ts";
 import { escapeDelimiters, wrapUntrusted } from "../server/mail/content.ts";
 import { addConnection, addTool, DbRegistry, FakeSource, FakeSources, grant, MemoryCredentials } from "./broker-policy-fakes.ts";
-import { CSRF, type Harness, harness } from "./platform-helpers.ts";
+import { CSRF, type Harness, harness } from "./helpers.ts";
 
 const signal = () => new AbortController().signal;
 const textOf = (r: ToolResult) => r.content.map((b) => (b.type === "text" ? String(b.text) : `[${b.type}]`)).join("\n");

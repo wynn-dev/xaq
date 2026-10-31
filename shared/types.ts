@@ -205,10 +205,10 @@ export interface SetupState {
  * - calendar_not_added: Google Calendar isn't added to this install yet (existing installs after the upgrade).
  *   "info"; `url` is unset, the console links its "Add Google Calendar" flow. Gone once added or dismissed.
  * - calendar_api_disabled: Google said the Calendar API is disabled in the project (SERVICE_DISABLED). "error"
- *   when some grant has a calendar capability, else "warning". `url` = the enable-API deep link.
+ *   when some agent has a grant on one of the accounts, else "warning". `url` = the enable-API deep link.
  * - calendar_scope_missing: Calendar is added to this install but this account hasn't granted the calendar
- *   scopes (Account.calendar.missingScopes). One per account. "info" ("error" when a grant on the account
- *   has a calendar capability). Fixed by the per-account incremental consent.
+ *   scopes (Account.calendar.missingScopes). One per account. "info" ("error" when an agent has a grant on
+ *   the account). Fixed by the per-account incremental consent.
  * - calendar_sync_failing: calendar sync for this account keeps failing (Account.calendar.error). "error".
  */
 export type SetupWarningCode =
@@ -1017,7 +1017,7 @@ export interface CreateConnectionInput {
 
 /**
  * PATCH /api/connections/:id. Changing the URL (custom connections only) deletes the credentials, clears the
- * private-target allow, cancels pending calls and sets status needs_reauth: reconnect afterwards.
+ * private-target allow and sets status needs_reauth: reconnect afterwards.
  */
 export interface UpdateConnectionInput {
   /** true: every agent without access gets it at levelDefault now, and agents created later too. */

@@ -273,7 +273,7 @@ function validateRisk(v: unknown, path: string): NonNullable<Manifest["risk"]> {
   for (const name of names) {
     const p = `${path}.tools["${name.slice(0, 64)}"]`;
     str(name, p, { max: 128, re: TOOL_NAME_RE, what: "a tool name" });
-    // "target" (a JSON Pointer for approval rules, gone) is still accepted and ignored, so older manifests install.
+    // "target" (once a JSON Pointer for approval rules) is still accepted and ignored, so older manifests install.
     const e = obj(o.tools[name], p, ["class", "target"], ["class"]);
     if (e.class !== "read" && e.class !== "write" && e.class !== "risky") fail(`${p}.class`, 'must be "read", "write" or "risky"');
     const entry: RiskEntry = { class: e.class };

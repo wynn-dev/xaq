@@ -10,7 +10,8 @@ import { bannerLines } from "../server/server.ts";
 import { renderSkill, SKILL_URL_PLACEHOLDER, skillPath } from "../server/skill/index.ts";
 import type { EventsService } from "../server/events/types.ts";
 import type { MailService } from "../server/mail/types.ts";
-import { CSRF, fakeGoogle, fakeIngest, harness, type Harness, json } from "./platform-helpers.ts";
+import { CSRF, fakeIngest, harness, type Harness, json } from "./helpers.ts";
+import { fakeGoogle } from "./fake-google.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {

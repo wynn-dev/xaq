@@ -7,9 +7,9 @@ import { createApp } from "../server/app.ts";
 import { type RunningServer, startServer } from "../server/server.ts";
 import type { GoogleService } from "../server/google/types.ts";
 import type { MailService } from "../server/mail/types.ts";
-import { testConfig } from "./helpers.ts";
-import { addAccount, emitMessage, fakeMail, readGrant, SseReader } from "./listen-server-helpers.ts";
-import { fakeGoogle, fakeIngest } from "./platform-helpers.ts";
+import { fakeIngest, grantInput, testConfig } from "./helpers.ts";
+import { addAccount, emitMessage, fakeMail, SseReader } from "./listen-server-helpers.ts";
+import { fakeGoogle } from "./fake-google.ts";
 
 let running: RunningServer | undefined;
 const readers: SseReader[] = [];
@@ -41,7 +41,7 @@ async function setup(opts: AgentApiOptions = {}, mail: () => MailService = fakeM
   agentApi(ctx, { heartbeatMs: 60_000, ...opts });
   addAccount(ctx, "acc_a", "me@acme.com");
   addAccount(ctx, "acc_b", "other@acme.com");
-  const { agent, apiKey } = ctx.policy.createAgent({ name: "Hermes", grants: [readGrant("acc_a")] });
+  const { agent, apiKey } = ctx.policy.createAgent({ name: "Hermes", grants: [grantInput("acc_a")] });
 
   /** New consumers default to the head; these tests want the backlog unless they say otherwise. */
   const open = async (query = "", headers: Record<string, string> = {}, key = apiKey) => {
@@ -233,7 +233,7 @@ describe("GET /agent/v1/events/stream", () => {
 
   it("keeps a stream open on unrelated agent changes", async () => {
     const s = await setup();
-    const other = s.ctx.policy.createAgent({ name: "Other", grants: [readGrant("acc_a")] });
+    const other = s.ctx.policy.createAgent({ name: "Other", grants: [grantInput("acc_a")] });
     const r = await s.open();
     s.ctx.policy.rotateKey(other.agent.id);
     s.ctx.policy.updateAgent(s.agent.id, { name: "Renamed" });
@@ -348,7 +348,7 @@ describe("stream hardening", () => {
         },
       }) as unknown as MailService,
     );
-    s.ctx.policy.upsertGrant(s.agent.id, "acc_b", readGrant("acc_b"));
+    s.ctx.policy.upsertGrant(s.agent.id, "acc_b", grantInput("acc_b"));
     emitMessage(s.ctx, "acc_a", "slow");
     const r = await s.open("?include_body=1");
     await started;
@@ -523,7 +523,7 @@ describe("consumer start and reversible refusals", () => {
 
   it("/me lists only this agent's consumers", async () => {
     const s = await setup();
-    const other = s.ctx.policy.createAgent({ name: "Other", grants: [readGrant("acc_a")] });
+    const other = s.ctx.policy.createAgent({ name: "Other", grants: [grantInput("acc_a")] });
     expect((await s.ack("mine", 0)).status).toBe(200);
     expect((await s.ack("theirs", 0, other.apiKey)).status).toBe(200);
     const me = (await (await fetch(`${s.url}/agent/v1/me`, { headers: { authorization: `Bearer ${s.apiKey}` } })).json()) as AgentSelf;

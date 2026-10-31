@@ -1,15 +1,20 @@
-// The test harness: a wired context on a temp database (testContext), and on top of it the in-process Google
-// (test/fake-google.ts) with the real policy: mailTestContext, calendarTestContext, grants, MCP clients and tool calls.
+// The test harness: a wired context on a temp database (testContext); the HTTP app on it with a claimed console
+// (harness); and the in-process Google (test/fake-google.ts) with the real policy: mailTestContext,
+// calendarTestContext, grants, MCP clients and tool calls.
 
+import type { Hono } from "hono";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import type { Account, GrantInput, MailEvent } from "../shared/types.ts";
+import type { Account, GrantInput, IngestStatus, MailEvent } from "../shared/types.ts";
 import { CALENDAR_SCOPES, MAIL_SCOPES } from "../shared/google-scopes.ts";
 import { AgentCalendar } from "../server/calendar/agent.ts";
 import { createCalendarService } from "../server/calendar/index.ts";
+import type { AppEnv } from "../server/api/util.ts";
+import { type AppOptions, createApp } from "../server/app.ts";
+import { readSetupToken } from "../server/auth/setup-token.ts";
 import type { CalendarService } from "../server/calendar/types.ts";
 import { type Config, loadConfig } from "../server/config.ts";
 import type { AppContext } from "../server/context.ts";
@@ -20,7 +25,7 @@ import { AgentMail, ToolError, type ToolTrace } from "../server/mail/agent.ts";
 import { buildMcpServer } from "../server/mcp/server.ts";
 import { PolicyDenied } from "../server/util/errors.ts";
 import { createAppContext, type ServiceOverrides, stopServices } from "../server/wire.ts";
-import { calendarInfoOf, FakeCalendarClient, FakeGoogleService } from "./fake-google.ts";
+import { calendarInfoOf, FakeCalendarClient, fakeGoogle, FakeGoogleService } from "./fake-google.ts";
 
 /** A config rooted in a fresh temp data dir. Pass `google` to point at test/fake-google.ts. */
 export function testConfig(patch: Partial<Config> = {}): Config {
@@ -122,6 +127,63 @@ export class FakeEvents {
 }
 
 export const grantInput = (accountId: string, patch: Partial<GrantInput> = {}): GrantInput => ({ accountId, level: "read", allowTo: [], ...patch });
+
+// ───────────── The app over HTTP ─────────────
+
+export const CSRF = { "x-xaq-csrf": "1" };
+export const PASSWORD = "correct horse battery";
+
+export function fakeIngest(status: Partial<IngestStatus> = {}): () => IngestService {
+  return () => ({ status: () => ({ running: true, lastPullAt: null, lastError: null, ...status }) }) as unknown as IngestService;
+}
+
+export interface Harness {
+  app: Hono<AppEnv>;
+  ctx: ReturnType<typeof testContext>["ctx"];
+  dispose: () => Promise<void>;
+  /** `peer` is the socket address the request comes from (default loopback, like a local reverse proxy). */
+  request: (path: string, init?: RequestInit & { cookie?: string; json?: unknown; peer?: string }) => Promise<Response>;
+  setupToken: () => string | null;
+  /** Claims the instance and returns the session cookie ("aib_session=…"). */
+  claim: () => Promise<string>;
+}
+
+export function harness(overrides: ServiceOverrides = {}, opts: AppOptions = {}): Harness {
+  const t = testContext({ google: fakeGoogle(), ingest: fakeIngest(), ...overrides });
+  const app = createApp(t.ctx, opts);
+  const request: Harness["request"] = (path, init = {}) => {
+    const { cookie, json, peer = "127.0.0.1", ...rest } = init;
+    const headers = new Headers(rest.headers);
+    if (cookie) headers.set("cookie", cookie);
+    if (json !== undefined) headers.set("content-type", "application/json");
+    const bindings = { incoming: { socket: { remoteAddress: peer } } };
+    return Promise.resolve(app.request(path, { ...rest, headers, body: json !== undefined ? JSON.stringify(json) : rest.body }, bindings));
+  };
+  const setupToken = () => readSetupToken(t.ctx.config.dataDir);
+  return {
+    app,
+    ctx: t.ctx,
+    dispose: t.dispose,
+    request,
+    setupToken,
+    async claim() {
+      const res = await request("/api/setup/claim", { method: "POST", headers: CSRF, json: { token: setupToken(), password: PASSWORD } });
+      if (res.status !== 204) throw new Error(`claim failed: ${res.status} ${await res.text()}`);
+      return sessionCookie(res)!;
+    },
+  };
+}
+
+/** Response JSON, loosely typed for assertions. */
+// oxlint-disable-next-line typescript/no-explicit-any
+export const json = (res: Response): Promise<any> => res.json();
+
+export function sessionCookie(res: Response): string | null {
+  const raw = res.headers.get("set-cookie");
+  return raw ? raw.split(";")[0]! : null;
+}
+
+// ───────────── In-process Google, real policy ─────────────
 
 /** A context with fake Google, accounts, ingest and events, plus helpers. */
 export function mailTestContext() {

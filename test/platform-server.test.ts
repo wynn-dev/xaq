@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { type BannerEnv, bannerLines, sameLoopbackServer, startServer, tunnelCommand } from "../server/server.ts";
-import { fakeGoogle, fakeIngest, harness, json } from "./platform-helpers.ts";
-import { testConfig } from "./helpers.ts";
+import { fakeIngest, harness, json, testConfig } from "./helpers.ts";
+import { fakeGoogle } from "./fake-google.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const cli = (...args: string[]) =>

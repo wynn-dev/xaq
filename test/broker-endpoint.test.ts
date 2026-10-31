@@ -18,9 +18,9 @@ import { type RunningServer, startServer } from "../server/server.ts";
 import { parseTypes } from "../server/listen/options.ts";
 import { matchesFilter } from "../server/events/filter.ts";
 import type { StoredEvent } from "../server/events/types.ts";
-import { testConfig, testContext } from "./helpers.ts";
-import { addAccount, readGrant, SseReader } from "./listen-server-helpers.ts";
-import { CSRF, fakeGoogle, fakeIngest, harness, json } from "./platform-helpers.ts";
+import { CSRF, fakeIngest, grantInput, harness, json, testConfig, testContext } from "./helpers.ts";
+import { addAccount, SseReader } from "./listen-server-helpers.ts";
+import { fakeGoogle } from "./fake-google.ts";
 
 // ───────────── Fakes for the catalog and policy workstreams ─────────────
 
@@ -129,7 +129,7 @@ describe("/mcp aggregation", () => {
     disposers.push(t.dispose);
     const { ctx } = t;
     addAccount(ctx, "acc_a", "me@acme.com");
-    const { agent } = ctx.policy.createAgent({ name: "Hermes", grants: [readGrant("acc_a")] });
+    const { agent } = ctx.policy.createAgent({ name: "Hermes", grants: [grantInput("acc_a")] });
     seedConnection(ctx, { id: "con_notion", slug: "notion", name: "Notion" }, { [agent.id]: "full" });
     seedConnection(ctx, { id: "con_t3", slug: "t3", name: "T3 forge" }, { [agent.id]: "read" });
 

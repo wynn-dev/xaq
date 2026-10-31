@@ -2551,3 +2551,18 @@ export const calendarInfoOf = (c: CalendarListEntryRaw): CalendarInfo => ({
   color: null,
   synced: c.accessRole === "owner" || c.accessRole === "writer",
 });
+
+/** The smallest GoogleService: only the client view the platform routes read (no Google calls at all). */
+export function fakeGoogle(view: { clientId?: string | null; hasSecret?: boolean; projectId?: string | null } = {}): () => GoogleService {
+  return () =>
+    ({
+      clientView: () => ({
+        clientId: view.clientId ?? null,
+        hasSecret: view.hasSecret ?? false,
+        projectId: view.projectId ?? null,
+        appType: view.clientId ? "external" : null,
+        redirectUri: "http://localhost:8425/oauth/callback",
+        callbackMode: "direct",
+      }),
+    }) as unknown as GoogleService;
+}

@@ -1,8 +1,6 @@
-import type { GrantInput, MessageContent, MessageSummary } from "../shared/types.ts";
+import type { MessageContent, MessageSummary } from "../shared/types.ts";
 import type { AppContext } from "../server/context.ts";
 import type { MailService } from "../server/mail/types.ts";
-
-export const readGrant = (accountId: string, patch: Partial<GrantInput> = {}): GrantInput => ({ accountId, level: "read", allowTo: [], ...patch });
 
 export function addAccount(ctx: AppContext, id: string, email: string): void {
   ctx.db.run(

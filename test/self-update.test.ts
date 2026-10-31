@@ -20,7 +20,7 @@ import {
 } from "../server/update.ts";
 import type { SelfUpdateStatus } from "../shared/types.ts";
 import { outcomeText, type PendingUpdate, updateVerdict } from "../src/lib/self-update.ts";
-import { CSRF, harness, type Harness, json, PASSWORD } from "./platform-helpers.ts";
+import { CSRF, harness, type Harness, json, PASSWORD } from "./helpers.ts";
 
 const dirs: string[] = [];
 const tempDir = (prefix = "xaq-update-") => {

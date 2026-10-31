@@ -9,8 +9,8 @@ import { agentApi } from "../server/agentapi/index.ts";
 import type { AppContext } from "../server/context.ts";
 import { buildMcpServer } from "../server/mcp/server.ts";
 import { pairingConnectionDefault } from "../src/components/approvals/pairing-grant.ts";
-import { addAccount, readGrant } from "./listen-server-helpers.ts";
-import { CSRF, type Harness, harness, json } from "./platform-helpers.ts";
+import { addAccount } from "./listen-server-helpers.ts";
+import { CSRF, grantInput, type Harness, harness, json } from "./helpers.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {
@@ -154,7 +154,7 @@ describe("pairing grants only what the card showed", () => {
     // A Gmail grant and connections omitted: no connection at all (not every "All agents" one).
     addAccount(s.ctx, "acc_a", "me@acme.com");
     const p2 = await pending(s, "Mail only");
-    const a2 = await json(await s.api(`/pairings/${p2.id}/approve`, { method: "POST", json: { userCode: p2.userCode, grants: [readGrant("acc_a")] } }));
+    const a2 = await json(await s.api(`/pairings/${p2.id}/approve`, { method: "POST", json: { userCode: p2.userCode, grants: [grantInput("acc_a")] } }));
     expect(s.ctx.db.all("SELECT connection_id FROM connection_grants WHERE agent_id = ?", a2.id)).toEqual([]);
 
     // Console create still inherits "All agents" (both connections, at their defaults).

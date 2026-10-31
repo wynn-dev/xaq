@@ -14,7 +14,7 @@ export interface PinnedTool {
   name: string;
   /** `<slug>__<name>` (unique across connections; tools that can't be named aren't stored). */
   exposedName: string;
-  /** The cleaned definition in use. null only for a row an older version left held as a new tool. */
+  /** The cleaned definition in use (null only if the stored JSON can't be read). */
   def: ToolDef | null;
   /** `pinHash(def)`: compared on every listing, a difference is audited (connection.tool_changed). */
   pinHash: string | null;

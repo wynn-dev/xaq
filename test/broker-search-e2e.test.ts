@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SEARCH_MODE_THRESHOLD } from "../server/broker/search/mode.ts";
 import { SEARCH_AUDIT_ACTION } from "../server/broker/search/tools.ts";
 import { type FakeMcpUpstream, startFakeMcpUpstream } from "./fake-mcp-upstream.ts";
-import { CSRF, harness, json } from "./platform-helpers.ts";
+import { CSRF, harness, json } from "./helpers.ts";
 
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
