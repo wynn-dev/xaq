@@ -77,7 +77,7 @@ every start).
 
 ### What the command gets
 
-- **stdin** and the 0600 file `$XAQ_EVENT_FILE`: `{ "notice": "…untrusted…", "event": <webhook payload> }`. Bodies are
+- **stdin** and the 0600 file `$XAQ_EVENT_FILE`: `{ "notice": "…untrusted…", "event": <event payload> }`. Bodies are
   wrapped in `<email_content from="…" untrusted>` (`<calendar_content organizer="…" untrusted>` for calendar
   descriptions); subjects, names, filenames and labels are cleaned so nothing can forge those delimiters.
 - **Environment**: only plain ids (`XAQ_EVENT_ID`, `XAQ_EVENT_TYPE`, `XAQ_EVENT_SEQ`, `XAQ_ACCOUNT`, `XAQ_THREAD_ID`,
