@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "xaq": { "url": "http://localhost:8425/mcp", "headers": { "Authorization": "Bearer aib_CURSOR_FIXTURE_KEY" } },
-    "github": { "url": "https://api.githubcopilot.com/mcp/", "headers": { "Authorization": "Bearer ${env:GITHUB_PAT}" } },
-    "figma": { "url": "https://mcp.figma.com/mcp" },
-    "fs": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem@2025.1.1", "/tmp"] }
-  }
-}

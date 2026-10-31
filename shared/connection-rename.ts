@@ -1,5 +1,5 @@
-// Changing a connection's short name (slug): PATCH /api/connections/:id {slug}. Shared by the console's "Change
-// short name" and `xaq connections rename`, so both check and warn the same way.
+// Changing a connection's short name (slug): PATCH /api/connections/:id {slug}, from the console's "Change short
+// name".
 
 const SLUG_RE = /^[a-z0-9-]{1,24}$/;
 

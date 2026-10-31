@@ -402,7 +402,7 @@ describe("attachment sources", () => {
     ctx.settings.update({ attachmentDirs: [] });
     try {
       const off = await a.call("send_message", { to: "x@example.org", subject: "s", body: "b", attachments: [{ path: join(docs, "contracts", "lease.pdf") }] });
-      expect(off.text).toMatch(/Attaching files from a path is off.*npx xaq-cli settings attachment-dirs add <dir>/);
+      expect(off.text).toMatch(/Attaching files from a path is off.*Settings → Attachments from files/);
     } finally {
       ctx.settings.update({ attachmentDirs: [docs] });
     }

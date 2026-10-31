@@ -100,7 +100,7 @@ export function upstreamConnector(ctx: AppContext, up: UpstreamRuntime, presetFo
         if (conn.preset && !preset) {
           return {
             status: "error",
-            message: `The ${conn.preset} extension isn't installed yet, so ${conn.name} can't be reconnected. xaq installs it in the background; try again shortly, or run \`xaq ext add ${conn.preset}\`.`,
+            message: `The ${conn.preset} extension isn't installed yet, so ${conn.name} can't be reconnected. xaq installs it in the background; try again shortly, or install it from Extensions in the console.`,
           };
         }
         // A Google extension (official only): bind one of xaq's connected Google accounts, then its incremental consent

@@ -1,1 +1,0 @@
-{ "mcpServers": { "docs": { "type": "http", "url": "https://docs.example.com/mcp", "headers": { "X-Api-Key": "docs-secret-444" } } } }

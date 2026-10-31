@@ -803,7 +803,7 @@ const DAY_MS = 86_400_000;
 export const extensionRemovedReason = (name: string) => `its extension ${name} was removed`;
 
 /** What a connection says when its preset's extension isn't installed (a code connection can't run without it). */
-export const missingExtensionMessage = (name: string) => `Needs the ${name} extension. Install it with \`xaq ext add ${name}\`, or from Extensions in the console.`;
+export const missingExtensionMessage = (name: string) => `Needs the ${name} extension. Install it from Extensions in the console.`;
 
 /**
  * The list/get shape: tool count, agents and days to expiry. With `presets`, a non-remote connection whose preset

@@ -112,9 +112,10 @@ describe("reset-password", () => {
       expect(r.stdout).toMatch(/http:\/\/127\.0\.0\.1:9123\/setup\?token=[0-9a-z]{24}/);
 
       t.ctx.settings.setState("admin.passwordHash", "scrypt$x");
-      r = cli(["reset-password", "--data", dataDir, "--port", "9999"]);
+      // --data is global: before the command works too.
+      r = cli(["--data", dataDir, "reset-password"]);
       expect(r.stdout).toContain("password was removed");
-      expect(r.stdout).toContain(":9999/setup?token=");
+      expect(r.stdout).toContain(":9123/setup?token=");
       expect(t.ctx.settings.getState("admin.passwordHash")).toBeNull();
     } finally {
       rmSync(lockPath(dataDir), { force: true });

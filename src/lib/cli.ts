@@ -3,9 +3,8 @@
 
 // Relative (not @shared): the setup-logic unit tests type-check this file under the server config.
 import type { AgentTool } from "../../shared/agent-api.ts";
+import { NPM_PACKAGE } from "../../shared/types.ts";
 
-/** The npm package; the command it installs is `xaq`. Swap for NPM_PACKAGE from @shared/types once it exists. */
-export const NPM_PACKAGE = "xaq-cli";
 export const NPX = `npx ${NPM_PACKAGE}`;
 
 export const TOOLS: AgentTool[] = ["claude-code", "codex", "cursor", "hermes", "other"];
@@ -109,7 +108,7 @@ export interface ConnectCommands {
 /** A listener command that only acknowledges events: proves delivery without starting anything. */
 export const LISTEN_TEST_EXEC = "cat > /dev/null";
 
-// "other" installs into ./skills rather than `skill print > SKILL.md`: a redirect would capture npx's install prompt.
+// "other" installs into ./skills.
 const SKILL_TARGET: Record<AgentTool, string> = {
   "claude-code": "claude",
   codex: "codex",

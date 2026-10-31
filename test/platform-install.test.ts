@@ -456,23 +456,21 @@ describe("5: CLI commands", () => {
     expect(r.stderr).toContain("unknown command 'frobnicate'");
     expect(r.stderr).not.toContain("Did you mean");
   });
-
-  it("documents reset-password's --port and --host", () => {
-    const r = cli(["reset-password", "--help"]);
-    expect(r.stdout).toContain("port of the running instance, used for the printed link");
-    expect(r.stdout).toContain("host of the running instance, used for the printed link");
-  });
 });
 
 describe("7/8: skill commands", () => {
   it("defaults the URL to the running instance, else localhost:8425", () => {
     const data = mkdtempSync(join(tmpdir(), "xaq-skill-"));
     cleanup.push(() => rmSync(data, { recursive: true, force: true }));
-    expect(cli(["skill", "print"], { XAQ_DATA: data }).stdout).toContain("http://localhost:8425/mcp");
+    const skill = () => {
+      cli(["skill", "install", "--target", data], { XAQ_DATA: data });
+      return readFileSync(join(data, "xaq", "SKILL.md"), "utf8");
+    };
+    expect(skill()).toContain("http://localhost:8425/mcp");
     writeFileSync(lockPath(data), JSON.stringify({ pid: process.pid, host: "0.0.0.0", port: 9234, startedAt: "" }));
-    expect(cli(["skill", "print"], { XAQ_DATA: data }).stdout).toContain("http://localhost:9234/mcp");
+    expect(skill()).toContain("http://localhost:9234/mcp");
     writeFileSync(lockPath(data), JSON.stringify({ pid: process.pid, host: "192.168.7.7", port: 9235, startedAt: "" }));
-    expect(cli(["skill", "print"], { XAQ_DATA: data }).stdout).toContain("http://192.168.7.7:9235/mcp");
+    expect(skill()).toContain("http://192.168.7.7:9235/mcp");
   });
 
   it("accepts known targets and paths, and refuses typos", () => {
