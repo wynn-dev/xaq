@@ -1,13 +1,7 @@
-// Setup, sync and push end to end through the real Calendar client (A) and the fake Calendar API. The
-// finer cases (forced scope errors, slow probes, watch failures) use test/calendar-setup-fakes.ts.
-import type { AddressInfo } from "node:net";
-import { serve, type ServerType } from "@hono/node-server";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createApp } from "../server/app.ts";
-import { CALENDAR_PUSH_PATH, createCalendarPush } from "../server/calendar/push.ts";
+// Setup and sync end to end through the real Calendar client (A) and the fake Calendar API. The
+// finer cases (forced scope errors, slow probes) use test/calendar-setup-fakes.ts.
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AppContext } from "../server/context.ts";
-import { now } from "../server/db/index.ts";
-import { getRow } from "../server/google/accounts.ts";
 import { consent } from "./calendar-setup-fakes.ts";
 import { FAKE_CLIENT, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";
 import { testContext } from "./helpers.ts";
@@ -65,40 +59,5 @@ describe("through the real Calendar client", () => {
     await ctx.calendar.syncAccount(a.id);
     expect([a, b].map((x) => ctx.accounts.get(x.id)!.calendar?.status)).toEqual(["active", "active"]);
     expect(ctx.calendar.setupState().api).toBe("enabled");
-  });
-
-  describe("push over HTTP", () => {
-    let server: ServerType;
-    let port: number;
-    beforeEach(async () => {
-      server = await new Promise<ServerType>((resolve) => {
-        const s = serve({ fetch: createApp(ctx).fetch, port: 0, hostname: "127.0.0.1" }, () => resolve(s));
-      });
-      port = (server.address() as AddressInfo).port;
-    });
-    afterEach(() => new Promise<void>((resolve) => server.close(() => resolve())));
-
-    it("Google's sync verifies the channel and a change kicks that calendar", async () => {
-      const { account } = await consent(ctx, fake, OPS);
-      ctx.db.run("INSERT INTO calendar_sync (account_id, calendar_id, updated_at) VALUES (?, ?, ?)", account!.id, OPS, now());
-      ctx.settings.update({ publicUrl: "https://inbox.example.com" });
-      fake.calendar.pushTarget = (address) => address.replace("https://inbox.example.com", `http://127.0.0.1:${port}`);
-      const kick = vi.spyOn(ctx.calendar, "kick");
-      const push = createCalendarPush(ctx, { lookup: async () => [{ address: "93.184.216.34", family: 4 }] });
-      await push.reconcile();
-      const [ch] = fake.calendar.channels();
-      expect(ch).toMatchObject({ address: `https://inbox.example.com${CALENDAR_PUSH_PATH}`, calendarId: OPS });
-      await vi.waitFor(() => expect(ctx.db.get<{ v: string | null }>("SELECT channel_verified_at AS v FROM calendar_sync")!.v).not.toBeNull());
-      expect(kick).not.toHaveBeenCalled();
-
-      fake.calendar.putEvent(OPS, OPS, { summary: "Standup", start: { dateTime: "2026-10-20T09:00:00Z" }, end: { dateTime: "2026-10-20T09:15:00Z" } });
-      await vi.waitFor(() => expect(kick).toHaveBeenCalledWith(account!.id, OPS));
-
-      // Removing the account stops the channel at Google before the token is revoked.
-      await ctx.accounts.remove(account!.id);
-      expect(fake.calendar.channels()).toEqual([]);
-      expect(getRow(ctx, account!.id)).toBeUndefined();
-      await push.stop?.();
-    });
   });
 });

@@ -8,18 +8,16 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { agentApi } from "../server/agentapi/index.ts";
-import { createApp } from "../server/app.ts";
 import { type BrokerParts, createBrokerService } from "../server/broker/service.ts";
 import type { AccessLevel, IntegrationPreset, RegisteredTool, ToolClass, ToolDef, ToolResult } from "../server/broker/types.ts";
 import type { AppContext } from "../server/context.ts";
 import { exposedName } from "../server/broker/catalog/index.ts";
-import { loopbackUrl } from "../server/urls.ts";
 import { upstreams } from "../server/broker/upstream/runtime.ts";
 import { Approvals } from "../server/mail/approvals.ts";
 import { buildMcpServer, INSTRUCTIONS, rejectedCall } from "../server/mcp/server.ts";
 import { type RunningServer, startServer } from "../server/server.ts";
 import { parseTypes } from "../server/listen/options.ts";
-import { matchesFilter, webhookInputSchema } from "../server/webhooks/filter.ts";
+import { matchesFilter } from "../server/events/filter.ts";
 import type { StoredEvent } from "../server/events/types.ts";
 import { testConfig, testContext } from "./helpers.ts";
 import { addAccount, readGrant, SseReader } from "./listen-server-helpers.ts";
@@ -302,17 +300,11 @@ describe("connection events", () => {
     await s.close();
   });
 
-  it("still accepts connection.tool_changed (never emitted since the hold was removed) in saved listener and webhook filters", () => {
+  it("still accepts connection.tool_changed (never emitted since the hold was removed) in saved listener filters", () => {
     expect(parseTypes("message.received,connection.tool_changed")).toEqual(["message.received", "connection.tool_changed"]);
-    const base = { agentId: "agt_x", name: "n", url: "https://example.com/h" };
-    expect(webhookInputSchema.safeParse({ ...base, eventTypes: ["connection.tool_changed"] }).success).toBe(true);
   });
 
-  it("webhook filters accept the new types; an account filter excludes connection events", () => {
-    const base = { agentId: "agt_x", name: "n", url: "https://example.com/h" };
-    expect(webhookInputSchema.safeParse({ ...base, eventTypes: ["connection.auth_failed", "approval.requested", "whoop.recovery_updated"] }).success).toBe(true);
-    expect(webhookInputSchema.safeParse({ ...base, eventTypes: ["bogus"] }).success).toBe(false);
-    expect(webhookInputSchema.safeParse({ ...base, eventTypes: ["message.bogus"] }).success).toBe(false);
+  it("an account filter excludes connection events", () => {
     const ev = { type: "connection.auth_failed", accountId: "", connectionId: "con_1", message: null, threadLabelIds: [] } as unknown as StoredEvent;
     expect(matchesFilter({}, ev)).toBe(true);
     expect(matchesFilter({ from: ["*@x.com"] }, ev)).toBe(true);
@@ -375,7 +367,6 @@ describe("broker service", () => {
     events: {
       types: ["whoop.recovery_updated"],
       pollIntervalMs: 1000,
-      handleWebhook: async () => [],
       poll: async (cursor, deps) => ({
         events: [
           { type: "whoop.recovery_updated", connectionId: deps.connectionId, dedupeKey: `r:${cursor ?? 0}`, data: { n: Number(cursor ?? 0) } },
@@ -386,25 +377,10 @@ describe("broker service", () => {
     },
   });
 
-  /** DNS and Tailscale fakes: no network. `serve` is the `tailscale serve status --json` config, or null without the CLI. */
-  const fakeReach = (answers: Record<string, string[]>, serve: () => unknown = () => null) => ({
-    lookup: async (host: string) => {
-      const a = answers[host];
-      if (!a) throw Object.assign(new Error(`getaddrinfo ENOTFOUND ${host}`), { code: "ENOTFOUND" });
-      return a.map((address) => ({ address, family: address.includes(":") ? 6 : 4 }));
-    },
-    tailscale: async () => {
-      const c = serve();
-      return c === null ? null : { bin: "tailscale", stdout: JSON.stringify(c) };
-    },
-  });
-  const TAILNET = "https://box.tail1234.ts.net";
-
-  it("polls native presets without a webhook URL, keeps the cursor, and serves webhook targets", async () => {
+  it("polls native presets and keeps the cursor", async () => {
     const t = setup({
       presets: () => [pollPreset()],
       nativeDeps: (c) => ({ connectionId: c.id, accessToken: async () => "tok", fetch, log: silent }),
-      reachability: fakeReach({ "inbox.example.com": ["93.184.216.34"] }),
     });
     disposers.push(t.dispose);
     const { ctx } = t;
@@ -421,117 +397,6 @@ describe("broker service", () => {
       ["whoop.recovery_updated", { n: 0 }],
       ["whoop.recovery_updated", { n: 1 }],
     ]);
-
-    // Webhook target: needs the client secret (here from the encrypted table, as the credential store writes it).
-    expect(ctx.broker.hooks.webhookTarget("con_w")).toBeNull();
-    const t0 = new Date().toISOString();
-    ctx.db.run(
-      "INSERT INTO connection_credentials (connection_id, oauth_client_enc, created_at, updated_at) VALUES (?, ?, ?, ?)",
-      "con_w",
-      ctx.crypto.encrypt(JSON.stringify({ client_id: "id", client_secret: "s3cret" })),
-      t0,
-      t0,
-    );
-    expect(ctx.broker.hooks.webhookTarget("con_w")).toMatchObject({ clientSecret: "s3cret", preset: { id: "whoop" } });
-    expect(ctx.broker.hooks.webhookTarget("con_nope")).toBeNull();
-    ctx.broker.hooks.emit([{ type: "whoop.recovery_updated", connectionId: "con_w", dedupeKey: "trace-1", data: { traceId: "trace-1" } }]);
-    ctx.broker.hooks.emit([{ type: "whoop.recovery_updated", connectionId: "con_w", dedupeKey: "trace-1", data: { traceId: "trace-1" } }]);
-    expect(ctx.events.feed(agent.id).events).toHaveLength(3);
-
-    expect(ctx.broker.hooks.presetWebhookTargets!("whoop").map((x) => x.deps.connectionId)).toEqual(["con_w"]);
-    expect(ctx.broker.hooks.presetWebhookTargets!("notion")).toEqual([]);
-
-    // A public https URL offers webhooks, and the reconciliation poll keeps running: a delivery never resets the cursor.
-    ctx.settings.update({ publicUrl: "https://inbox.example.com" });
-    await ctx.broker.webhookReachability();
-    expect(ctx.broker.webhookUrl("con_w")).toBe("https://inbox.example.com/hooks/connections/con_w");
-    expect(await ctx.broker.pollEvents(99_000)).toBe(1);
-    ctx.broker.hooks.delivered!("con_w");
-    expect(ctx.db.get<{ events_cursor: string }>("SELECT events_cursor FROM connections WHERE id = 'con_w'")!.events_cursor).toBe("3");
-    expect(await ctx.broker.pollEvents(200_000)).toBe(1);
-    expect(ctx.db.get<{ events_cursor: string }>("SELECT events_cursor FROM connections WHERE id = 'con_w'")!.events_cursor).toBe("4");
-
-    // The URL stops being public (here: tailnet-only): no webhook URL, and still polling.
-    ctx.settings.update({ publicUrl: TAILNET });
-    await ctx.broker.webhookReachability();
-    expect(ctx.broker.webhookUrl("con_w")).toBeNull();
-    expect(await ctx.broker.pollEvents(300_000)).toBe(1);
-  });
-
-  it("a tailnet-only https URL (Tailscale serve, no Funnel): no webhook URL, and the connection polls", async () => {
-    const t = setup({
-      presets: () => [pollPreset()],
-      nativeDeps: (c) => ({ connectionId: c.id, accessToken: async () => "tok", fetch, log: silent }),
-      reachability: fakeReach({ "box.tail1234.ts.net": ["100.101.102.103", "fd7a:115c:a1e0::1"] }),
-    });
-    disposers.push(t.dispose);
-    const { ctx } = t;
-    const { agent } = ctx.policy.createAgent({ name: "Hermes" });
-    seedConnection(ctx, { id: "con_w", slug: "whoop", name: "WHOOP", kind: "native_whoop", preset: "whoop", url: null }, { [agent.id]: "full" });
-    ctx.settings.update({ brokerUpstreams: true, publicUrl: TAILNET });
-    expect(await ctx.broker.pollEvents(10_000)).toBe(1);
-    expect(await ctx.broker.webhookReachability()).toMatchObject({ reach: "private", webhookBase: null, funnel: null });
-    expect(ctx.broker.webhookUrl("con_w")).toBeNull();
-    expect(await ctx.broker.pollEvents(11_000)).toBe(1);
-    expect(ctx.events.feed(agent.id).events.map((e) => e.type)).toEqual(["whoop.recovery_updated", "whoop.recovery_updated"]);
-  });
-
-  it("GET /api/connections/presets: a preset's webhook step only for a public URL, the Funnel offer only on *.ts.net with Tailscale", async () => {
-    let serve: unknown = null;
-    // The setup context as a preset sees it (WHOOP's steps used it; WHOOP is a code extension now).
-    const hookPreset = (): IntegrationPreset => ({
-      ...pollPreset(),
-      setupSteps: (sc) => [
-        { id: "app", title: "Create an app", body: "…", copy: { label: "Redirect URI", value: sc.redirectUri } },
-        ...(sc.webhookUrl
-          ? [{ id: "webhook", title: "Optional: turn on webhooks", body: "…", copy: { label: "Webhook URL", value: sc.webhookUrl } }]
-          : sc.funnel
-            ? [
-                { id: "funnel", title: "Optional: Funnel", body: "Warning: it's reachable from the whole internet.", copy: { label: "Command", value: sc.funnel.command } },
-                { id: "funnel-webhook", title: "Optional: paste the Funnel webhook URL", body: "…", copy: { label: "Webhook URL", value: sc.funnel.webhookUrl } },
-              ]
-            : []),
-        { id: "connect", title: "Connect", body: "…" },
-      ],
-    });
-    const h = harness({
-      broker: (ctx) =>
-        createBrokerService(ctx, {
-          presets: () => [hookPreset()],
-          reachability: fakeReach({ "box.tail1234.ts.net": ["100.101.102.103"], "inbox.example.com": ["93.184.216.34"] }, () => serve),
-        }),
-    });
-    disposers.push(h.dispose);
-    const cookie = await h.claim();
-    const { ctx } = h;
-    ctx.settings.update({ brokerUpstreams: true });
-    const steps = async () => {
-      // Each case re-checks: the cache keeps one entry, for the current public URL.
-      const [p] = (await json(await h.request("/api/connections/presets", { cookie, headers: CSRF }))) as { setupSteps: { id: string; title: string; body: string; copy?: { value: string } }[] }[];
-      return p!.setupSteps;
-    };
-    const text = (s: Awaited<ReturnType<typeof steps>>) => JSON.stringify(s);
-
-    // Tailnet-only, no Tailscale CLI: no webhook anywhere.
-    ctx.settings.update({ publicUrl: TAILNET });
-    let s = await steps();
-    expect(s.map((x) => x.id)).toEqual(["app", "connect"]);
-    expect(text(s)).not.toContain("/hooks/");
-
-    // Public: the optional webhook step, with the preset's URL (no connection id needed).
-    ctx.settings.update({ publicUrl: "https://inbox.example.com" });
-    s = await steps();
-    expect(s.map((x) => x.id)).toEqual(["app", "webhook", "connect"]);
-    expect(s.find((x) => x.id === "webhook")).toMatchObject({ copy: { value: "https://inbox.example.com/hooks/connections/whoop" } });
-
-    // Tailnet-only with the Tailscale CLI (console served on 443): the Funnel offer on its own port, hooks path only.
-    serve = { TCP: { "443": { HTTPS: true } }, Web: { "box.tail1234.ts.net:443": { Handlers: { "/": { Proxy: "http://127.0.0.1:8425" } } } } };
-    ctx.settings.update({ publicUrl: TAILNET });
-    s = await steps();
-    expect(s.map((x) => x.id)).toEqual(["app", "funnel", "funnel-webhook", "connect"]);
-    const origin = loopbackUrl(ctx.config.host, ctx.config.port);
-    expect(s.find((x) => x.id === "funnel")!.copy!.value).toBe(`tailscale funnel --bg --https=8443 --set-path=/hooks/connections ${origin}/hooks/connections`);
-    expect(s.find((x) => x.id === "funnel-webhook")!.copy!.value).toBe("https://box.tail1234.ts.net:8443/hooks/connections/whoop");
   });
 
   it("mcp.call approvals run through the broker's runner; an interrupted one is never retried", async () => {
@@ -772,13 +637,5 @@ describe("/api/connections", () => {
     expect(u.searchParams.get("state")!.length).toBeGreaterThanOrEqual(8);
     // The working client is untouched until WHOOP's consent comes back.
     expect(upstreams(ctx).store.client("con_w")).toEqual({ client_id: "good-id", client_secret: "good-secret-123" });
-  });
-
-  it("the app serves connection webhooks through the broker's hook host by default", async () => {
-    const t = setup();
-    disposers.push(t.dispose);
-    t.ctx.settings.update({ brokerUpstreams: true });
-    const res = await createApp(t.ctx).request("/hooks/connections/con_missing", { method: "POST", body: "{}" });
-    expect(res.status).toBe(404);
   });
 });

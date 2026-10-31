@@ -98,12 +98,12 @@ export function newestGrantedSeq(ctx: AppContext, agentId: string): number {
   let max = 0;
   for (const g of ctx.policy.grants(agentId)) {
     if (!readsEvents(g.capabilities)) continue;
-    const r = ctx.db.get<{ m: number | null }>("SELECT MAX(seq) AS m FROM events WHERE account_id = ? AND seq > 0", g.accountId);
+    const r = ctx.db.get<{ m: number | null }>("SELECT MAX(seq) AS m FROM events WHERE account_id = ?", g.accountId);
     max = Math.max(max, r?.m ?? 0);
   }
   // Connection events (events.connection_id) of the connections it has a grant on.
   for (const id of visibleConnectionIds(ctx.db, ctx.settings.get().brokerUpstreams, agentId)) {
-    const r = ctx.db.get<{ m: number | null }>("SELECT MAX(seq) AS m FROM events WHERE connection_id = ? AND seq > 0", id);
+    const r = ctx.db.get<{ m: number | null }>("SELECT MAX(seq) AS m FROM events WHERE connection_id = ?", id);
     max = Math.max(max, r?.m ?? 0);
   }
   return max;
@@ -122,7 +122,7 @@ export function newestVisibleSeq(ctx: AppContext, agentId: string): number {
   const connections = visibleConnectionIds(ctx.db, ctx.settings.get().brokerUpstreams, agentId);
   if (!accounts.length && !connections.length) return 0;
   const inList = (ids: string[]) => (ids.length ? ids.map(() => "?").join(", ") : "NULL");
-  const sql = `${EVENT_SELECT} WHERE e.seq > 0 AND e.seq < ? AND (e.account_id IN (${inList(accounts)}) OR e.connection_id IN (${inList(connections)})) ORDER BY e.seq DESC LIMIT 200`;
+  const sql = `${EVENT_SELECT} WHERE e.seq < ? AND (e.account_id IN (${inList(accounts)}) OR e.connection_id IN (${inList(connections)})) ORDER BY e.seq DESC LIMIT 200`;
   let before = Number.MAX_SAFE_INTEGER;
   for (let scanned = 0; ; ) {
     if (scanned >= VISIBLE_SCAN_MAX) return newestGrantedSeq(ctx, agentId);

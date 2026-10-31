@@ -293,7 +293,7 @@ describe("poll loop", () => {
     ctx.settings.update({ pollIntervalSeconds: 5 });
     ctx.ingest.start?.();
     await waitFor(() => ctx.ingest.status().lastPullAt !== null);
-    expect(ctx.ingest.status()).toMatchObject({ mode: "poll", running: true, lastError: null });
+    expect(ctx.ingest.status()).toMatchObject({ running: true, lastError: null });
     fake.deliver(ME, { from: CLIENT, subject: "Polled", text: "x" });
     ctx.ingest.kick();
     await waitFor(() => rec.events.length === 1);

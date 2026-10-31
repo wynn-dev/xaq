@@ -1,6 +1,6 @@
 import type { CalendarEventSummary, EventType, WebhookFilter, WebhookPayload } from "../../shared/types.ts";
 import { escapeDelimiters, stripInvisible, wrapUntrusted } from "../mail/content.ts";
-import { matchesFilter } from "../webhooks/filter.ts";
+import { matchesFilter } from "../events/filter.ts";
 import { matchesAnyGlob } from "../util/glob.ts";
 
 /** Stated once at the top of every event handed to a local command. */

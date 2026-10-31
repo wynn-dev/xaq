@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { hostname } from "node:os";
 import { EVENT_TYPES, type EventType, isEventType, type WebhookFilter } from "../../shared/types.ts";
-import { normalizeFilter, webhookFilterSchema } from "../webhooks/filter.ts";
+import { normalizeFilter, webhookFilterSchema } from "../events/filter.ts";
 import { resolve } from "node:path";
 import { newSecret, validateForwardUrl } from "./forward.ts";
 import { assertTrustedDir } from "./fsutil.ts";

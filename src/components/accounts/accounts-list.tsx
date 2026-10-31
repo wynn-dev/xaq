@@ -19,8 +19,6 @@ export function ConnectAccountButton({ label = "Connect Gmail account", variant 
 
 export function AccountsList() {
   const accounts = useQuery(queries.accounts());
-  const settings = useQuery(queries.settings());
-  const showWatch = settings.data?.ingestMode === "pubsub";
 
   if (accounts.isPending) {
     return (
@@ -63,7 +61,7 @@ export function AccountsList() {
   return (
     <Card className="gap-0 divide-y py-0">
       {accounts.data.map((a) => (
-        <AccountRow key={a.id} account={a} showWatch={showWatch} />
+        <AccountRow key={a.id} account={a} />
       ))}
     </Card>
   );

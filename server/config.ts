@@ -18,14 +18,13 @@ export interface Config {
   version: string;
   /**
    * Base URLs for Google APIs. Overridable so tests can point at test/fake-google.ts.
-   * Defaults: https://oauth2.googleapis.com, https://accounts.google.com, https://gmail.googleapis.com, https://pubsub.googleapis.com,
+   * Defaults: https://oauth2.googleapis.com, https://accounts.google.com, https://gmail.googleapis.com,
    * https://www.googleapis.com (Calendar: paths start with /calendar/v3), https://www.googleapis.com (Drive: /drive/v3).
    */
   google: {
     oauthBase: string;
     authBase: string;
     gmailBase: string;
-    pubsubBase: string;
     calendarBase: string;
     /**
      * Drive, Docs, Sheets and Slides (core's Drive client, server/google/drive.ts, and a code extension's API probe,
@@ -110,7 +109,6 @@ export function loadConfig(input: ConfigInput = {}, version = "0.0.0"): Config {
       oauthBase: envVar("GOOGLE_OAUTH_BASE") ?? "https://oauth2.googleapis.com",
       authBase: envVar("GOOGLE_AUTH_BASE") ?? "https://accounts.google.com",
       gmailBase: envVar("GOOGLE_GMAIL_BASE") ?? "https://gmail.googleapis.com",
-      pubsubBase: envVar("GOOGLE_PUBSUB_BASE") ?? "https://pubsub.googleapis.com",
       calendarBase: envVar("GOOGLE_CALENDAR_BASE") ?? "https://www.googleapis.com",
       ...(envVar("GOOGLE_APIS_BASE") ? { apisBase: envVar("GOOGLE_APIS_BASE")! } : {}),
     },

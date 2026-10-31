@@ -1,4 +1,4 @@
-import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, ChevronRightIcon, ExternalLinkIcon, EyeIcon, MinusIcon } from "lucide-react";
+import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, ChevronRightIcon, ExternalLinkIcon, EyeIcon } from "lucide-react";
 import { Fragment, useEffect, useRef } from "react";
 import { CopyButton, Wrapped } from "@/components/common";
 import { Button } from "@/components/ui/button";
@@ -15,18 +15,17 @@ function StepMarker({ index, status, current }: { index: number; status: StepSta
       className={cn(
         "flex size-7 shrink-0 items-center justify-center rounded-full border text-xs font-medium tabular transition-colors",
         status === "done" && "border-success bg-success text-white",
-        status === "skipped" && "border-muted-foreground/40 bg-muted text-muted-foreground",
         status === "todo" && current && "border-primary bg-primary text-primary-foreground",
         status === "todo" && !current && "bg-background text-muted-foreground",
       )}
       aria-hidden
     >
-      {status === "done" ? <CheckIcon className="size-3.5" /> : status === "skipped" ? <MinusIcon className="size-3.5" /> : index + 1}
+      {status === "done" ? <CheckIcon className="size-3.5" /> : index + 1}
     </span>
   );
 }
 
-const STATUS_TEXT: Record<StepStatus, string> = { done: "done", skipped: "skipped", todo: "to do" };
+const STATUS_TEXT: Record<StepStatus, string> = { done: "done", todo: "to do" };
 
 /** Vertical stepper on large screens; a compact progress bar + step picker on small ones. */
 export function WizardNav({ current, statuses, onSelect }: { current: StepId; statuses: Record<StepId, StepStatus>; onSelect: (id: StepId) => void }) {
@@ -50,7 +49,7 @@ export function WizardNav({ current, statuses, onSelect }: { current: StepId; st
             {STEP_IDS.map((id, i) => (
               <SelectItem key={id} value={id}>
                 {i + 1}. {STEP_META[id].short}
-                {statuses[id] === "done" ? " ✓" : statuses[id] === "skipped" ? " (skipped)" : ""}
+                {statuses[id] === "done" ? " ✓" : ""}
               </SelectItem>
             ))}
           </SelectContent>
@@ -80,7 +79,6 @@ export function WizardNav({ current, statuses, onSelect }: { current: StepId; st
                   <StepMarker index={i} status={statuses[id]} current={active} />
                   <span className="min-w-0">
                     <span className={cn("block truncate", active ? "font-medium" : "text-muted-foreground")}>{STEP_META[id].short}</span>
-                    {STEP_META[id].optional && <span className="block text-xs text-muted-foreground">Optional</span>}
                   </span>
                   <span className="sr-only">({STATUS_TEXT[statuses[id]]})</span>
                 </button>

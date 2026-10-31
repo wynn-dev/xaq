@@ -7,7 +7,7 @@ running xaq in production, scripting it, and understanding what it does.
 - [Commands and configuration](#commands-and-configuration)
 - [Google Cloud setup in brief](#google-cloud-setup-in-brief)
 - [Connecting agents by hand](#connecting-agents-by-hand)
-- [Events and webhooks](#events-and-webhooks)
+- [Events](#events)
 - [Running it](#running-it): [as a service](#as-a-service), [with your own supervisor](#with-your-own-supervisor),
   [on a remote server](#on-a-remote-server), [behind a reverse proxy](#behind-a-reverse-proxy)
 - [Security model](#security-model)
@@ -24,17 +24,13 @@ running xaq in production, scripting it, and understanding what it does.
   and new messages can carry files: bytes the agent has, a file from a directory you allow on xaq's machine, another
   message's attachment, or a Google Drive file (see [Attachments](#attachments)). Received PDFs, Office documents and
   spreadsheets come back as text and tables (see [Reading attachments](#reading-attachments)).
-- **Real-time delivery.** New mail, replies to threads you sent into, and label changes arrive within seconds through
-  Gmail push via a Pub/Sub *pull* subscription (no public URL needed), or within the poll interval (30 seconds by
-  default) by polling with zero extra setup.
-  [`xaq listen`](listen.md) wakes agents on a laptop behind NAT. Google Calendar invitations and changes arrive
-  the same way (polled every 60 seconds by default) for agents with `calendar.read`.
-- **Webhooks.** Filter by account, label, sender, recipient, subject, attachments or calendar. Payloads are signed per
-  [Standard Webhooks](https://www.standardwebhooks.com), retried with backoff, logged, and replayable.
+- **Events.** New mail, replies to threads you sent into, and label changes arrive within the poll interval (30 seconds
+  by default), with no extra setup. [`xaq listen`](listen.md) wakes agents on a laptop behind NAT. Google Calendar
+  invitations and changes arrive the same way (polled every 60 seconds by default) for agents with `calendar.read`.
 - **Guardrails that don't degrade content.** Per agent and mailbox: capabilities, label scope, send mode (direct,
   draft-only or human approval), recipient allowlists, reply-only and send caps. Email content is cleaned, not censored.
 - **A web console.** Guided Google setup, connect snippets for Claude Code, Codex, Cursor and Hermes, an approvals inbox,
-  live events, delivery logs and the audit trail.
+  live events and the audit trail.
 - **A ready-made agent skill.** `SKILL.md` teaches agents to use the tools well and to treat email as data.
 
 ## Connections (MCP broker)
@@ -56,10 +52,6 @@ key; the broker holds every upstream credential and lists only the tools the age
   xaq binds them to their extension at startup and installs a missing one in the background, with no new sign-in.
   Until it's installed, Notion and T3 Code connections keep the same rules and can still reconnect (core keeps a
   copy of those two extensions' manifests for them); a WHOOP connection reads "Needs the whoop extension".
-  - **Optional webhooks:** a preset whose provider sends webhooks offers them only when the internet can reach this
-    install; on a tailnet-only install (Tailscale `serve` on a `*.ts.net` name) it offers an optional Tailscale Funnel
-    command that exposes only the webhook path, on its own port. No built-in preset uses webhooks today.
-
   - **T3 Code**: one connection per T3 server. Give the address you open T3 at (`http://100.x.y.z:3773` on
     Tailscale, `http://127.0.0.1:3773` locally; xaq adds `/mcp`), allow that exact address (plain http is accepted
     only on loopback, private, Tailscale CGNAT and unique-local addresses), then approve on T3's own page with a
@@ -80,7 +72,7 @@ key; the broker holds every upstream credential and lists only the tools the age
   sign-in or an API key. Servers on this machine or your private network (loopback, Tailscale) need an explicit
   "allow this host" for that exact address.
 - **Expiring sign-ins**: a server that issues no refresh token (T3) or caps the sign-in (Notion, 180 days) shows
-  "Expires in N days" from 7 days before, and `connection.expiring` events go to webhooks and listeners at 7 days and
+  "Expires in N days" from 7 days before, and `connection.expiring` events go to listeners at 7 days and
   1 day, with `reconnectUrl`. Past it the connection is Expired (`expired: true`; status `needs_reauth`), as it is
   after a 401 when there's no refresh token; agents are told to ask you to reconnect, with the link.
 - **One choice per connection**: Full access, Ask before risky actions (default), or Read only, for all agents or
@@ -337,7 +329,7 @@ xaq connect <url> … / setup-mcp / listen …   # on agent machines, see listen
 | | `XAQ_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `--url` | `XAQ_URL` | the xaq running on this machine, else `http://localhost:8425` | `skill` commands only: the server URL written into SKILL.md |
 
-Everything else (public URL, ingest mode, poll interval, body size limit, retention, approval expiry, webhook allowlist,
+Everything else (public URL, poll interval, body size limit, retention, approval expiry,
 agent pairing, the directories agents may attach files from, the folder for saved attachments) is set in the console
 under **Settings**.
 
@@ -372,11 +364,6 @@ never passes through anyone else's app. The parts that most often go wrong:
   a `localhost` redirect URI and asks you to paste the URL you land on.
 - **Scopes.** Each connected account grants `gmail.modify` plus `openid email profile`, and with Google Calendar on
   `calendar.events`, `calendar.calendarlist.readonly` and `calendar.events.freebusy`, nothing more.
-- **Real-time delivery (Pub/Sub) setup** asks one connected account for the extra `pubsub` scope, and that account needs
-  **Owner** or **Pub/Sub Admin** on the project (Editor can't change topic permissions). A Workspace organization policy
-  (domain-restricted sharing) can block granting Gmail's push service
-  (`gmail-api-push@system.gserviceaccount.com`); the console says so, and polling (every 30 seconds by default) works
-  without any of this.
 
 ## Connecting agents by hand
 
@@ -410,7 +397,7 @@ npx xaq-cli skill install --target codex --url https://mail.example.com
 npx xaq-cli skill install --target ./skills --url https://mail.example.com
 ```
 
-## Events and webhooks
+## Events
 
 Event types: `message.received`, `message.sent`, `thread.reply_received` (a reply in a thread the account sent into),
 `label.added`, `label.removed`, `account.auth_failed` and `sync.gap`. Agents only receive events for mailboxes and
@@ -423,42 +410,16 @@ so subscribe to one or the other, not both.
 `calendar.read` on that account, for the calendars their grant covers; mail `read` alone doesn't see them, and
 `calendar.read` alone doesn't see mail. They use the same envelope with `message: null` and `calendarEvent` set:
 calendar and event id, title, start and end, location, organizer, attendees and their responses, the account's own
-response and https links. No description is stored; a webhook with "include body" fetches it when it delivers and puts
-the cleaned text in `content` (not on cancellations).
+response and https links. No description is stored; a listener that asks for bodies fetches it when it delivers and
+puts the cleaned text in `content` (not on cancellations).
 
-- **Agents without an HTTP endpoint** use the MCP tools `wait_for_events` (long poll), `list_events` and `ack_events`
-  while a session runs; the server keeps each agent's position. To start an agent when mail arrives, use
-  [`xaq listen`](listen.md), e.g. `npx xaq-cli listen --recipe claude-code` (new mail only by default;
-  `--types` adds the others). The listener skips Gmail's Promotions, Social and Forums tabs by default
-  (`--all-categories`), takes `--not-from` / `--not-label` exclusions, and `--batch 60s` runs a burst as one command.
-  With Hermes, `--recipe hermes` forwards each event to the Hermes gateway (`listen hermes --deliver <platform> --run`
-  creates the route), which triages it and messages you; `--recipe hermes-oneshot` runs Hermes once per email.
-- **Agents with an endpoint** get webhooks (**Webhooks** in the console), optionally with the cleaned message body.
-  Webhooks list their event types, so existing ones never start receiving calendar events. For calendar events the
-  filter's `calendarIds` keeps only those calendars (the primary calendar's id is the account's email address; mail
-  events ignore it), and `from`, `to` and `subject` match the organizer, any attendee and the event title; label and
-  attachment criteria apply to mail only. A delivery succeeds on a `2xx` within 10 seconds (redirects aren't
-  followed); failures are retried 8 times with growing delays (30 s up to 12 h, about a day in total) before they're
-  marked dead, and any delivery can be replayed.
-
-**Verifying webhooks.** Each request carries `webhook-id`, `webhook-timestamp` and `webhook-signature` headers (`v1,` +
-base64 HMAC-SHA256 of `{webhook-id}.{webhook-timestamp}.{body}`). Verify them with any
-[Standard Webhooks library](https://github.com/standard-webhooks/standard-webhooks) and the `whsec_…` secret shown when
-you create the webhook:
-
-```js
-import { Webhook } from "standardwebhooks";
-
-const wh = new Webhook(process.env.XAQ_WEBHOOK_SECRET);
-const payload = wh.verify(rawBody, request.headers); // throws if the signature or timestamp is bad
-```
-
-A dependency-free Node version is in the [skill](../server/skill/SKILL.md#webhooks). `webhook-id` is the delivery id:
-it stays the same across retries and replays of one webhook. To dedupe across webhooks, use the event id `data.id`.
-
-Webhooks may target public `https` URLs and, through the default allowlist (`localhost`, `127.0.0.0/8`, `::1`),
-loopback. Other private addresses (a LAN host, `n8n.internal`) must be added to the webhook allowlist in **Settings** as a
-hostname, `*.suffix`, IP or CIDR. Plain `http` works only for loopback and allowlisted hosts.
+Agents use the MCP tools `wait_for_events` (long poll), `list_events` and `ack_events`
+while a session runs; the server keeps each agent's position. To start an agent when mail arrives, use
+[`xaq listen`](listen.md), e.g. `npx xaq-cli listen --recipe claude-code` (new mail only by default;
+`--types` adds the others). The listener skips Gmail's Promotions, Social and Forums tabs by default
+(`--all-categories`), takes `--not-from` / `--not-label` exclusions, and `--batch 60s` runs a burst as one command.
+With Hermes, `--recipe hermes` forwards each event to the Hermes gateway (`listen hermes --deliver <platform> --run`
+creates the route), which triages it and messages you; `--recipe hermes-oneshot` runs Hermes once per email.
 
 ## Running it
 
@@ -807,8 +768,8 @@ Everything lives in the data directory (`~/.xaq` by default):
 
 | File | |
 |---|---|
-| `xaq.db` | SQLite database (plus `-wal` and `-shm` files): accounts, encrypted tokens, agents, grants, events, deliveries, approvals, audit log |
-| `master.key` | Encrypts Google tokens, webhook secrets and the OAuth client secret (mode 0600) |
+| `xaq.db` | SQLite database (plus `-wal` and `-shm` files): accounts, encrypted tokens, agents, grants, events, approvals, audit log |
+| `master.key` | Encrypts Google tokens, connection credentials and the OAuth client secret (mode 0600) |
 | `setup-token` | The one-time setup token, until the instance is claimed |
 | `xaq.lock` | Marks the running instance (pid and port) |
 | `service.env` | Environment the service was installed with, possibly including `XAQ_MASTER_KEY` (mode 0600; `service install` only) |

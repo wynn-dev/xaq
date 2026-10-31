@@ -8,7 +8,6 @@ import {
   type CalendarResponseStatus,
   type CalendarWriteMode,
   type Capability,
-  type DeliveryStatus,
   type EventType,
   isCalendarApprovalKind,
   type SendMode,
@@ -137,13 +136,6 @@ export const ACCOUNT_STATUS: Record<AccountStatus, { label: string; tone: Tone; 
   },
   paused: { label: "Paused", tone: "idle", description: "Not syncing and not available to agents until resumed." },
   error: { label: "Error", tone: "bad", description: "Syncing failed. See the error for details." },
-};
-
-export const DELIVERY_STATUS: Record<DeliveryStatus, { label: string; tone: Tone }> = {
-  pending: { label: "Retrying", tone: "warn" },
-  succeeded: { label: "Delivered", tone: "good" },
-  failed: { label: "Failed", tone: "bad" },
-  dead: { label: "Gave up", tone: "bad" },
 };
 
 export const APPROVAL_STATUS: Record<ApprovalStatus, { label: string; tone: Tone }> = {

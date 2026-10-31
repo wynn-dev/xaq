@@ -8,7 +8,6 @@ import { createAccountsService, createGoogleService } from "./google/index.ts";
 import { createIngestService } from "./ingest/index.ts";
 import { createMailService } from "./mail/index.ts";
 import { createPolicyService } from "./policy/index.ts";
-import { createWebhooksService } from "./webhooks/index.ts";
 
 /** Tests replace individual services with fakes. */
 export type ServiceOverrides = Partial<{ [K in keyof Services]: (ctx: AppContext) => Services[K] }>;
@@ -20,7 +19,6 @@ const FACTORIES: { [K in keyof Services]: (ctx: AppContext) => Services[K] } = {
   events: createEventsService,
   policy: createPolicyService,
   mail: createMailService,
-  webhooks: createWebhooksService,
   calendar: createCalendarService,
   broker: (ctx) => createBrokerService(ctx),
 };

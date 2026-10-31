@@ -71,7 +71,7 @@ function EventsPage() {
     <>
       <PageHeader
         title="Live events"
-        description="Mail and calendar activity across your accounts as xaq sees it: what listeners, webhooks and wait_for_events deliver to agents."
+        description="Mail and calendar activity across your accounts as xaq sees it: what listeners and wait_for_events deliver to agents."
         actions={
           <>
             <span className="flex items-center gap-1.5 text-xs text-muted-foreground">

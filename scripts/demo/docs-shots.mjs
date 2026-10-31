@@ -6,10 +6,9 @@
 //   seeded   --port 8531                                    overview, agents, events, settings, …
 //   wizard   --port 8425 --fresh                            walks the setup wizard (/get-started) from step 1 to
 //                                                           "Setup complete": imports a client JSON, connects Gmail
-//                                                           through the popup, sets up Pub/Sub, pairs an agent with
+//                                                           through the popup, pairs an agent with
 //                                                           the built CLI (`connect`, then `listen --exec`), calls
 //                                                           MCP with its key and sends the test email
-//   errors   --port 8532 --fresh --stage pubsub --pubsub-fail org-policy   the Pub/Sub org-policy help panel
 //
 // Only the demos the selected shots need are started. Run `pnpm build` first (the demos serve dist/web and
 // the wizard runs dist/cli.js). --keep leaves the demos running afterwards (Ctrl-C to stop them).
@@ -42,7 +41,7 @@ const want = (name) => !only || only.includes(name);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...m) => console.log("  \x1b[2m[shots]\x1b[0m", ...m);
 
-const PORTS = { seeded: 8531, wizard: 8425, errors: 8532 };
+const PORTS = { seeded: 8531, wizard: 8425 };
 const PASSWORD = "acme-demo-passphrase";
 const WIDTH = 1280;
 const WIZARD = [
@@ -51,11 +50,9 @@ const WIZARD = [
   "wizard-3-signin-screen",
   "wizard-4-oauth-client",
   "wizard-5-gmail",
-  "wizard-6-delivery",
-  "wizard-7-agent",
-  "wizard-8-verify",
+  "wizard-6-agent",
+  "wizard-7-verify",
 ];
-const ERRORS = ["wizard-6-delivery-org-policy"];
 
 // ───────────── Child processes (demos, CLI): each in its own process group, stopped on exit ─────────────
 
@@ -293,22 +290,7 @@ async function wizardFlow() {
   await shoot(page, "wizard-5-gmail", { fullPage: true });
   await continueBtn().click();
 
-  // 6. Real-time delivery: the choice, then one-click Pub/Sub (with the extra Pub/Sub consent)
-  await stepTitle("Set up real-time delivery");
-  await settle(page);
-  await shoot(page, "wizard-6-delivery", { fullPage: true });
-  await page.getByRole("button", { name: "Set up real-time automatically" }).click();
-  const grant = page.getByRole("button", { name: "Grant Pub/Sub access" });
-  await grant.waitFor({ timeout: 20_000 });
-  const popup2 = page.waitForEvent("popup");
-  await grant.click();
-  await (await popup2).waitForEvent("close", { timeout: 20_000 }).catch(() => {});
-  await waitFor("Pub/Sub to be set up", async () => (await api("/api/setup/state")).pubsub?.subscription, 30_000, 500);
-  await page.keyboard.press("Escape");
-  await settle(page);
-  await continueBtn().click();
-
-  // 7. First agent: a real `connect` from a terminal, approved inline
+  // 6. First agent: a real `connect` from a terminal, approved inline
   await stepTitle("Connect your first agent");
   const home = join(work, "agent-home");
   mkdirSync(home, { recursive: true });
@@ -332,10 +314,10 @@ async function wizardFlow() {
   await page.getByText("A request is waiting for you").waitFor({ timeout: 20_000 });
   await page.locator(`#pairing-code-${pairing.id}`).pressSequentially(pairing.userCode.replace("-", ""), { delay: 20 });
   await settle(page);
-  await shoot(page, "wizard-7-agent", { fullPage: true });
+  await shoot(page, "wizard-6-agent", { fullPage: true });
   await page.getByRole("button", { name: /Approve and send key to terminal/ }).click();
 
-  // 8. Check that it works: MCP call, listener, test email, the agent reading it
+  // 7. Check that it works: MCP call, listener, test email, the agent reading it
   await stepTitle("Check that it works");
   const profileFile = join(cliEnv.XDG_CONFIG_HOME, "xaq/profiles/default.json");
   await waitFor("connect to save the key", () => existsSync(profileFile), 30_000, 500);
@@ -356,30 +338,7 @@ async function wizardFlow() {
   await page.getByText(/read your mail/).first().waitFor({ timeout: 30_000 }).catch(() => log("  (the read check didn't turn green)"));
   await page.evaluate(() => window.scrollTo(0, 0));
   await settle(page);
-  await shoot(page, "wizard-8-verify", { fullPage: true });
-  await s.ctx.close();
-}
-
-// ───────────── Error help: Pub/Sub blocked by an organization policy ─────────────
-
-async function errorShots() {
-  const d = await demo("errors", PORTS.errors, ["--fresh", "--stage", "pubsub", "--pubsub-fail", "org-policy"]);
-  const s = await session(d.url, d.cookie);
-  await s.go("/get-started?step=pubsub");
-  await s.page.getByRole("button", { name: "Set up real-time automatically" }).click();
-  // Gmail-only consent first: grant Pub/Sub, then the provisioning hits the org policy.
-  const grant = s.page.getByRole("button", { name: "Grant Pub/Sub access" });
-  const blocked = s.page.getByText("Your organization's policy blocks Gmail notifications");
-  await Promise.race([grant.waitFor({ timeout: 20_000 }), blocked.waitFor({ timeout: 20_000 })]);
-  if (await grant.isVisible()) {
-    const popup = s.page.waitForEvent("popup");
-    await grant.click();
-    await (await popup).waitForEvent("close", { timeout: 20_000 }).catch(() => {});
-  }
-  await blocked.waitFor({ timeout: 30_000 });
-  await s.page.keyboard.press("Escape");
-  await settle(s.page);
-  await shoot(s.page, "wizard-6-delivery-org-policy", { fullPage: true });
+  await shoot(page, "wizard-7-verify", { fullPage: true });
   await s.ctx.close();
 }
 
@@ -391,7 +350,6 @@ async function seededShots() {
   const api = (path) => fetch(APP + path, { headers: { cookie: demoState.cookie } }).then((r) => r.json());
   const agents = await api("/api/agents");
   const agentId = (prefix) => agents.find((x) => x.name.startsWith(prefix))?.id;
-  const webhooks = await api("/api/webhooks");
   const pending = (await api("/api/pairings?status=pending"))[0];
 
   const shots = {
@@ -468,13 +426,6 @@ async function seededShots() {
       await s.go("/approvals");
       return s;
     },
-    async "webhook-deliveries"() {
-      const s = await session(APP, demoState.cookie, { height: 1000 });
-      await s.go(`/webhooks/${webhooks.find((w) => w.name.startsWith("Slack")).id}`);
-      await s.page.getByRole("row").nth(3).click();
-      await settle(s.page);
-      return s;
-    },
     async events() {
       const s = await session(APP, demoState.cookie);
       await s.go("/events");
@@ -496,7 +447,7 @@ async function seededShots() {
       const s = await session(APP, demoState.cookie, { height: 1100 });
       await s.go("/settings");
       await s.page.evaluate(() => {
-        // Agent pairing, webhook allowlist and the OAuth client, starting just below the sticky header.
+        // Agent pairing, attachment directories and the OAuth client, starting just below the sticky header.
         const el = document.getElementById("pairing");
         const card = el?.closest("[data-slot=card]") ?? el;
         const header = document.querySelector("header")?.getBoundingClientRect().height ?? 56;
@@ -532,7 +483,6 @@ const SEEDED_NAMES = [
   "pairing-request",
   "pairing-approve",
   "approvals",
-  "webhook-deliveries",
   "events",
   "audit",
   "audit-dark",
@@ -540,7 +490,6 @@ const SEEDED_NAMES = [
 ];
 const jobs = [];
 if (WIZARD.some(want)) jobs.push(run("wizard", wizardFlow));
-if (ERRORS.some(want)) jobs.push(run("errors", errorShots));
 if (SEEDED_NAMES.some(want)) jobs.push(run("seeded", seededShots));
 await Promise.all(jobs);
 

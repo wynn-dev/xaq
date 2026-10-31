@@ -1,7 +1,7 @@
 {
   "name": "xaq-cli",
   "version": "0.1.0",
-  "description": "Self-hosted Gmail broker for AI agents (formerly agentinbox): one place for credentials, MCP tools, real-time webhooks, guardrails, and a web console.",
+  "description": "Self-hosted Gmail broker for AI agents (formerly agentinbox): one place for credentials, MCP tools, event listeners, guardrails, and a web console.",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -13,7 +13,6 @@
     "mcp",
     "gmail",
     "agents",
-    "webhooks",
     "email",
     "self-hosted",
     "ai"

@@ -1,10 +1,20 @@
+import { createHmac, randomBytes } from "node:crypto";
 import type { WebhookPayload } from "../../shared/types.ts";
-import { newSecret, sign } from "../webhooks/send.ts";
 import { describeFetchError, userAgent } from "./api.ts";
 import { commandInput } from "./event.ts";
 import { isLoopbackHost } from "./transport.ts";
 
-export { newSecret };
+/** Standard Webhooks secret: "whsec_" + base64 of 24 random bytes. */
+export const newSecret = (): string => `whsec_${randomBytes(24).toString("base64")}`;
+
+/**
+ * Standard Webhooks signature (https://www.standardwebhooks.com): base64 HMAC-SHA256 over
+ * "{id}.{timestamp}.{body}", keyed with the base64-decoded part of the secret after "whsec_".
+ */
+export function sign(secret: string, id: string, timestamp: number, body: string): string {
+  const key = Buffer.from(secret.startsWith("whsec_") ? secret.slice(6) : secret, "base64");
+  return `v1,${createHmac("sha256", key).update(`${id}.${timestamp}.${body}`).digest("base64")}`;
+}
 
 export interface ForwardResult {
   ok: boolean;
@@ -35,7 +45,7 @@ export function validateForwardUrl(raw: string): string {
   if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("--forward must be an http(s) URL.");
   // Literal loopback only: a *.localhost name would need resolving first.
   if (!isLoopbackHost(url.hostname)) {
-    throw new Error(`--forward must point at this machine (localhost, 127.0.0.1 or [::1]), not ${url.host}. For remote receivers, use a webhook in the xaq console.`);
+    throw new Error(`--forward must point at this machine (localhost, 127.0.0.1 or [::1]), not ${url.host}.`);
   }
   if (url.username || url.password) throw new Error("--forward must not contain credentials; receivers verify the signature instead.");
   return url.toString();

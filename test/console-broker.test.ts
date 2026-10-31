@@ -478,7 +478,6 @@ describe("First run with Google optional", () => {
       ...fresh,
       claimed: true,
       googleAppType: null,
-      pubsub: { mode: "poll", subscription: null },
       agentsCreated: 0,
       verified: false,
       complete: false,

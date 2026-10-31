@@ -13,7 +13,6 @@ import {
   ScrollTextIcon,
   SettingsIcon,
   StampIcon,
-  WebhookIcon,
 } from "lucide-react";
 import { Logo } from "@/components/auth-shell";
 import { ConsoleVersion } from "@/components/console-update";
@@ -37,7 +36,7 @@ import { useSignOut } from "@/hooks/use-sign-out";
 import { queries } from "@/lib/queries";
 
 type NavItem = {
-  to: "/" | "/approvals" | "/events" | "/audit" | "/accounts" | "/connections" | "/extensions" | "/agents" | "/webhooks" | "/settings";
+  to: "/" | "/approvals" | "/events" | "/audit" | "/accounts" | "/connections" | "/extensions" | "/agents" | "/settings";
   label: string;
   icon: typeof InboxIcon;
   /** Only with Settings.brokerUpstreams. */
@@ -61,7 +60,6 @@ const NAV: { label: string; items: NavItem[] }[] = [
       { to: "/connections", label: "Connections", icon: PlugIcon, broker: true },
       { to: "/extensions", label: "Extensions", icon: PuzzleIcon, broker: true },
       { to: "/agents", label: "Agents", icon: BotIcon },
-      { to: "/webhooks", label: "Webhooks", icon: WebhookIcon },
       { to: "/settings", label: "Settings", icon: SettingsIcon },
     ],
   },

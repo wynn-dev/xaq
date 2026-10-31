@@ -122,13 +122,6 @@ export interface FreeBusyResult {
   calendars: Record<string, { busy: { start: string; end: string }[]; errors?: { domain: string; reason: string }[] }>;
 }
 
-export interface WatchChannel {
-  id: string;
-  resourceId: string;
-  /** Epoch milliseconds as a string. */
-  expiration: string;
-}
-
 /**
  * Thin Calendar REST client bound to one account. Throws GoogleApiError (see classifyCalendarError for the
  * disabled-API and missing-scope cases) or AccountNeedsReauthError, like GmailClient. Calendar calls don't
@@ -151,10 +144,6 @@ export interface CalendarClient {
   deleteEvent(calendarId: string, eventId: string, opts: WriteOptions): Promise<void>;
   /** freebusy.query. `items` are calendar ids or email addresses. */
   freeBusy(p: { timeMin: string; timeMax: string; items: string[]; timeZone?: string }): Promise<FreeBusyResult>;
-  /** events.watch (push). `address` must be public https with a valid certificate. */
-  watchEvents(calendarId: string, p: { id: string; address: string; token: string; ttlSeconds?: number }): Promise<WatchChannel>;
-  /** channels.stop (same user + OAuth client that created it). 404 = already gone. */
-  stopChannel(p: { id: string; resourceId: string }): Promise<void>;
 }
 
 /** Pages of calendarList / events.list fetched per request (Google's maximums are 250 and 2500). */
@@ -235,22 +224,6 @@ export function createCalendarClient(ctx: AppContext, accountId: string): Calend
         body: { timeMin: p.timeMin, timeMax: p.timeMax, timeZone: p.timeZone, items: p.items.map((i) => ({ id: i })) },
       });
       return { calendars: r?.calendars ?? {} };
-    },
-    async watchEvents(calendarId, p) {
-      const r = await call<{ id: string; resourceId: string; expiration?: string | number }>(`${events(calendarId)}/watch`, {
-        method: "POST",
-        body: { id: p.id, type: "web_hook", address: p.address, token: p.token, ...(p.ttlSeconds ? { params: { ttl: String(p.ttlSeconds) } } : {}) },
-        idempotent: false,
-        ambiguousHint: "The channel may have been created; it expires on its own.",
-      });
-      return { id: r.id, resourceId: r.resourceId, expiration: String(r.expiration ?? "") };
-    },
-    async stopChannel(p) {
-      try {
-        await call<void>("/channels/stop", { method: "POST", body: { id: p.id, resourceId: p.resourceId } });
-      } catch (err) {
-        if (!(err instanceof GoogleApiError && err.status === 404)) throw err;
-      }
     },
   };
 }

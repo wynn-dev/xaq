@@ -130,7 +130,7 @@ export function eventSummarySignals(e: CalendarEventSummary, accountEmail: strin
   };
 }
 
-/** Fetches the event and returns its cleaned description (webhook includeBody; the background lane). */
+/** Fetches the event and returns its cleaned description (listener bodies; the background lane). */
 export async function eventContent(ctx: AppContext, accountId: string, calendarId: string, eventId: string): Promise<MessageContent | null> {
   const account = ctx.accounts.require(accountId);
   const raw = await ctx.google.calendar(accountId).getEvent(calendarId, eventId);

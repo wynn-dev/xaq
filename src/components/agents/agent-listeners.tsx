@@ -6,7 +6,6 @@ import { useState } from "react";
 import { StatusDot, TimeAgo } from "@/components/common";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { connectCommands } from "@/lib/cli";
-import { ArrivalSpeed } from "@/hooks/use-delivery-speed";
 import { fmtNumber } from "@/lib/format";
 import { queries } from "@/lib/queries";
 import { useAgentOrigin } from "./agent-status";
@@ -30,7 +29,7 @@ export function AgentListeners({ agent }: { agent: Agent }) {
           <BellRingIcon className="size-4 text-muted-foreground" /> Listeners
         </CardTitle>
         <CardDescription>
-          A listener keeps an outbound connection open from the agent's machine and wakes the agent <ArrivalSpeed of="new mail arriving" neutral="when new mail arrives" />. No
+          A listener keeps an outbound connection open from the agent's machine and wakes the agent when new mail arrives. No
           open ports or public URL needed on that machine.
         </CardDescription>
       </CardHeader>
@@ -84,7 +83,7 @@ export function AgentListeners({ agent }: { agent: Agent }) {
           <div className="text-sm font-medium">{listeners.length ? "Add or update a listener" : "Start a listener"}</div>
           <p className="text-sm text-muted-foreground">
             Run these on the machine where this agent was connected with <code className="font-mono text-foreground">npx xaq-cli connect</code>:
-            the listener uses the key connect saved there. For an agent created here with a copied key, use a webhook instead.
+            the listener uses the key connect saved there.
           </p>
           <ToolTabs value={tool} onChange={setTool} />
           <InsecureTransportAlert publicUrl={publicUrl} accepted={acceptInsecure} onAcceptedChange={setAcceptInsecure} />

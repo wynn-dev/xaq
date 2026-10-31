@@ -56,9 +56,8 @@ It lives at the root of the extension's directory. Unknown keys are rejected (sc
 
   "reconnectPolicy": { "maxLifetimeDays": 180, "idleDays": 30, "tokenLifetimeCapDays": 30 },
 
-  // Setup copy: SetupStep[] (server/broker/types.ts). Strings may use {{publicUrl}}, {{redirectUri}}, {{webhookUrl}}
-  // and nothing else ({{projectId}} too with a "google" auth). A step with "when": "webhookUrl" appears only when the
-  // internet reaches this install.
+  // Setup copy: SetupStep[] (server/broker/types.ts). Strings may use {{publicUrl}} and {{redirectUri}}
+  // and nothing else ({{projectId}} too with a "google" auth).
   "setup": [ { "id": "app", "title": "…", "body": "…", "copy": { "label": "Redirect URI", "value": "{{redirectUri}}" } } ],
 
   // The risk map: exact tool names. Anything not listed falls back to the generic rules (annotations + verbs).
@@ -92,10 +91,8 @@ repo's `scripts/validate.mjs`) checks the shape; a few rules below are only the 
     expiry and the sign-in time plus N days. When the server sends no `expires_in`, it is N days (T3 Code: 30).
     Warnings come at 7 days and 1 day, as for any expiry.
 - **`setup`:** steps have `id`, `title` and `body`, plus optionally one each of `link`, `copy` and `input` (the
-  `SetupStep` shape), and `when`.
-  - **Variables:** only `{{publicUrl}}`, `{{redirectUri}}` and `{{webhookUrl}}` (validator only). Any other
-    `{{…}}` is an error.
-  - **`when`:** the only value is `"webhookUrl"`. A step that uses `{{webhookUrl}}` must have it (validator only).
+  `SetupStep` shape).
+  - **Variables:** only `{{publicUrl}}` and `{{redirectUri}}` (validator only). Any other `{{…}}` is an error.
   - **Links:** a link is https, or one of the variables followed by `/`, `?`, `#` or nothing, so
     `{{publicUrl}}@evil.example` is refused.
   - **Shown as they are:** input `label` and `placeholder` and `scopeNotes` can't contain `{{` or `}}`.
@@ -352,8 +349,8 @@ in. Core side: `server/extensions/google-auth.ts` (binding, connect, tokens, sta
     manifest's `code.auth`): authorization code with the client secret in the body, no PKCE, https endpoints only.
     The refresh request sends `scope=<code.auth.refreshScope>` when the manifest sets it, and no `scope` otherwise
     (the originally granted scope applies, RFC 6749 §6). WHOOP's manifest sets `"refreshScope": "offline"`: WHOOP's
-    documented refresh request includes it, as the native code did. There's no user-id lookup: it only routed webhooks.
-    The generic `/hooks/connections/:id` route stays mounted but answers 404, because no preset in core handles webhooks.
+    documented refresh request includes it, as the native code did. There's no user-id lookup: it only routed webhooks,
+    which are gone (presets poll).
 - **Pins, plus a data snapshot:** core carries `server/extensions/bootstrap.json`, the pins (name, commit, integrity)
   of the official notion, t3code, whoop and brightspace extensions at release time. It also carries a data snapshot of
   the official remote manifests for already-bound connections, `server/extensions/bootstrap/{notion,t3code}.json`.

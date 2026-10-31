@@ -1,6 +1,5 @@
 import type { Account, AccountCalendar, AccountStatus } from "../../shared/types.ts";
 import { ADMIN_ACTOR } from "../api/util.ts";
-import { stopAccountChannels } from "../calendar/push.ts";
 import type { AppContext } from "../context.ts";
 import { json } from "../db/index.ts";
 import { errorMessage, notFound } from "../util/errors.ts";
@@ -19,7 +18,6 @@ export interface AccountRow {
   access_expires_at: string | null;
   scopes: string;
   history_id: string | null;
-  watch_expires_at: string | null;
   last_sync_at: string | null;
   created_at: string;
   refresh_expires_at: string | null;
@@ -54,7 +52,6 @@ export const toAccount = (r: AccountRow): Account => ({
   status: r.status,
   lastError: r.last_error,
   historyId: r.history_id,
-  watchExpiresAt: r.watch_expires_at,
   lastSyncAt: r.last_sync_at,
   createdAt: r.created_at,
   refreshTokenExpiresAt: r.refresh_expires_at,
@@ -123,15 +120,6 @@ export function createAccountsService(ctx: AppContext): AccountsService {
     async remove(id) {
       const row = getRow(ctx, id);
       if (!row) throw notFound("Account");
-      if (row.watch_expires_at && row.status !== "needs_reauth") {
-        try {
-          await ctx.google.gmail(id).stopWatch();
-        } catch (err) {
-          log.warn("Could not stop the Gmail watch", { email: row.email, error: errorMessage(err) });
-        }
-      }
-      // Before revoking: channels.stop needs the account's token.
-      await stopAccountChannels(ctx, id);
       try {
         await ctx.google.revoke(id);
       } catch (err) {
@@ -142,14 +130,6 @@ export function createAccountsService(ctx: AppContext): AccountsService {
       ctx.db.tx(() => {
         ctx.db.run("DELETE FROM sent_threads WHERE account_id = ?", id);
         ctx.db.run("DELETE FROM accounts WHERE id = ?", id);
-        const pubsub = ctx.settings.getState("pubsub");
-        if (pubsub && (pubsub.principalAccountId === id || pubsub.pendingPrincipalAccountId === id)) {
-          ctx.settings.setState("pubsub", {
-            ...pubsub,
-            principalAccountId: pubsub.principalAccountId === id ? null : pubsub.principalAccountId,
-            pendingPrincipalAccountId: pubsub.pendingPrincipalAccountId === id ? null : (pubsub.pendingPrincipalAccountId ?? null),
-          });
-        }
       });
       ctx.audit.record({
         ...ADMIN_ACTOR,

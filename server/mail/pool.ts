@@ -1,12 +1,12 @@
 // Content cleaning runs in worker threads with a hard deadline. Any sender controls the HTML being parsed
 // and converted, and synchronous CPU work can't be interrupted by a timeout on the main thread, so a
-// pathological message must never be able to block the event loop (MCP calls, webhooks, the console).
+// pathological message must never be able to block the event loop (MCP calls, listeners, the console).
 //
 // - The deadline covers queueing and running: a job not done in time resolves with its fallback (cleaned
 //   text/plain part or a notice); a worker still running it is terminated and replaced.
 // - The queue is bounded; overflow resolves with the fallback at once.
 // - Inputs that already timed out are remembered (small LRU) and go straight to the fallback.
-// - Two lanes: interactive (MCP reads) always has a worker; background (webhook bodies) may use all but one.
+// - Two lanes: interactive (MCP reads) always has a worker; background (listener bodies) may use all but one.
 
 import { createHash } from "node:crypto";
 import { Worker } from "node:worker_threads";

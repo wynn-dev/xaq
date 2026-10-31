@@ -106,7 +106,7 @@ export function systemApi(ctx: AppContext, host: SelfUpdateHost = selfUpdateHost
       try {
         ingest = ctx.ingest.status();
       } catch (err) {
-        ingest = { mode: ctx.settings.get().ingestMode, running: false, lastPullAt: null, lastError: errorMessage(err) };
+        ingest = { running: false, lastPullAt: null, lastError: errorMessage(err) };
       }
       return c.json<SystemInfo>({
         version: ctx.config.version,

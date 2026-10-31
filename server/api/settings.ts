@@ -8,12 +8,10 @@ import { ADMIN_ACTOR, readBody, router } from "./util.ts";
 const SettingsPatch = z
   .object({
     publicUrl: z.string().trim(),
-    ingestMode: z.enum(["pubsub", "poll"]),
     pollIntervalSeconds: z.number(),
     maxBodyChars: z.number(),
     retentionDays: z.number(),
     approvalTtlHours: z.number(),
-    webhookAllowlist: z.array(z.string()),
     brokerUpstreams: z.boolean(),
     attachmentDirs: z.array(z.string()),
   })

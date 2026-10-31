@@ -9,7 +9,6 @@ import { newId, randomToken } from "../util/ids.ts";
 import { type AccountRow, accountScopes, getRow, toAccount } from "./accounts.ts";
 import { callbackMode, clientCredentials, markRedirectVerified } from "./client.ts";
 import { asHttpError, buildUrl, REQUEST_TIMEOUT_MS } from "./http.ts";
-import { provisioningPrincipal } from "./pubsub.ts";
 import { postToken, refreshExpiry, refreshExpiryKind, type TokenResponse } from "./tokens.ts";
 import {
   CALENDAR_SCOPES,
@@ -20,13 +19,12 @@ import {
   IDENTITY_TOKEN_SCOPES,
   MAIL_SCOPES,
   missingScopes,
-  PUBSUB_SCOPE,
   scopeGrants,
   scopeWithout,
 } from "./scopes.ts";
 import { GoogleApiError } from "./types.ts";
 
-export { GMAIL_SCOPE, PUBSUB_SCOPE };
+export { GMAIL_SCOPE };
 /** Every account: Gmail plus identity (for the display name). See server/google/scopes.ts. */
 export const BASE_SCOPES = [...MAIL_SCOPES];
 
@@ -124,8 +122,7 @@ const oauthError = (ctx: AppContext, code: string, description?: string | null, 
 };
 
 /**
- * Starts a consent flow. `scopes: ["pubsub"]` adds the Pub/Sub scope for the provisioning account
- * (without `reauthAccountId` it targets the account provisioning would use). `scopes: ["calendar"]` adds
+ * Starts a consent flow. `scopes: ["calendar"]` adds
  * CALENDAR_SCOPES; with `reauthAccountId` that is "Add Calendar to <email>" (see calendarAttempts). While
  * Calendar is part of this install (calendarEnabled), every connect and reconnect asks for it too, and a
  * reconnect asks again for calendar scopes the account had. `mailOnly` asks for neither: when a Workspace
@@ -142,15 +139,10 @@ export function startConnect(
   if (opts.mailOnly && extra.has("calendar")) throw badRequest("A mail-only connection can't add Google Calendar.", "Leave out either mailOnly or scopes [\"calendar\"].");
   const ext = opts.extension ?? null;
   if (ext && (!opts.reauthAccountId || extra.size || opts.mailOnly)) throw badRequest("An extension's consent is for one connected account, and only for the extension's access.");
-  let reauthId = opts.reauthAccountId;
-  if (!reauthId && extra.has("pubsub")) {
-    reauthId = provisioningPrincipal(ctx)?.id;
-    if (!reauthId) throw badRequest("Connect a Gmail account first.", "Pub/Sub is provisioned with a connected account's permissions.");
-  }
+  const reauthId = opts.reauthAccountId;
   const reauth = reauthId ? ctx.accounts.require(reauthId) : null;
   const addingCalendarTo = reauth && extra.has("calendar") ? reauth.email : null;
-  // A reconnect asks again for extra scopes the account had: after a revocation Google forgets them,
-  // and the Pub/Sub principal would otherwise come back without Pub/Sub access.
+  // A reconnect asks again for extra scopes the account had: after a revocation Google forgets them.
   const had = reauthId ? accountScopes(getRow(ctx, reauthId)!) : [];
   // An extension's consent asks for the extension's scopes on top of what the account has: never for Calendar on its
   // own (that's Add Calendar's job), so the user sees only the new permissions.

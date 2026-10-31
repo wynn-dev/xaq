@@ -17,7 +17,7 @@ import { checkTarget, guardedFetch } from "../server/broker/upstream/fetch.ts";
 import { requireSameOrigin, UpstreamRuntime, upstreams } from "../server/broker/upstream/runtime.ts";
 import { presetById, presets } from "../server/integrations/index.ts";
 import { hostSlugPart, presetServerSlug, presetServerUrl } from "../server/integrations/user-server.ts";
-import type { LookupFn } from "../server/webhooks/ssrf.ts";
+import type { LookupFn } from "../server/util/ssrf.ts";
 import { type FakeMcpUpstream, type FakeTool, startFakeMcpUpstream } from "./fake-mcp-upstream.ts";
 import { fixtureManifest, useFixtureExtensions } from "./extension-fixtures.ts";
 import { testContext } from "./helpers.ts";
@@ -180,7 +180,7 @@ describe("T3 Code extension: shape and risk table", () => {
     expect(classifyTool(evaluate, t3codePreset)).toEqual({ risky: true, read: false, source: "preset" });
     expect(classifyT3Tool(evaluate)).toEqual({ risky: true, read: false, source: "preset" });
     for (const name of ["preview_open", "preview_navigate", "preview_click", "preview_type"]) expect(classifyTool(t3Tool(name), t3codePreset).risky, name).toBe(false);
-    const steps = t3codePreset.setupSteps({ publicUrl: "http://x", redirectUri: "http://x/cb", webhookUrl: null });
+    const steps = t3codePreset.setupSteps({ publicUrl: "http://x", redirectUri: "http://x/cb" });
     expect(steps.find((s) => s.id === "access")!.body).toMatch(/browser profile on that computer with its saved logins/);
   });
 
@@ -219,7 +219,7 @@ describe("T3 Code extension: shape and risk table", () => {
   });
 
   it("setup steps say where the pairing code comes from, what the levels mean, and the 30 days", () => {
-    const steps = t3codePreset.setupSteps({ publicUrl: "http://127.0.0.1:8425", redirectUri: "http://127.0.0.1:8425/oauth/connections/callback", webhookUrl: null });
+    const steps = t3codePreset.setupSteps({ publicUrl: "http://127.0.0.1:8425", redirectUri: "http://127.0.0.1:8425/oauth/connections/callback" });
     expect(steps.map((s) => s.id)).toEqual(["server", "pairing", "access", "reconnect"]);
     const text = steps.map((s) => s.body).join("\n");
     expect(text).toContain("Settings → Connections");

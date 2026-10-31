@@ -98,7 +98,7 @@ export function GrantEditor({
   const askRemove = () =>
     confirm({
       title: `Remove access to ${account.email}?`,
-      description: "The agent immediately loses every capability on this mailbox, and its webhooks stop receiving events from it.",
+      description: "The agent immediately loses every capability on this mailbox, and its listeners stop receiving events from it.",
       confirmLabel: "Remove access",
       destructive: true,
       onConfirm: () => remove.mutateAsync(),

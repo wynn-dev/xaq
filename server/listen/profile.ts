@@ -2,7 +2,7 @@ import { chmodSync, existsSync, readdirSync, readFileSync, rmSync } from "node:f
 import { z } from "zod";
 import type { AgentTool, ListenerConfig } from "../../shared/agent-api.ts";
 import { type EventType, isEventType } from "../../shared/types.ts";
-import { webhookFilterSchema } from "../webhooks/filter.ts";
+import { webhookFilterSchema } from "../events/filter.ts";
 import { isTooOpen, writePrivateFile } from "./fsutil.ts";
 import { isServerName, mcpServerName } from "./names.ts";
 import { DEFAULT_PROFILE, profilePath, profilesDir, validProfileName } from "./paths.ts";

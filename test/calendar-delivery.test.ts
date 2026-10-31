@@ -1,4 +1,4 @@
-// Calendar events on the delivery surfaces (docs/calendar.md, workstream G): webhook filters and bodies,
+// Calendar events on the delivery surfaces (docs/calendar.md, workstream G): event filters and bodies,
 // listener streams for calendar.read-only agents, and what a listener hands its command.
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -11,8 +11,8 @@ import { batchEnv, commandInput, eventEnv, skipReason } from "../server/listen/e
 import { wrappedBody } from "../server/listen/forward.ts";
 import { parseTypes, resolveListen } from "../server/listen/options.ts";
 import { HERMES_ROUTE_PROMPT, STDIN_PROMPT } from "../server/listen/recipes.ts";
-import { matchesFilter, normalizeFilter, webhookFilterSchema } from "../server/webhooks/filter.ts";
-import { buildPayload, scopeBodyCheck } from "../server/webhooks/payload.ts";
+import { matchesFilter, normalizeFilter, webhookFilterSchema } from "../server/events/filter.ts";
+import { buildPayload, scopeBodyCheck } from "../server/events/payload.ts";
 import { testContext } from "./helpers.ts";
 import { makeEvent } from "./listen-client-fake.ts";
 import { grantInput } from "./mail-fakes.ts";
@@ -70,7 +70,7 @@ const description = (body: string): MessageContent => ({
   signals: { hiddenContentRemoved: false, suspiciousInstructions: [], auth: null, external: true },
 });
 
-describe("webhook filters on calendar events", () => {
+describe("event filters on calendar events", () => {
   it("accepts calendarIds (the console sends them) and keeps them normalized", () => {
     expect(webhookFilterSchema.safeParse({ calendarIds: [ME, TEAM] }).success).toBe(true);
     expect(webhookFilterSchema.safeParse({ calendarIds: [""] }).success).toBe(false);
@@ -107,7 +107,7 @@ describe("webhook filters on calendar events", () => {
   });
 });
 
-describe("webhook bodies for calendar events", () => {
+describe("listener bodies for calendar events", () => {
   function setup(content: MessageContent | null) {
     const calls: string[] = [];
     const t = testContext({

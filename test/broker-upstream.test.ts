@@ -14,7 +14,7 @@ import { HTTPS_LOCALHOST_REDIRECT, UpstreamRuntime } from "../server/broker/upst
 import { type RefreshFn, SourceError, type StoredTokens, type ToolCallContext } from "../server/broker/types.ts";
 import type { ConnectionEvent } from "../server/broker/credentials/store.ts";
 import type { AppContext } from "../server/context.ts";
-import type { LookupFn } from "../server/webhooks/ssrf.ts";
+import type { LookupFn } from "../server/util/ssrf.ts";
 import { type FakeMcpUpstream, type FakeUpstreamOptions, startFakeMcpUpstream } from "./fake-mcp-upstream.ts";
 import { testContext } from "./helpers.ts";
 

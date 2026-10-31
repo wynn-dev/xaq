@@ -2,13 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { LogOutIcon, RocketIcon } from "lucide-react";
 import { PageHeader, QueryError } from "@/components/common";
-import { PubsubPanel } from "@/components/google/pubsub-panel";
 import { GoogleClientCard } from "@/components/settings/google-client-card";
 import { PasswordCard } from "@/components/settings/password-card";
 import { SettingsForm } from "@/components/settings/settings-form";
 import { SystemCard } from "@/components/settings/system-card";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSignOut } from "@/hooks/use-sign-out";
 import { queries } from "@/lib/queries";
@@ -46,16 +45,6 @@ function SettingsPage() {
       )}
 
       <GoogleClientCard />
-
-      <Card id="pubsub" className="scroll-mt-20">
-        <CardHeader>
-          <CardTitle>Real-time delivery</CardTitle>
-          <CardDescription>Gmail push notifications through a Pub/Sub topic in your Google Cloud project.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <PubsubPanel />
-        </CardContent>
-      </Card>
 
       <div className="grid gap-6 lg:grid-cols-2">
         <PasswordCard />

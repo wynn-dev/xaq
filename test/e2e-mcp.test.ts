@@ -43,7 +43,7 @@ describe.runIf(HAS_AGENTS)("MCP agent journey", () => {
   beforeAll(async () => {
     s = await startStack();
     email = mailbox("mcp");
-    [account] = (await s.bootstrap({ accounts: [{ email, name: "Support Desk" }], pubsub: true })) as [Account];
+    [account] = (await s.bootstrap({ accounts: [{ email, name: "Support Desk" }] })) as [Account];
     support = s.fake.addLabel(email, "Support");
     s.fake.addLabel(email, "VIP");
   });
@@ -385,6 +385,8 @@ describe.runIf(HAS_AGENTS)("MCP agent journey", () => {
   it("organizes mail (labels, archive, read state) within the label scope", async () => {
     const inScope = deliverOrder("Organize me");
     const outside = s.fake.deliver(email, { from: "x@else.test", subject: "Not mine", text: "z" });
+    // Ingested before the changes below, so they become label events (not part of message.received).
+    await s.waitForEvent((e) => e.message?.id === inScope.id);
     const vip = s.fake.addLabel(email, "VIP"); // created in beforeAll
     const { id, mcp } = await agentWith("organizer-scoped", { capabilities: ["read", "organize"], labelScope: [support, vip] });
 

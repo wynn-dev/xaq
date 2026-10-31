@@ -349,57 +349,13 @@ describe("what syncs", () => {
     expect(syncRows(ctx.db, accountId).map((r) => r.calendar_id)).toEqual([other]);
   });
 
-  it("tells push about changes to the set of synced calendars", async () => {
-    await setup();
-    const changed: string[] = [];
-    const sync2 = createCalendarSync(ctx, {
-      onSyncSetChanged: (id) => {
-        changed.push(id);
-      },
-    });
-    await sync2.syncAccount(accountId);
-    await sync2.syncAccount(accountId);
-    expect(changed).toEqual([accountId]);
-    fake.calendar.addCalendar(ME, { name: "Team" });
-    await sync2.syncAccount(accountId);
-    expect(changed).toEqual([accountId, accountId]);
-  });
-
-  it("survives a push hook that throws or rejects", async () => {
-    await setup();
-    const calls: string[] = [];
-    const throwing = createCalendarSync(ctx, {
-      onSyncSetChanged: (id) => {
-        calls.push(id);
-        throw new Error("push down");
-      },
-    });
-    await throwing.syncAccount(accountId);
-    fake.calendar.addCalendar(ME, { name: "Team" });
-    const rejecting = createCalendarSync(ctx, {
-      onSyncSetChanged: async (id) => {
-        calls.push(id);
-        throw new Error("push down");
-      },
-    });
-    await rejecting.syncAccount(accountId);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(calls).toEqual([accountId, accountId]);
-    expect(account().calendar!.status).toBe("active");
-  });
-
-  it("forgets an account's calendars once no grant reads them, stopping their push channels", async () => {
+  it("forgets an account's calendars once no grant reads them", async () => {
     await setup();
     await sync();
-    const client = ctx.google.calendar(accountId);
-    fake.calendar.autoNotify = false;
-    const ch = await client.watchEvents(ME, { id: "chn_x", address: "https://inbox.example.com/google/calendar/push", token: "t" });
-    ctx.db.run("UPDATE calendar_sync SET channel_id = ?, channel_resource_id = ?", ch.id, ch.resourceId);
     ctx.policy.upsertGrant(agentId, accountId, grant(accountId, ["read"]));
     await sync();
     expect(syncRows(ctx.db, accountId)).toEqual([]);
     expect(ctx.db.get("SELECT 1 FROM calendar_event_state")).toBeUndefined();
-    expect(fake.calendar.channels()).toEqual([]);
     // Granted again later: a fresh baseline, so nothing that happened meanwhile floods the agent.
     fake.calendar.putEvent(ME, ME, { summary: "Meanwhile", ...slot(1) });
     ctx.policy.upsertGrant(agentId, accountId, grant(accountId, ["calendar.read"]));

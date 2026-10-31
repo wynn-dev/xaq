@@ -148,7 +148,6 @@ describe("Notion extension", () => {
     const steps = notionPreset.setupSteps({
       publicUrl: "https://inbox.example.com",
       redirectUri: "https://inbox.example.com/oauth/connections/callback",
-      webhookUrl: null,
     });
     expect(steps.map((s) => s.id)).toEqual(["connect", "approve", "reconnect"]);
     expect(steps[0]!.title).toBe("Connect");

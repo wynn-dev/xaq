@@ -10,10 +10,8 @@ Taken from demos against a fake Google (`scripts/demo/seed.ts`) by `scripts/demo
 | `wizard-3-signin-screen.png` | Step 3: the Google sign-in screen, External chosen, with the "publish the app" step |
 | `wizard-4-oauth-client.png` | Step 4: OAuth client form values, the imported client JSON, and Google's client check (all green) |
 | `wizard-5-gmail.png` | Step 5: a connected Google account (Gmail and Calendar in one sign-in) |
-| `wizard-6-delivery.png` | Step 6: real-time delivery with one-click Pub/Sub (after turning on its API), or polling every 30 seconds |
-| `wizard-6-delivery-org-policy.png` | Step 6 error help: Pub/Sub blocked by an organization policy, and what to do |
-| `wizard-7-agent.png` | Step 7: a `connect` request from the agent's terminal, approved inline with its code |
-| `wizard-8-verify.png` | Step 8: "Check that it works", every check green and "Setup complete" |
+| `wizard-6-agent.png` | Step 6: a `connect` request from the agent's terminal, approved inline with its code |
+| `wizard-7-verify.png` | Step 7: "Check that it works", every check green and "Setup complete" |
 | `overview.png` | Overview: account needing reconnect, agent asking for access, pending approval, 24 h stats and activity |
 | `overview-dark.png` | The same in dark mode |
 | `overview-mobile.png` | Overview on a phone (390 px, 2×) |
@@ -25,11 +23,10 @@ Taken from demos against a fake Google (`scripts/demo/seed.ts`) by `scripts/demo
 | `pairing-request.png` | Approvals, Agent access: a request opened from the terminal's link |
 | `pairing-approve.png` | Approving a request: type the terminal's code, choose access (starts at read-only) |
 | `approvals.png` | Approvals: a reply waiting for review, with the agent's reason |
-| `webhook-deliveries.png` | Webhook detail: plain-language summary and delivery log with a failed attempt expanded |
 | `events.png` | Live events feed |
 | `audit.png` | Audit log with a guardrail denial expanded |
 | `audit-dark.png` | Audit log in dark mode |
-| `settings.png` | Settings: agent pairing toggle, webhook allowlist, Google OAuth client |
+| `settings.png` | Settings: agent pairing toggle, attachment directories, Google OAuth client |
 
 Regenerate after `pnpm build` with `node scripts/demo/docs-shots.mjs` (add `--only name,name` for a few). It
-starts and stops its own demos on ports 8425, 8531 and 8532; see the header of that file for the Playwright setup.
+starts and stops its own demos on ports 8425 and 8531; see the header of that file for the Playwright setup.

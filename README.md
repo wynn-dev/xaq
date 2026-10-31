@@ -86,7 +86,7 @@ and is delivered once the listener is back: nothing is lost or delivered twice.
 **Kept:**
 - the data directory: `~/.agentinbox` (or the `--data` directory the old service used) stays in use, with its
   `master.key`, `agentinbox.db` and settings. Nothing is moved; `~/.xaq` is only for new installs.
-- every agent key (`aib_…`), Gmail and Calendar connection, grant, webhook and Pub/Sub setup;
+- every agent key (`aib_…`), Gmail and Calendar connection and grant;
 - the listener's profiles, keys, logs and event cursor (`~/.config/agentinbox`, `~/.local/state/agentinbox`,
   `~/.local/share/agentinbox` stay in use until the matching `…/xaq` directory holds xaq's own files);
 - the names your agents already use: a profile set up with agentinbox keeps its MCP server name `agentinbox`
@@ -113,7 +113,7 @@ didn't create.
 ## More
 
 - [Reference](docs/reference.md): features, configuration, running as a service or behind a proxy, security model,
-  webhooks, data and backups, development
+  events, data and backups, development
 - [Waking local agents with `xaq listen`](docs/listen.md), e.g. `npx xaq-cli listen --recipe claude-code`
 - [Screenshots](docs/screenshots/README.md)
 

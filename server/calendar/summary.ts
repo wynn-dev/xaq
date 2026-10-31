@@ -52,7 +52,7 @@ function conferenceUrl(e: CalendarEventRaw): string | null {
 /**
  * Normalizes a raw event. Free text (summary, location, names) is cleaned to single lines (cleanLine, which
  * also escapes the untrusted-content delimiters): invites are an injection vector, and these fields reach
- * agents and webhooks as-is. Links are kept only when they are https (safeUrl). The description is never included.
+ * agents and listeners as-is. Links are kept only when they are https (safeUrl). The description is never included.
  * Works on the minimal shape of a cancelled event from incremental sync (only `id`, `status`).
  */
 export function summarizeEvent(e: CalendarEventRaw, calendarId: string): CalendarEventSummary {

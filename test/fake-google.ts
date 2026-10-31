@@ -1,5 +1,5 @@
 /**
- * In-memory fake of every Google endpoint xaq calls (OAuth, Gmail REST, Pub/Sub REST, Calendar, Drive read-only), served by
+ * In-memory fake of every Google endpoint xaq calls (OAuth, Gmail REST, Calendar, Drive read-only), served by
  * node:http on 127.0.0.1:<random port>. Deterministic and fast; used by unit tests and the end-to-end test.
  *
  *   const g = await startFakeGoogle();
@@ -14,18 +14,16 @@
  *   await g.close();
  *
  * State helpers
- *   addAccount(email, { name?, projectAccess?, workspaceDomain? })  create a mailbox (projectAccess=false → Pub/Sub admin calls get
- *                                                  PERMISSION_DENIED; workspaceDomain → the id_token carries hd=<domain>)
+ *   addAccount(email, { name?, workspaceDomain? })  create a mailbox (workspaceDomain → the id_token carries hd=<domain>)
  *   addLabel(email, name) → id                     create a user label ("Label_N")
  *   consentAs(email, { deny?, noRefreshToken?, scopes? })  queue the next consent (otherwise the only account, if exactly one exists)
  *   deliver(email, msg) → GmailMessage             incoming mail: builds RFC 5322, adds INBOX+UNREAD (or msg.labelIds), records
- *                                                  history and publishes a Pub/Sub notification if the mailbox is watched
+ *                                                  history
  *   setLabels(email, messageId, add, remove)       label change with history (unknown user label ids are created)
  *   failRefresh(email, { rapt? })                  revoke the user's grant: refresh → 400 invalid_grant (error_subtype invalid_rapt with rapt)
  *   expireAccessTokens(email)                      make cached access tokens invalid (next API call → 401)
  *   expireHistory(email)                           history.list with any cursor obtained before this call → 404
- *   orgPolicyBlocksIam(on)                         setIamPolicy adding a non-org member → 400 FAILED_PRECONDITION (iam.allowedPolicyMemberDomains)
- *   disableApi("gmail" | "pubsub", on)             API calls → 403 SERVICE_DISABLED
+ *   disableApi("gmail", on)                    API calls → 403 SERVICE_DISABLED
  *   failNext({ method?, path, status, reason?, message?, retryAfter?, times?, afterProcessing? })  inject errors for matching
  *                                                  requests (afterProcessing: the request takes effect, then the error is returned)
  *   accessTokenTtl                                 seconds for newly issued access tokens (default 3600)
@@ -34,13 +32,10 @@
  *   refreshTokenTtl                                null (default): long-lived refresh tokens. A number simulates an External app in
  *                                                  Testing: new refresh tokens expire after that many seconds (Google: 604800) and
  *                                                  token responses carry refresh_token_expires_in (time left, on refreshes too)
- *   pullWaitMs                                     how long an empty Pub/Sub pull is held open (default 1000;
- *                                                  returnImmediately pulls answer at once)
- *   abortedPulls                                   count of waiting pulls the client cancelled (seen server-side)
  *
  * Inspection
  *   sent(email) / drafts(email) / messages(email) / message(email, id)   format=full Gmail JSON (+ drafts as {id, message})
- *   watch(email)  topics()  subscription(name)  iamPolicy(topic)  revoked (tokens)  requests ({method, path} log)
+ *   revoked (tokens)  requests ({method, path} log)
  *
  * Consent screen like Google's for a signed-out browser: an unknown client_id or unregistered redirect URI
  * redirects to /signin/oauth/error/v2?authError=<base64 "Error 401: invalid_client" / "Error 400: redirect_uri_mismatch">;
@@ -65,9 +60,6 @@
  *   disableApi("calendar", on)                     403 SERVICE_DISABLED (accessNotConfigured, ErrorInfo metadata.activationUrl)
  *   mailsSent(email)                               emails Google would have sent for that account's API writes (sendUpdates
  *                                                  all / externalOnly = non-fake guests): { to, kind: invite|update|cancel|reply, eventId }
- *   channels() / notify(channelId, state)          events.watch channels; POST a push (X-Goog-* headers, no body) to the address.
- *                                                  autoNotify (default true) sends "sync" on creation and "exists" on each change;
- *                                                  pushTarget rewrites addresses (public https → local test server)
  * Routes check the token's scopes like Google (consentAs { scopes } simulates granular consent → 403
  * ACCESS_TOKEN_SCOPE_INSUFFICIENT): calendarList needs calendar.calendarlist(.readonly), events calendar.events,
  * freeBusy calendar.events.freebusy (or the broad calendar scopes). events.list: syncToken (400 next to timeMin/timeMax/q/
@@ -113,8 +105,6 @@ export const FAKE_CLIENT = {
 };
 
 export const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
-export const PUBSUB_SCOPE = "https://www.googleapis.com/auth/pubsub";
-const GMAIL_PUSH = "serviceAccount:gmail-api-push@system.gserviceaccount.com";
 
 export interface DeliverInput {
   from: string;
@@ -146,7 +136,7 @@ export interface FakeGoogle {
   url: string;
   google: Config["google"];
   close(): Promise<void>;
-  addAccount(email: string, opts?: { name?: string; projectAccess?: boolean; workspaceDomain?: string }): void;
+  addAccount(email: string, opts?: { name?: string; workspaceDomain?: string }): void;
   addLabel(email: string, name: string): string;
   consentAs(email: string, opts?: { deny?: boolean; noRefreshToken?: boolean; scopes?: string[] }): void;
   deliver(email: string, msg: DeliverInput): GmailMessage;
@@ -154,7 +144,6 @@ export interface FakeGoogle {
   failRefresh(email: string, opts?: { rapt?: boolean }): void;
   expireAccessTokens(email: string): void;
   expireHistory(email: string): void;
-  orgPolicyBlocksIam(on: boolean): void;
   disableApi(api: FakeApi, on: boolean): void;
   /** The scopes an access token was issued with (null: not one of ours). */
   tokenScopes(accessToken: string): { email: string; scopes: string[] } | null;
@@ -171,16 +160,9 @@ export interface FakeGoogle {
   drafts(email: string): { id: string; message: GmailMessage }[];
   messages(email: string): GmailMessage[];
   message(email: string, id: string): GmailMessage | null;
-  watch(email: string): { topic: string; expiration: number } | null;
-  topics(): string[];
-  subscription(name: string): { topic: string; ackDeadlineSeconds: number; outstanding: number; queued: number } | null;
-  iamPolicy(topic: string): { bindings: { role: string; members: string[] }[] } | null;
   accessTokenTtl: number;
   refreshTokenTtl: number | null;
   registeredRedirectUris: string[] | null;
-  pullWaitMs: number;
-  /** Long-poll pulls the client cancelled while they were waiting (seen by the server). */
-  abortedPulls: number;
   revoked: string[];
   requests: { method: string; path: string }[];
   /** Media uploads to messages.send / drafts.create: path, uploadType, the JSON metadata part and the message size. */
@@ -224,17 +206,6 @@ export interface FakeCalendarMail {
   eventId: string;
 }
 
-export interface FakeChannel {
-  id: string;
-  resourceId: string;
-  token: string | null;
-  address: string;
-  email: string;
-  calendarId: string;
-  /** Epoch ms. */
-  expiration: number;
-}
-
 export interface FakeCalendar {
   addCalendar(email: string, opts: { name: string; accessRole?: CalendarAccessRole; id?: string; timeZone?: string; hidden?: boolean }): string;
   removeCalendar(email: string, calendarId: string): void;
@@ -246,12 +217,6 @@ export interface FakeCalendar {
   event(email: string, calendarId: string, id: string): CalendarEventRaw | null;
   expireSyncTokens(email: string, calendarId?: string): void;
   mailsSent(email: string): FakeCalendarMail[];
-  channels(): FakeChannel[];
-  notify(channelId: string, state: "sync" | "exists" | "not_exists"): Promise<number>;
-  /** Send "sync" when a channel is created and "exists" on every change to a watched calendar (default true). */
-  autoNotify: boolean;
-  /** Rewrites channel addresses before posting (e.g. a public https address → the local test server). */
-  pushTarget: ((address: string) => string) | null;
 }
 
 // ───────────── MIME (fake side) ─────────────
@@ -442,8 +407,6 @@ interface Mailbox {
   history: GmailHistoryRecord[];
   labels: Map<string, GmailLabelRaw>;
   drafts: Map<string, string>;
-  watch: { topic: string; expiration: number } | null;
-  projectAccess: boolean;
   nextLabel: number;
   workspaceDomain: string | null;
 }
@@ -455,22 +418,6 @@ interface Token {
   revoked: boolean;
   /** Grant generation this token belongs to; revoking the grant bumps it. */
   gen: number;
-}
-
-interface PubsubMessage {
-  data: string;
-  messageId: string;
-  publishTime: string;
-  attributes?: Record<string, string>;
-  attempts: number;
-}
-
-interface Subscription {
-  topic: string;
-  ackDeadlineSeconds: number;
-  queue: PubsubMessage[];
-  outstanding: Map<string, { msg: PubsubMessage; deadline: number }>;
-  waiters: Set<() => void>;
 }
 
 const SYSTEM_LABELS = [
@@ -547,7 +494,6 @@ function multipartRelated(body: Buffer, contentType: string): { contentType: str
 
 const SERVICES = {
   gmail: { name: "Gmail API", host: "gmail.googleapis.com" },
-  pubsub: { name: "Cloud Pub/Sub API", host: "pubsub.googleapis.com" },
   calendar: { name: "Google Calendar API", host: "calendar-json.googleapis.com" },
   drive: { name: "Google Drive API", host: "drive.googleapis.com" },
   docs: { name: "Google Docs API", host: "docs.googleapis.com" },
@@ -606,11 +552,8 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
   const valid = (t: Token | undefined): t is Token => Boolean(t && !t.revoked && t.gen === grantOf(t.email).gen);
   const codes = new Map<string, { email: string; scopes: string[]; challenge: string; redirectUri: string; noRefreshToken: boolean }>();
   const consents: { email: string; deny?: boolean; noRefreshToken?: boolean; scopes?: string[] }[] = [];
-  const topics = new Map<string, { policy: { version: number; etag: string; bindings: { role: string; members: string[] }[] } }>();
-  const subs = new Map<string, Subscription>();
   const failRules: (FailRule & { left: number })[] = [];
   const disabled = new Set<string>();
-  let orgPolicy = false;
   let idCounter = 0x18f2a00000000000n;
   let seq = 0;
   const newMsgId = () => (idCounter++).toString(16);
@@ -717,26 +660,10 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     };
   }
 
-  function publish(topicName: string, data: string, attributes?: Record<string, string>): string {
-    const messageId = String(1_000_000 + seq++);
-    for (const sub of subs.values()) {
-      if (sub.topic !== topicName) continue;
-      sub.queue.push({ data, messageId, publishTime: new Date().toISOString(), attributes, attempts: 0 });
-      for (const w of sub.waiters) w();
-    }
-    return messageId;
-  }
-
-  const canPublish = (topic: string) =>
-    topics.get(topic)?.policy.bindings.some((b) => b.role === "roles/pubsub.publisher" && b.members.includes(GMAIL_PUSH)) ?? false;
-
   function record(mb: Mailbox, rec: Omit<GmailHistoryRecord, "id">, touched: StoredMessage[]) {
     mb.historyId++;
     for (const m of touched) m.historyId = mb.historyId;
     mb.history.push({ id: String(mb.historyId), ...rec });
-    if (mb.watch && mb.watch.expiration > Date.now() && canPublish(mb.watch.topic)) {
-      publish(mb.watch.topic, Buffer.from(JSON.stringify({ emailAddress: mb.email, historyId: mb.historyId })).toString("base64"));
-    }
   }
 
   const ref = (m: StoredMessage) => ({ id: m.id, threadId: m.threadId, labelIds: [...m.labelIds] });
@@ -922,7 +849,7 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
 
   // ───── Auth ─────
 
-  function bearer(req: IncomingMessage, scope: string, api: "gmail" | "pubsub"): Token {
+  function bearer(req: IncomingMessage, scope: string, api: "gmail"): Token {
     const t = accessTokens.get((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
     if (!valid(t) || t.expiresAt < Date.now()) {
       throw apiError(401, "Request had invalid authentication credentials. Expected OAuth 2 access token.", "authError");
@@ -1290,176 +1217,6 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     return { ...(items.length ? { history: items } : {}), ...(next ? { nextPageToken: next } : {}), historyId: String(mb.historyId) };
   });
 
-  gmailRoute("POST", "/watch", (mb, _u, body) => {
-    const b = json(body) as { topicName?: string };
-    const topic = b.topicName ?? "";
-    if (!topics.has(topic)) throw apiError(404, `Resource not found (resource=${topic.split("/").pop()}).`, "notFound");
-    if (!canPublish(topic)) {
-      throw apiError(403, `Error sending test message to Cloud PubSub ${topic} : User not authorized to perform this action.`, "forbidden");
-    }
-    mb.watch = { topic, expiration: Date.now() + 7 * 86400e3 };
-    return { historyId: String(mb.historyId), expiration: String(mb.watch.expiration) };
-  });
-
-  gmailRoute("POST", "/stop", (mb) => {
-    mb.watch = null;
-    return undefined;
-  });
-
-  // Pub/Sub
-  const pubsubRoute = (method: string, re: RegExp, h: (url: URL, body: Buffer, m: RegExpExecArray, res: ServerResponse) => unknown) =>
-    on(method, re, (req, url, body, m, res) => {
-      const t = bearer(req, PUBSUB_SCOPE, "pubsub");
-      if (!box(t.email).projectAccess) {
-        throw apiError(403, "User not authorized to perform this action.", undefined, { status: "PERMISSION_DENIED" });
-      }
-      return h(url, body, m, res);
-    });
-  const TOPIC = /^\/v1\/(projects\/[^/]+\/topics\/[^/:]+)$/;
-  const SUB = /^\/v1\/(projects\/[^/]+\/subscriptions\/[^/:]+)$/;
-
-  pubsubRoute("PUT", TOPIC, (_u, _b, m) => {
-    if (topics.has(m[1]!)) throw apiError(409, "Resource already exists in the project (resource=agentinbox-gmail).");
-    topics.set(m[1]!, { policy: { version: 1, etag: "BwYA", bindings: [] } });
-    return { name: m[1] };
-  });
-
-  pubsubRoute("GET", TOPIC, (_u, _b, m) => {
-    if (!topics.has(m[1]!)) throw apiError(404, "Resource not found (resource=agentinbox-gmail).");
-    return { name: m[1] };
-  });
-
-  const topicOr404 = (name: string) => {
-    const t = topics.get(name);
-    if (!t) throw apiError(404, `Resource not found (resource=${name.split("/").pop()}).`);
-    return t;
-  };
-
-  // GET only, like Google (a POST gets the HTML 404).
-  pubsubRoute("GET", /^\/v1\/(projects\/[^/]+\/topics\/[^/:]+):getIamPolicy$/, (_u, _b, m) => structuredClone(topicOr404(m[1]!).policy));
-
-  pubsubRoute("POST", /^\/v1\/(projects\/[^/]+\/topics\/[^/:]+):setIamPolicy$/, (_u, body, m) => {
-    const t = topicOr404(m[1]!);
-    const policy = (json(body).policy ?? {}) as { etag?: string; bindings?: { role: string; members: string[] }[] };
-    if (policy.etag && policy.etag !== t.policy.etag) throw apiError(409, "There were concurrent policy changes.", undefined, { status: "ABORTED" });
-    const members = (policy.bindings ?? []).flatMap((b) => b.members);
-    if (orgPolicy && members.some((x) => x.endsWith("gserviceaccount.com"))) {
-      throw apiError(400, "One or more users named in the policy do not belong to a permitted customer,  perhaps due to an organization policy.", undefined, {
-        status: "FAILED_PRECONDITION",
-        details: [
-          {
-            "@type": "type.googleapis.com/google.rpc.PreconditionFailure",
-            violations: [
-              {
-                type: "constraints/iam.allowedPolicyMemberDomains",
-                subject: "orgpolicy:projects/fake-project",
-                description: "User gmail-api-push@system.gserviceaccount.com is not in permitted organization.",
-              },
-            ],
-          },
-        ],
-      });
-    }
-    t.policy = { version: 1, etag: `BwYB${seq++}`, bindings: policy.bindings ?? [] };
-    return structuredClone(t.policy);
-  });
-
-  pubsubRoute("POST", /^\/v1\/(projects\/[^/]+\/topics\/[^/:]+):publish$/, (_u, body, m) => {
-    topicOr404(m[1]!);
-    const msgs = (json(body).messages ?? []) as { data?: string; attributes?: Record<string, string> }[];
-    return { messageIds: msgs.map((x) => publish(m[1]!, x.data ?? "", x.attributes)) };
-  });
-
-  pubsubRoute("PUT", SUB, (_u, body, m) => {
-    if (subs.has(m[1]!)) throw apiError(409, "Resource already exists in the project (resource=agentinbox-gmail-pull).");
-    const b = json(body) as { topic?: string; ackDeadlineSeconds?: number };
-    topicOr404(b.topic ?? "");
-    subs.set(m[1]!, { topic: b.topic!, ackDeadlineSeconds: b.ackDeadlineSeconds ?? 10, queue: [], outstanding: new Map(), waiters: new Set() });
-    return { name: m[1], topic: b.topic, ackDeadlineSeconds: b.ackDeadlineSeconds ?? 10 };
-  });
-
-  const subOr404 = (name: string) => {
-    const s = subs.get(name);
-    if (!s) throw apiError(404, `Resource not found (resource=${name.split("/").pop()}).`);
-    return s;
-  };
-
-  pubsubRoute("GET", SUB, (_u, _b, m) => {
-    const s = subOr404(m[1]!);
-    return { name: m[1], topic: s.topic, ackDeadlineSeconds: s.ackDeadlineSeconds };
-  });
-
-  function take(s: Subscription, max: number) {
-    const t = Date.now();
-    for (const [ackId, o] of s.outstanding) {
-      if (o.deadline <= t) {
-        s.outstanding.delete(ackId);
-        s.queue.push(o.msg);
-      }
-    }
-    return s.queue.splice(0, max).map((msg) => {
-      const ackId = token("ack-");
-      msg.attempts++;
-      s.outstanding.set(ackId, { msg, deadline: t + s.ackDeadlineSeconds * 1000 });
-      return {
-        ackId,
-        message: { data: msg.data, messageId: msg.messageId, publishTime: msg.publishTime, ...(msg.attributes ? { attributes: msg.attributes } : {}) },
-        deliveryAttempt: msg.attempts,
-      };
-    });
-  }
-
-  pubsubRoute("POST", /^\/v1\/(projects\/[^/]+\/subscriptions\/[^/:]+):pull$/, async (_u, body, m, res) => {
-    const s = subOr404(m[1]!);
-    const b = json(body);
-    const max = Number(b.maxMessages ?? 100) || 100;
-    let got = take(s, max);
-    if (!got.length && b.returnImmediately !== true) {
-      let closed = false;
-      await new Promise<void>((resolve) => {
-        const onClose = () => {
-          closed = true;
-          done();
-        };
-        const done = () => {
-          clearTimeout(timer);
-          s.waiters.delete(done);
-          res.off("close", onClose);
-          closers.delete(done);
-          resolve();
-        };
-        const timer = setTimeout(done, fake.pullWaitMs);
-        s.waiters.add(done);
-        closers.add(done);
-        res.on("close", onClose);
-      });
-      // Like Pub/Sub, never dispatch messages into a pull the client already cancelled.
-      if (closed) {
-        fake.abortedPulls++;
-        return {};
-      }
-      got = take(s, max);
-    }
-    return got.length ? { receivedMessages: got } : {};
-  });
-
-  pubsubRoute("POST", /^\/v1\/(projects\/[^/]+\/subscriptions\/[^/:]+):acknowledge$/, (_u, body, m) => {
-    const s = subOr404(m[1]!);
-    for (const id of (json(body).ackIds ?? []) as string[]) s.outstanding.delete(id);
-    return {};
-  });
-
-  pubsubRoute("POST", /^\/v1\/(projects\/[^/]+\/subscriptions\/[^/:]+):modifyAckDeadline$/, (_u, body, m) => {
-    const s = subOr404(m[1]!);
-    const b = json(body) as { ackIds?: string[]; ackDeadlineSeconds?: number };
-    for (const id of b.ackIds ?? []) {
-      const o = s.outstanding.get(id);
-      if (o) o.deadline = Date.now() + (b.ackDeadlineSeconds ?? 0) * 1000;
-    }
-    if (!b.ackDeadlineSeconds) for (const w of s.waiters) w();
-    return {};
-  });
-
   // ───── Calendar ─────
 
   const CAL = "https://www.googleapis.com/auth/calendar";
@@ -1486,7 +1243,6 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
   /** Owner email → calendar id → calendar. */
   const calendars = new Map<string, Map<string, FakeCal>>();
   const calMails = new Map<string, FakeCalendarMail[]>();
-  const channels = new Map<string, FakeChannel & { messages: number }>();
   let calSeq = 0;
   let lastStamp = 0;
 
@@ -1524,15 +1280,12 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     return t;
   }
 
-  /** Stores a new version: fresh `updated` and etag, a change-log position (what sync tokens read), then pings watch channels. */
+  /** Stores a new version: fresh `updated` and etag, a change-log position (what sync tokens read). */
   function save(cal: FakeCal, raw: CalendarEventRaw): CalendarEventRaw {
     const at = (lastStamp = Math.max(Date.now(), lastStamp + 1));
     const seq = ++calSeq;
     const stored: CalendarEventRaw = { ...structuredClone(raw), updated: new Date(at).toISOString(), etag: `"${at}${String(seq).padStart(4, "0")}"` };
     cal.events.set(raw.id, { raw: stored, seq });
-    if (fake.calendar.autoNotify) {
-      for (const ch of channels.values()) if (ch.email === cal.owner && ch.calendarId === cal.entry.id) void notify(ch.id, "exists");
-    }
     return structuredClone(stored);
   }
 
@@ -1923,69 +1676,7 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     return { kind: "calendar#freeBusy", timeMin: b.timeMin, timeMax: b.timeMax, calendars: out };
   });
 
-  calRoute("POST", "/calendars/([^/]+)/events/watch", CAL_SCOPES.read, (t, _u, body, m) => {
-    const cal = calendarOf(t.email, calParam(m));
-    const b = json(body) as { id?: string; type?: string; address?: string; token?: string; params?: { ttl?: string } };
-    if (!b.id || !b.address || b.type !== "web_hook") throw apiError(400, "Missing id, address or type web_hook.", "required");
-    if (channels.has(b.id)) throw apiError(400, `Channel id ${b.id} not unique`, "channelIdNotUnique");
-    const ttl = Number(b.params?.ttl ?? 604_800);
-    const ch = {
-      id: b.id,
-      resourceId: randomBytes(14).toString("base64url"),
-      token: b.token ?? null,
-      address: b.address,
-      email: t.email,
-      calendarId: cal.entry.id,
-      expiration: Date.now() + Math.min(ttl, 30 * 86_400) * 1000,
-      messages: 0,
-    };
-    channels.set(ch.id, ch);
-    // Google confirms a new channel with a "sync" message right away.
-    if (fake.calendar.autoNotify) setTimeout(() => void notify(ch.id, "sync"), 0);
-    return {
-      kind: "api#channel",
-      id: ch.id,
-      resourceId: ch.resourceId,
-      resourceUri: `${url}/calendar/v3/calendars/${encodeURIComponent(cal.entry.id)}/events?alt=json`,
-      ...(ch.token ? { token: ch.token } : {}),
-      expiration: String(ch.expiration),
-    };
-  });
-
-  calRoute("POST", "/channels/stop", CAL_SCOPES.read, (t, _u, body) => {
-    const b = json(body) as { id?: string; resourceId?: string };
-    const ch = channels.get(b.id ?? "");
-    if (!ch || ch.resourceId !== b.resourceId || ch.email !== t.email) throw apiError(404, `Channel '${b.id}' not found for project '123456789'`, "notFound");
-    channels.delete(ch.id);
-    return undefined;
-  });
-
-  /** POSTs a push notification for the channel to its address (no body, X-Goog-* headers). Resolves to the HTTP status, 0 when unreachable. */
-  async function notify(channelId: string, state: "sync" | "exists" | "not_exists"): Promise<number> {
-    const ch = channels.get(channelId);
-    if (!ch) throw new Error(`fake-google: unknown channel ${channelId}`);
-    const headers: Record<string, string> = {
-      "x-goog-channel-id": ch.id,
-      "x-goog-resource-id": ch.resourceId,
-      "x-goog-resource-state": state,
-      "x-goog-message-number": String(++ch.messages),
-      "x-goog-resource-uri": `${url}/calendar/v3/calendars/${encodeURIComponent(ch.calendarId)}/events?alt=json`,
-      "x-goog-channel-expiration": new Date(ch.expiration).toUTCString(),
-      ...(ch.token ? { "x-goog-channel-token": ch.token } : {}),
-    };
-    try {
-      const target = fake.calendar.pushTarget ? fake.calendar.pushTarget(ch.address) : ch.address;
-      const res = await fetch(target, { method: "POST", headers, signal: AbortSignal.timeout(5000) });
-      await res.body?.cancel();
-      return res.status;
-    } catch {
-      return 0;
-    }
-  }
-
   const calendarApi: FakeCalendar = {
-    autoNotify: true,
-    pushTarget: null,
     addCalendar(email, opts) {
       const id = opts.id ?? `${randomBytes(16).toString("hex")}@group.calendar.google.com`;
       return addCalendarTo(email.toLowerCase(), {
@@ -2050,8 +1741,6 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
       for (const cal of calendarsOf(email).values()) if (!calendarId || cal.entry.id === calendarId || (calendarId === "primary" && cal.entry.primary)) cal.gen++;
     },
     mailsSent: (email) => [...(calMails.get(email.toLowerCase()) ?? [])],
-    channels: () => [...channels.values()].map(({ messages: _m, ...ch }) => ({ ...ch })),
-    notify,
   };
 
   // ───── Google Drive (read-only) ─────
@@ -2181,8 +1870,6 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
 
   // ───── Server ─────
 
-  const closers = new Set<() => void>();
-
   async function handle(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? "/", "http://fake");
     const method = req.method ?? "GET";
@@ -2231,17 +1918,14 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
 
   const fake: FakeGoogle = {
     url,
-    google: { oauthBase: url, authBase: url, gmailBase: url, pubsubBase: url, calendarBase: url, apisBase: url },
+    google: { oauthBase: url, authBase: url, gmailBase: url, calendarBase: url, apisBase: url },
     accessTokenTtl: 3600,
     refreshTokenTtl: null,
     registeredRedirectUris: null,
-    pullWaitMs: 1000,
-    abortedPulls: 0,
     revoked: [],
     requests: [],
     uploads: [],
     async close() {
-      for (const c of closers) c();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
@@ -2258,8 +1942,6 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
         history: [],
         labels,
         drafts: new Map(),
-        watch: null,
-        projectAccess: opts.projectAccess ?? true,
         nextLabel: 1,
         workspaceDomain: opts.workspaceDomain?.toLowerCase() ?? null,
       });
@@ -2313,9 +1995,6 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
       mb.historyId++;
       mb.minHistoryId = mb.historyId;
     },
-    orgPolicyBlocksIam(on) {
-      orgPolicy = on;
-    },
     disableApi(api, on) {
       if (on) disabled.add(api);
       else disabled.delete(api);
@@ -2343,13 +2022,6 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
       const m = mb.messages.get(id);
       return m ? format(m) : null;
     },
-    watch: (email) => box(email).watch,
-    topics: () => [...topics.keys()],
-    subscription: (name) => {
-      const s = subs.get(name);
-      return s ? { topic: s.topic, ackDeadlineSeconds: s.ackDeadlineSeconds, outstanding: s.outstanding.size, queued: s.queue.length } : null;
-    },
-    iamPolicy: (topic) => (topics.has(topic) ? structuredClone(topics.get(topic)!.policy) : null),
     calendar: calendarApi,
     refreshes: [],
     ignoreRefreshScope: false,
@@ -2368,33 +2040,28 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
 
 /**
  * Configures the fake OAuth client (unless already set) and runs the whole connect flow for `email`
- * (adding the mailbox if needed): startConnect → fake consent → completeConnectFromUrl. `pubsub: true`
- * then also grants the Pub/Sub scope through the incremental-consent flow provisioning uses.
+ * (adding the mailbox if needed): startConnect → fake consent → completeConnectFromUrl.
  * `scopes` overrides what the fake user grants on the consent screen.
  */
 export async function connectFakeAccount(
   ctx: AppContext,
   fake: FakeGoogle,
   email: string,
-  opts: { name?: string; reauthAccountId?: string; scopes?: string[]; pubsub?: boolean } = {},
+  opts: { name?: string; reauthAccountId?: string; scopes?: string[] } = {},
 ): Promise<Account> {
   if (!ctx.google.clientView().hasSecret) ctx.google.setClient({ ...FAKE_CLIENT, appType: "internal" });
   fake.addAccount(email, { name: opts.name });
-  const consent = async (start: { reauthAccountId?: string; scopes?: "pubsub"[] }) => {
-    fake.consentAs(email, { scopes: opts.scopes });
-    const { authUrl } = ctx.google.startConnect(start);
-    const res = await fetch(authUrl, { redirect: "manual" });
-    const location = res.headers.get("location");
-    if (!location) throw new Error(`fake consent failed: HTTP ${res.status} ${await res.text()}`);
-    return ctx.google.completeConnectFromUrl(location);
-  };
-  const account = await consent({ reauthAccountId: opts.reauthAccountId });
-  return opts.pubsub ? consent({ reauthAccountId: account.id, scopes: ["pubsub"] }) : account;
+  fake.consentAs(email, { scopes: opts.scopes });
+  const { authUrl } = ctx.google.startConnect({ reauthAccountId: opts.reauthAccountId });
+  const res = await fetch(authUrl, { redirect: "manual" });
+  const location = res.headers.get("location");
+  if (!location) throw new Error(`fake consent failed: HTTP ${res.status} ${await res.text()}`);
+  return ctx.google.completeConnectFromUrl(location);
 }
 
 /**
  * A minimal EventsService that records emits and enforces dedupe keys, for tests that don't want the
- * real events/webhooks pipeline: `testContext({ events: rec.factory })`, then inspect `rec.events`.
+ * real events pipeline: `testContext({ events: rec.factory })`, then inspect `rec.events`.
  */
 export function recordingEvents() {
   const events: (NewEvent & { seq: number })[] = [];

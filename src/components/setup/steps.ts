@@ -29,7 +29,6 @@ export interface SetupDraft {
   projectConfirmed?: boolean;
   appType?: GoogleAppType;
   productionConfirmed?: boolean;
-  pubsubSkipped?: boolean;
   /**
    * Set when this browser first opens "Check that it works" before it is done. From then on only
    * this browser's own result (verified) completes that step, not the server's weaker evidence.
@@ -37,21 +36,20 @@ export interface SetupDraft {
   verifyStarted?: boolean;
   /** Set by the "Check that it works" step: as soon as every check is green, or by "Finish without checking". */
   verified?: boolean;
-  /** How step 8 was finished in this browser: every check green, or "Finish without checking". Unset before this was recorded. */
+  /** How step 7 was finished in this browser: every check green, or "Finish without checking". Unset before this was recorded. */
   verifiedBy?: "checks" | "skip";
 }
 
-export const STEP_IDS = ["url", "project", "consent", "client", "accounts", "pubsub", "agent", "verify"] as const;
+export const STEP_IDS = ["url", "project", "consent", "client", "accounts", "agent", "verify"] as const;
 export type StepId = (typeof STEP_IDS)[number];
-export type StepStatus = "done" | "skipped" | "todo";
+export type StepStatus = "done" | "todo";
 
-export const STEP_META: Record<StepId, { title: string; short: string; optional?: boolean }> = {
+export const STEP_META: Record<StepId, { title: string; short: string }> = {
   url: { title: "Choose the address of xaq", short: "Address" },
   project: { title: "Create a Google Cloud project", short: "Google Cloud project" },
   consent: { title: "Set up the Google sign-in screen", short: "Sign-in screen" },
   client: { title: "Create the OAuth client", short: "OAuth client" },
   accounts: { title: "Connect Google accounts", short: "Google accounts" },
-  pubsub: { title: "Set up real-time delivery", short: "Real-time delivery", optional: true },
   agent: { title: "Connect your first agent", short: "First agent" },
   verify: { title: "Check that it works", short: "Check it works" },
 };
@@ -60,7 +58,6 @@ export function stepStatuses(state: SetupState | undefined, draft: SetupDraft): 
   const s = state;
   const clientDone = !!s?.googleClientConfigured;
   const accountsDone = (s?.accountsConnected ?? 0) > 0;
-  const pubsubReady = s?.pubsub.mode === "pubsub" && !!s.pubsub.subscription;
   return {
     url: draft.urlConfirmed || clientDone || accountsDone ? "done" : "todo",
     project: s?.gcpProjectId || (draft.projectConfirmed && draft.projectId && PROJECT_ID_RE.test(draft.projectId)) ? "done" : "todo",
@@ -68,7 +65,6 @@ export function stepStatuses(state: SetupState | undefined, draft: SetupDraft): 
       s?.googleAppType || (draft.appType && (draft.appType === "internal" || draft.productionConfirmed)) ? "done" : "todo",
     client: clientDone ? "done" : "todo",
     accounts: accountsDone ? "done" : "todo",
-    pubsub: pubsubReady ? "done" : draft.pubsubSkipped ? "skipped" : "todo",
     agent: (s?.agentsCreated ?? 0) > 0 ? "done" : "todo",
     // Started here but not finished: stay todo (the server's evidence turns up long before the test email).
     verify: draft.verified || (!draft.verifyStarted && s?.verified) ? "done" : "todo",
@@ -77,8 +73,8 @@ export function stepStatuses(state: SetupState | undefined, draft: SetupDraft): 
 
 /**
  * Whether showing `step` starts the end-to-end check in this browser (sets SetupDraft.verifyStarted),
- * so the server's weaker evidence can't complete step 8 behind the user's back. Opening step 7 while
- * no agent exists counts too: the agent's first tool call often lands before step 8 is opened.
+ * so the server's weaker evidence can't complete step 7 behind the user's back. Opening step 6 while
+ * no agent exists counts too: the agent's first tool call often lands before step 7 is opened.
  * Never on an install that is already verified (opening the guide later changes nothing).
  */
 export function startsVerify(step: StepId, statuses: Record<StepId, StepStatus>, draft: SetupDraft): boolean {
@@ -87,8 +83,8 @@ export function startsVerify(step: StepId, statuses: Record<StepId, StepStatus>,
 }
 
 /**
- * The draft change once step 8's required checks are all green ("Setup complete"): the step is done
- * right away, so leaving without "Finish setup" doesn't leave setup at 7 of 8. null when nothing changes.
+ * The draft change once step 7's required checks are all green ("Setup complete"): the step is done
+ * right away, so leaving without "Finish setup" doesn't leave setup at 6 of 7. null when nothing changes.
  */
 export function verifiedPatch(complete: boolean, draft: SetupDraft): Partial<SetupDraft> | null {
   // Also after "Finish without checking" (or before verifiedBy existed): the checks have passed now.
@@ -101,12 +97,12 @@ export function skippedPatch(draft: SetupDraft): Partial<SetupDraft> {
 }
 
 /**
- * The heading once step 8's checks are done: "Setup complete" only when every required step is (or
- * only step 8 is left, about to be marked); otherwise "This check is done" and the first required
+ * The heading once step 7's checks are done: "Setup complete" only when every required step is (or
+ * only step 7 is left, about to be marked); otherwise "This check is done" and the first required
  * step still to do, for a link.
  */
 export function verifyDoneHeading(statuses: Record<StepId, StepStatus>): { title: string; nextStep: StepId | null } {
-  const next = STEP_IDS.find((id) => id !== "verify" && statuses[id] === "todo" && !STEP_META[id].optional);
+  const next = STEP_IDS.find((id) => id !== "verify" && statuses[id] === "todo");
   return next ? { title: "This check is done", nextStep: next } : { title: "Setup complete", nextStep: null };
 }
 
@@ -115,9 +111,9 @@ export function showsSetupLink(loaded: boolean, allDone: boolean, pathname: stri
   return loaded && (!allDone || pathname.startsWith("/get-started"));
 }
 
-/** Setup counts as done once every step is (Pub/Sub is optional). */
+/** Setup counts as done once every step is. */
 export function allStepsDone(statuses: Record<StepId, StepStatus>): boolean {
-  return STEP_IDS.every((id) => statuses[id] !== "todo" || STEP_META[id].optional);
+  return STEP_IDS.every((id) => statuses[id] !== "todo");
 }
 
 /**

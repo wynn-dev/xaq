@@ -1,26 +1,17 @@
 import type { MessageContent, WebhookPayload } from "../../shared/types.ts";
 import type { AppContext } from "../context.ts";
-import { toMailEvent } from "../events/repo.ts";
-import type { StoredEvent } from "../events/types.ts";
+import { toMailEvent } from "./repo.ts";
+import type { StoredEvent } from "./types.ts";
 import { calendarInScope } from "../policy/calendar.ts";
 import { inScope, threadLabels } from "../policy/enforce.ts";
 import { errorMessage } from "../util/errors.ts";
 
-/** Webhook body data; `contentError` explains a missing `content` when the body was requested. */
+/** Event payload data; `contentError` explains a missing `content` when the body was requested. */
 export type PayloadData = WebhookPayload["data"] & { contentError?: string };
 
 const CONTENT_TIMEOUT_MS = 20_000;
 
-const TEST_CONTENT: MessageContent = {
-  body: "This is a **test delivery** from xaq. It is not a real email.",
-  truncated: false,
-  attachments: [],
-  signals: { hiddenContentRemoved: false, suspiciousInstructions: [], auth: null, external: true },
-};
-
 export interface PayloadOptions {
-  /** Synthetic webhook test event: canned content instead of a Gmail fetch. */
-  isTest?: boolean;
   /**
    * Checked before fetching the body (e.g. the thread's current labels against the label scope).
    * Resolve to an error message to skip the body and report it as `contentError`.
@@ -29,16 +20,14 @@ export interface PayloadOptions {
 }
 
 /**
- * The Standard Webhooks body for an event, shared by webhook deliveries and `xaq listen`
- * streams. With `includeBody`, message events get cleaned content (or `contentError`), and calendar
+ * The payload of an event in `xaq listen` streams. With `includeBody`, message events get cleaned content (or `contentError`), and calendar
  * events other than cancellations get the cleaned description (no `content` when there is none).
  */
 export async function buildPayload(ctx: AppContext, event: StoredEvent, includeBody: boolean, opts: PayloadOptions = {}): Promise<WebhookPayload> {
   const data: PayloadData = toMailEvent(event);
   const m = event.message;
   const e = event.calendarEvent;
-  if (includeBody && m && opts.isTest) data.content = TEST_CONTENT;
-  else if (includeBody && m) {
+  if (includeBody && m) {
     await fetchContent(data, "Message body", opts, () => ctx.mail.messageContent(event.accountId, m.id));
   } else if (includeBody && e && event.type !== "calendar.event_cancelled") {
     await fetchContent(data, "Event description", opts, () => ctx.calendar.eventContent(event.accountId, e.calendarId, e.id));

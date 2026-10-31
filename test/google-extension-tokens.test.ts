@@ -122,7 +122,7 @@ describe("the consent: incremental, exactly the extension's scopes", () => {
 
   it("an extension consent needs one connected account, and only the extension's access", async () => {
     const account = await connectFakeAccount(ctx, fake, ME);
-    expect(() => startConnect(ctx, { reauthAccountId: account.id, scopes: ["pubsub"], extension: { connectionId: "c", displayName: "X", scopes: WORKSPACE_SCOPES } })).toThrow(
+    expect(() => startConnect(ctx, { reauthAccountId: account.id, scopes: ["calendar"], extension: { connectionId: "c", displayName: "X", scopes: WORKSPACE_SCOPES } })).toThrow(
       /one connected account/,
     );
     expect(() => startConnect(ctx, { extension: { connectionId: "c", displayName: "X", scopes: WORKSPACE_SCOPES } })).toThrow(/one connected account/);

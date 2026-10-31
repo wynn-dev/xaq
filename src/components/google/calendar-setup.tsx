@@ -331,7 +331,7 @@ function AccountsPage({
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        One short Google sign-in per account. Google asks only for the Calendar permissions; Gmail and real-time delivery stay as they are, and
+        One short Google sign-in per account. Google asks only for the Calendar permissions; Gmail stays as it is, and
         mail keeps arriving while you do it.
       </p>
       <ul className="divide-y rounded-lg border">

@@ -10,7 +10,7 @@ import { FAKE_KEY, FakeAgentApi, isolateXdg, makeEvent, waitFor } from "./listen
 
 /**
  * Standard Webhooks verification written from the spec (https://www.standardwebhooks.com), independent
- * of server/webhooks/send.ts: secret = "whsec_" + base64 key; signed content = "{id}.{ts}.{body}";
+ * of server/listen/forward.ts: secret = "whsec_" + base64 key; signed content = "{id}.{ts}.{body}";
  * header = space-separated "v1,<base64>" entries.
  */
 function verifyStandardWebhook(secret: string, headers: IncomingHttpHeaders, rawBody: string, toleranceS = 300): boolean {

@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { type CalendarEventSummary, type EventType, isConnectionEventType, isEventType, type WebhookFilter } from "../../shared/types.ts";
-import type { StoredEvent } from "../events/types.ts";
+import { type CalendarEventSummary, type EventType, isConnectionEventType, type WebhookFilter } from "../../shared/types.ts";
+import type { StoredEvent } from "./types.ts";
 import { matchesAnyGlob } from "../util/glob.ts";
 import { RE2_SYNTAX_HINT, subjectMatches, subjectPatternError } from "./regex.ts";
 
@@ -41,34 +41,6 @@ export const webhookFilterSchema = z
   })
   .strict();
 
-const webhookFields = {
-  agentId: z.string().min(1, "Choose an agent"),
-  name: z.string().trim().min(1, "Name is required").max(100, "Name must be at most 100 characters"),
-  url: z
-    .string()
-    .trim()
-    .max(2048)
-    .refine((u) => URL.canParse(u) && /^https?:$/.test(new URL(u).protocol), "URL must be a full http(s) URL, e.g. https://example.com/hooks/mail")
-    .refine((u) => !URL.canParse(u) || (!new URL(u).username && !new URL(u).password), "URL must not contain credentials; verify requests with the signing secret instead"),
-  eventTypes: z
-    .array(z.string().refine(isEventType, "Unknown event type"))
-    .min(1, "Pick at least one event type")
-    .transform((t) => t as EventType[]),
-  filter: webhookFilterSchema,
-  includeBody: z.boolean(),
-  enabled: z.boolean(),
-};
-
-export const webhookInputSchema = z
-  .object({
-    ...webhookFields,
-    filter: webhookFilterSchema.default({}),
-    includeBody: z.boolean().default(false),
-    enabled: z.boolean().default(true),
-  });
-
-export const webhookPatchSchema = z.object(webhookFields).partial();
-
 /** Drops empty lists and blank values so stored filters stay minimal. */
 export function normalizeFilter(f: WebhookFilter): WebhookFilter {
   const out: WebhookFilter = {};
@@ -82,7 +54,7 @@ export function normalizeFilter(f: WebhookFilter): WebhookFilter {
   return out;
 }
 
-/** Whether an event passes a webhook filter. Every set criterion must pass. */
+/** Whether an event passes a filter. Every set criterion must pass. */
 export function matchesFilter(f: WebhookFilter, ev: StoredEvent): boolean {
   if (f.accountIds?.length && !f.accountIds.includes(ev.accountId)) return false;
   if (ACCOUNT_EVENT_TYPES.includes(ev.type)) return true;

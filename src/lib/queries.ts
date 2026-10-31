@@ -8,8 +8,6 @@ import type {
   AuditOutcome,
   CalendarInfo,
   CalendarSetupState,
-  Delivery,
-  DeliveryStatus,
   EventType,
   GmailLabel,
   GoogleClientView,
@@ -24,7 +22,6 @@ import type {
   Settings,
   SystemInfo,
   UpdateInfo,
-  Webhook,
 } from "@shared/types";
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 import { apiGet } from "./api";
@@ -49,8 +46,6 @@ export const keys = {
   accountCalendars: (accountId: string) => ["account-calendars", accountId] as const,
   agents: ["agents"] as const,
   agent: (id: string) => ["agents", id] as const,
-  webhooks: ["webhooks"] as const,
-  deliveries: ["deliveries"] as const,
   events: ["events"] as const,
   approvals: ["approvals"] as const,
   audit: ["audit"] as const,
@@ -120,11 +115,6 @@ export const queries = {
   /** How /mcp lists the agent's tools (full list or search). Under the agent's key, so grant changes refresh it. */
   agentToolMode: (id: string) =>
     queryOptions({ queryKey: [...keys.agent(id), "tool-mode"], queryFn: () => apiGet<AgentToolMode>(`/api/agents/${encodeURIComponent(id)}/tool-mode`) }),
-  webhooks: (agentId?: string) =>
-    queryOptions({
-      queryKey: [...keys.webhooks, { agentId: agentId ?? null }],
-      queryFn: () => apiGet<Webhook[]>("/api/webhooks", { agentId }),
-    }),
   approvals: (status?: ApprovalStatus) =>
     queryOptions({
       queryKey: [...keys.approvals, status ?? "all"],
@@ -150,13 +140,6 @@ export const queries = {
       getNextPageParam: (last) => last.nextCursor,
       staleTime: Infinity,
       refetchOnMount: "always",
-    }),
-  deliveries: (webhookId: string, status?: DeliveryStatus) =>
-    infiniteQueryOptions({
-      queryKey: [...keys.deliveries, webhookId, status ?? "all"],
-      queryFn: ({ pageParam }) => apiGet<Page<Delivery>>("/api/deliveries", { webhookId, status, cursor: pageParam }),
-      initialPageParam: null as string | null,
-      getNextPageParam: (last) => last.nextCursor,
     }),
   /** Audit pages. Refetched whenever the page mounts and after a stream reconnect; new entries are announced live. */
   audit: (f: AuditFilters) =>

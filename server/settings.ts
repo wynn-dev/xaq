@@ -1,7 +1,7 @@
 import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
-import type { GoogleAppType, GoogleClientCheck as ClientCheck, IngestMode, PubsubState, Settings } from "../shared/types.ts";
+import type { GoogleAppType, GoogleClientCheck as ClientCheck, Settings } from "../shared/types.ts";
 import type { Bus } from "./bus.ts";
 import type { Config } from "./config.ts";
 import { type Db, json } from "./db/index.ts";
@@ -10,7 +10,7 @@ import { ownDirs, protectedPaths, within } from "./util/own-dirs.ts";
 
 /**
  * Internal key/value state kept in the `settings` table next to the user-facing Settings.
- * Owners: google.* and pubsub → server/google, admin.* → server/auth, calendar.* → server/calendar.
+ * Owners: google.* → server/google, admin.* → server/auth, calendar.* → server/calendar.
  */
 export interface InternalState {
   "google.client": {
@@ -33,13 +33,6 @@ export interface InternalState {
     secretHint?: string;
     /** Result of the last client check (server/google/check.ts) for this exact client ID + secret; dropped on save. */
     check?: { clientId: ClientCheck["clientId"]; redirectUri: ClientCheck["redirectUri"]; secret: ClientCheck["secret"]; redirectUriTested: string; at: string };
-  };
-  /** Pub/Sub resources and health. `mode` is not stored here: it is Settings.ingestMode. */
-  pubsub: Omit<PubsubState, "mode" | "principalAccountId" | "principalEmail" | "pendingPrincipalAccountId" | "pendingPrincipalEmail"> & {
-    /** Account whose OAuth token pulls the subscription (it provisioned successfully; needs IAM on the project). */
-    principalAccountId: string | null;
-    /** Account chosen to provision with that hasn't succeeded yet (becomes principalAccountId on success). */
-    pendingPrincipalAccountId?: string | null;
   };
   /**
    * Google Calendar for this install (CalendarSetupState). No row = enabled (fresh install); migration 7
@@ -92,12 +85,10 @@ export class SettingsStore {
   defaults(): Settings {
     return {
       publicUrl: defaultPublicUrl(this.config.host, this.config.port),
-      ingestMode: "poll",
       pollIntervalSeconds: 30,
       maxBodyChars: 20_000,
       retentionDays: 30,
       approvalTtlHours: 72,
-      webhookAllowlist: ["localhost", "127.0.0.0/8", "::1"],
       pairingEnabled: true,
       brokerUpstreams: true,
       calendarPollSeconds: 60,
@@ -168,8 +159,6 @@ export class SettingsStore {
   }
 }
 
-const INGEST_MODES: IngestMode[] = ["pubsub", "poll"];
-
 function validate(s: Settings): Settings {
   let url: URL;
   try {
@@ -183,23 +172,16 @@ function validate(s: Settings): Settings {
     if (!Number.isInteger(v) || v < min || v > max) throw badRequest(`${name} must be a whole number from ${min} to ${max}`);
     return v;
   };
-  if (!INGEST_MODES.includes(s.ingestMode)) throw badRequest("Ingest mode must be pubsub or poll");
-  const allowlist = Array.isArray(s.webhookAllowlist) ? s.webhookAllowlist.map((h) => String(h).trim()).filter(Boolean) : null;
-  if (!allowlist || allowlist.length > 100 || allowlist.some((h) => h.length > 253 || /\s/.test(h))) {
-    throw badRequest("Webhook allowlist must be a list of hostnames, IPs or CIDRs");
-  }
   const saveDir = typeof s.attachmentSaveDir === "string" ? s.attachmentSaveDir.trim() : "";
   if (saveDir && (!isAbsolute(saveDir) || saveDir.length > 1024 || saveDir.includes("\0"))) {
     throw badRequest("Attachment folder must be an absolute path", "For example /home/me/xaq-attachments; leave it empty for the default inside the data directory");
   }
   return {
     publicUrl: url.origin + url.pathname.replace(/\/+$/, ""),
-    ingestMode: s.ingestMode,
     pollIntervalSeconds: int(s.pollIntervalSeconds, "Poll interval", 5, 3600),
     maxBodyChars: int(s.maxBodyChars, "Max body characters", 0, 1_000_000),
     retentionDays: int(s.retentionDays, "Retention", 1, 3650),
     approvalTtlHours: int(s.approvalTtlHours, "Approval expiry", 1, 24 * 30),
-    webhookAllowlist: [...new Set(allowlist)],
     pairingEnabled: s.pairingEnabled !== false,
     brokerUpstreams: s.brokerUpstreams !== false,
     calendarPollSeconds: int(s.calendarPollSeconds, "Calendar poll interval", 15, 3600),

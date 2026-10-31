@@ -7,7 +7,7 @@ import type { Lifecycle } from "../context.ts";
 export interface IngestService extends Lifecycle {
   /** FROZEN. */
   status(): IngestStatus;
-  /** Records the baseline historyId and (in pubsub mode) starts the watch. Called by google.completeConnect. */
+  /** Records the baseline historyId and starts syncing. Called by google.completeConnect. */
   onAccountConnected(accountId: string): Promise<void>;
   /** Bounded resync (recent messages), resets the history cursor, emits sync.gap. */
   resync(accountId: string): Promise<Account>;

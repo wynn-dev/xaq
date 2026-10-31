@@ -6,7 +6,7 @@ import type { AppContext } from "../context.ts";
 import { json } from "../db/index.ts";
 import type { StoredEvent } from "../events/types.ts";
 import { badRequest, errorMessage, HttpError } from "../util/errors.ts";
-import { buildPayload, scopeBodyCheck } from "../webhooks/payload.ts";
+import { buildPayload, scopeBodyCheck } from "../events/payload.ts";
 import type { AgentApiEnv } from "./auth.ts";
 import { cleanText } from "./pairing.ts";
 import { accessProblem, ackedSeq, ensureConsumerSlot, isThrowawayConsumer, newestGrantedSeq, parseConsumer, type RevokeReason } from "./listeners.ts";

@@ -1,6 +1,6 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
-import { type LookupFn, normalizeIp, urlHost } from "../webhooks/ssrf.ts";
+import { type LookupFn, normalizeIp, urlHost } from "../util/ssrf.ts";
 
 /**
  * Which upstream URLs need the private-target allow (docs/MCP-BROKER.md#private-targets), decided on the CLI side

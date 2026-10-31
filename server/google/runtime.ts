@@ -27,7 +27,7 @@ export interface RequestOptions {
   body?: unknown;
   /** Non-JSON body (media uploads), sent as is; mutually exclusive with `body`. */
   rawBody?: { contentType: string; data: Uint8Array };
-  /** Gmail quota units charged to the account's token bucket (0 = not throttled, e.g. Pub/Sub). */
+  /** Gmail quota units charged to the account's token bucket (0 = not throttled). */
   cost?: number;
   signal?: AbortSignal;
   /**
@@ -36,7 +36,7 @@ export interface RequestOptions {
    * connection refused), never after a 5xx, a timeout or a dropped connection.
    */
   idempotent?: boolean;
-  /** Per-attempt timeout; 0 disables it (long-polling Pub/Sub pulls bound themselves). */
+  /** Per-attempt timeout; 0 disables it. */
   timeoutMs?: number;
   /** Extra request headers (e.g. Calendar's If-Match). */
   headers?: Record<string, string>;
@@ -58,13 +58,11 @@ export interface RequestOptions {
 
 /**
  * Per-context shared state for server/google and server/ingest: token manager, quota buckets, label
- * cache and Pub/Sub test waiters. Keyed by the AppContext so every service sees the same instance.
+ * cache and test-email rate limits. Keyed by the AppContext so every service sees the same instance.
  */
 export class GoogleRuntime {
   readonly tokens: TokenManager;
   readonly labelCache = new Map<string, { at: number; labels: GmailLabel[] }>();
-  /** Pub/Sub test-message nonces → resolver (resolved by whichever pull sees the message). */
-  readonly pubsubTests = new Map<string, () => void>();
   /** accountId → send times (ms) of recent test emails, for the rate limit. */
   readonly testEmails = new Map<string, number[]>();
   private readonly buckets = new Map<string, TokenBucket>();

@@ -502,4 +502,18 @@ export const MIGRATIONS: string[] = [
   -- access tokens. NULL for every other connection, and once the account is removed from xaq (it then needs setup).
   ALTER TABLE connections ADD COLUMN google_account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL;
   `,
+  /* 13: no webhooks, Gmail Pub/Sub or Calendar push: events reach agents through listeners and wait_for_events. */ `
+  DROP TABLE deliveries;
+  DROP TABLE webhooks;
+  DELETE FROM events WHERE seq < 0;
+  ALTER TABLE accounts DROP COLUMN watch_expires_at;
+  DROP INDEX calendar_sync_channel;
+  ALTER TABLE calendar_sync DROP COLUMN channel_id;
+  ALTER TABLE calendar_sync DROP COLUMN channel_resource_id;
+  ALTER TABLE calendar_sync DROP COLUMN channel_token_hash;
+  ALTER TABLE calendar_sync DROP COLUMN channel_expires_at;
+  ALTER TABLE calendar_sync DROP COLUMN channel_verified_at;
+  DELETE FROM settings WHERE key = 'pubsub';
+  UPDATE settings SET value = json_remove(value, '$.ingestMode', '$.webhookAllowlist') WHERE key = 'settings';
+  `,
 ];

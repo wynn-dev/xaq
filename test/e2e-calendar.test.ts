@@ -1,19 +1,18 @@
 // E2E: Google Calendar through the real app (docs/calendar.md, workstream G). The fake Calendar API
 // (test/fake-google.ts) stands in for Google; everything else is the real server driven over HTTP:
 // syncToken sync → events, MCP calendar tools (read, direct and approval writes, allowTo), console
-// approvals, webhook calendarIds filters, calendar.read listener streams, and the upgrade of a
-// pre-calendar install (migrations 1–6, two Gmail accounts, Pub/Sub) with mail flowing throughout.
+// approvals, calendar.read listener streams, and the upgrade of a pre-calendar install (migrations 1–6,
+// two Gmail accounts) with mail flowing throughout.
 
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MIGRATIONS } from "../server/db/schema.ts";
-import type { Account, Approval, CalendarSetupState, ConnectAccountResponse, MailEvent, WebhookWithSecret } from "../shared/types.ts";
+import type { Account, Approval, CalendarSetupState, ConnectAccountResponse, MailEvent } from "../shared/types.ts";
 import { grant, mailbox, type Stack, startStack } from "./e2e/harness.ts";
 import { openAgentStream } from "./e2e/listen.ts";
 import { type Agent, MCP_TEXT } from "./e2e/mcp.ts";
-import { startWebhookReceiver, type WebhookReceiver } from "./e2e/webhook-receiver.ts";
-import { stays, waitFor } from "./e2e/wait.ts";
+import { waitFor } from "./e2e/wait.ts";
 
 const ORGANIZER = "bob@partner.test";
 const DAY = 86_400_000;
@@ -31,7 +30,6 @@ interface WriteResult {
 }
 
 let s: Stack;
-let rx: WebhookReceiver;
 let email: string;
 let account: Account;
 let reader: { id: string; apiKey: string };
@@ -54,7 +52,6 @@ const syncToken = () => s.ctx.db.get<{ t: string | null }>("SELECT sync_token AS
 const calendarEventOf = (id: string) => (e: MailEvent) => e.calendarEvent?.id === id;
 
 beforeAll(async () => {
-  rx = await startWebhookReceiver();
   s = await startStack();
   email = mailbox("cal");
   [account] = (await s.bootstrap({ accounts: [email] })) as [Account];
@@ -68,7 +65,6 @@ beforeAll(async () => {
 afterAll(async () => {
   await readerMcp?.close();
   await s?.close();
-  await rx?.close();
 });
 
 describe("read", () => {
@@ -228,28 +224,18 @@ describe("write (approval)", () => {
 });
 
 describe("delivery", () => {
-  it("a calendar event reaches a webhook filtered by calendarIds and a calendar.read listener stream, and nothing else", async () => {
-    const hook = (path: string, patch: Record<string, unknown>) =>
-      s.admin.post<WebhookWithSecret>("/api/webhooks", { agentId: reader.id, name: path, url: `${rx.url}${path}`, includeBody: true, enabled: true, ...patch });
-    await hook("/hooks/cal", { eventTypes: ["calendar.invitation_received"], filter: { calendarIds: [email] } });
-    await hook("/hooks/team-cal", { eventTypes: ["calendar.invitation_received"], filter: { calendarIds: ["team@group.calendar.google.com"] } });
-    await hook("/hooks/mail", { eventTypes: ["message.received"], filter: {} });
+  it("a calendar event reaches a calendar.read listener stream with its description", async () => {
     const stream = await openAgentStream(s.url, reader.apiKey, { consumer: "cal-e2e", start: "now", includeBody: true });
     try {
       expect(stream.status).toBe(200);
       const invite = s.fake.calendar.invite(ORGANIZER, [email], { summary: "Partner sync", description: "Bring the roadmap", ...raw(slot(9)) });
       await s.waitForEvent(calendarEventOf(invite.id), { calendar: true });
 
-      const received = await waitFor(() => rx.at("/hooks/cal").find((h) => h.json?.data.calendarEvent?.id === invite.id), { what: "calendar webhook" });
-      expect(received.json).toMatchObject({ type: "calendar.invitation_received", data: { message: null, calendarEvent: { id: invite.id, calendarId: email, summary: "Partner sync" } } });
-      expect(received.json!.data.content?.body).toContain("Bring the roadmap");
 
       const frame = await stream.next((f) => f.event === "mail" && (JSON.parse(f.data) as { data: MailEvent }).data.calendarEvent?.id === invite.id);
       const payload = JSON.parse(frame.data) as { type: string; data: MailEvent & { content?: { body: string } } };
       expect(payload).toMatchObject({ type: "calendar.invitation_received", data: { calendarEvent: { summary: "Partner sync" } } });
       expect(payload.data.content?.body).toContain("Bring the roadmap");
-
-      await stays(() => rx.at("/hooks/team-cal").length || rx.at("/hooks/mail").length, 600, "deliveries to the other webhooks");
     } finally {
       stream.close();
     }
@@ -295,28 +281,35 @@ function rewindToPreCalendar(path: string): void {
       continue;
     }
     const extra = cols.filter((col) => !keep.includes(col));
-    if (!extra.length) continue;
+    const missing = keep.filter((col) => !cols.includes(col));
+    if (!extra.length && !missing.length) continue;
     try {
+      if (missing.length) throw new Error("rebuild");
       db.exec("SAVEPOINT rewind");
       for (const col of extra) db.exec(`ALTER TABLE "${table}" DROP COLUMN "${col}"`);
       db.exec("RELEASE rewind");
     } catch {
-      // DROP COLUMN can't remove an indexed or foreign-key column (migration 8's approvals.connection_id):
-      // rebuild the table from its 1–6 definition, keeping its rows and rowids.
-      db.exec("ROLLBACK TO rewind; RELEASE rewind");
-      const list = keep.map((c) => `"${c}"`).join(", ");
+      // DROP COLUMN can't remove an indexed or foreign-key column (migration 8's approvals.connection_id), and a
+      // column a later migration dropped (migration 13's accounts.watch_expires_at) must come back: rebuild the
+      // table from its 1–6 definition, keeping its rows and rowids.
+      if (!missing.length) db.exec("ROLLBACK TO rewind; RELEASE rewind");
+      const list = keep.filter((c) => cols.includes(c)).map((c) => `"${c}"`).join(", ");
       db.exec(`ALTER TABLE "${table}" RENAME TO "_rewind"`);
       for (const d of ddl) if (d.type === "table" && d.tbl_name === table) db.exec(d.sql);
       db.exec(`INSERT INTO "${table}" (rowid, ${list}) SELECT rowid, ${list} FROM "_rewind"; DROP TABLE "_rewind";`);
       for (const d of ddl) if (d.type === "index" && d.tbl_name === table) db.exec(d.sql);
     }
   }
+  // Tables a later migration dropped (migration 13's webhooks and deliveries) come back empty.
+  const have = columns(db);
+  for (const d of ddl) if (d.type === "table" && !have.has(d.tbl_name) && !d.tbl_name.startsWith("sqlite_")) db.exec(d.sql);
+  for (const d of ddl) if (d.type === "index" && !have.has(d.tbl_name)) db.exec(d.sql);
   db.exec("DELETE FROM settings WHERE key LIKE 'calendar.%'; DELETE FROM _migrations WHERE version > 6;");
   expect(columns(db)).toEqual(want);
   db.close();
 }
 
-describe("upgrading a pre-calendar install (2 Gmail accounts, Pub/Sub) with mail flowing throughout", () => {
+describe("upgrading a pre-calendar install (2 Gmail accounts) with mail flowing throughout", () => {
   let u: Stack;
   afterAll(() => u?.close());
 
@@ -324,7 +317,7 @@ describe("upgrading a pre-calendar install (2 Gmail accounts, Pub/Sub) with mail
     u = await startStack();
     const addresses = [mailbox("upgrade-a"), mailbox("upgrade-b")] as const;
     // Before Google Calendar, accounts connected with mail scopes only.
-    const accounts = (await u.bootstrap({ accounts: [...addresses], pubsub: true, calendar: false })) as [Account, Account];
+    const accounts = (await u.bootstrap({ accounts: [...addresses], calendar: false })) as [Account, Account];
     const hermes = await u.createAgent("Hermes", accounts.map((a) => grant(a.id, { capabilities: ["read"] })));
     const delivered = new Map<string, string[]>(addresses.map((a) => [a, []]));
     const deliver = (to: string, subject: string) => {
@@ -355,7 +348,6 @@ describe("upgrading a pre-calendar install (2 Gmail accounts, Pub/Sub) with mail
 
     const on = await u.admin.patch<CalendarSetupState>("/api/google/calendar", { enabled: true });
     expect(on.accounts.map((a) => a.status)).toEqual(["not_granted", "not_granted"]);
-    const watches = addresses.map((a) => u.fake.watch(a)?.topic);
 
     // "Add Calendar to <email>", one account at a time, with mail arriving during each consent.
     for (const [i, acc] of accounts.entries()) {
@@ -375,7 +367,6 @@ describe("upgrading a pre-calendar install (2 Gmail accounts, Pub/Sub) with mail
       expect(after.status).toBe("active");
     }
     expect(u.fake.revoked).toEqual([]);
-    expect(addresses.map((a) => u.fake.watch(a)?.topic)).toEqual(watches);
     expect(await u.admin.get<CalendarSetupState>("/api/google/calendar")).toMatchObject({ enabled: true, step: "done" });
 
     // Every message delivered before, during and after the upgrade is evented exactly once, without a gap.

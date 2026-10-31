@@ -4,12 +4,10 @@
 import { describe, expect, it } from "vitest";
 import { CALENDAR_API_SERVICE, enableCalendarApiUrl } from "../server/google/calendar.ts";
 import { callbackMode } from "../server/google/client.ts";
-import { CALENDAR_SCOPES, GMAIL_SCOPE, PUBSUB_SCOPE } from "../server/google/scopes.ts";
+import { CALENDAR_SCOPES, GMAIL_SCOPE } from "../server/google/scopes.ts";
 import { checkTransport } from "../server/listen/transport.ts";
-import { cloudUrl, generateProjectId, iamBindingCommand, PROJECT_ID_RE, projectCommand, projectIdProblem, SCOPES } from "../src/lib/gcp-project.ts";
+import { cloudUrl, generateProjectId, PROJECT_ID_RE, projectCommand, projectIdProblem, SCOPES } from "../src/lib/gcp-project.ts";
 import { answerApplies, CHECK_NOTES, checkAgainStep, handsBack, listMatch, offersMailOnly, streamUpdateConcerns } from "../src/components/accounts/connect-attempt.ts";
-import { GMAIL_WATCH_ERROR } from "../shared/types.ts";
-import { deliveryMode, intervalInWords } from "../src/lib/delivery.ts";
 import { analyzeUrl, localConsoleUrl, loopbackTwin, urlVerdict } from "../src/lib/public-url.ts";
 import { tunnelCommand } from "../src/lib/tunnel.ts";
 import { wrapParts } from "../src/lib/wrap.ts";
@@ -145,12 +143,8 @@ describe("project IDs", () => {
     for (const bad of ["", "x; rm -rf ~", "xaq-1 && curl evil", "$(id)", "My Project"]) expect(projectCommand(bad, false)).toBeNull();
   });
 
-  it("enables Gmail and Calendar but not Pub/Sub in step 2 (Pub/Sub may need billing); step 6 links to enabling Pub/Sub", () => {
-    // Google may require billing to enable Pub/Sub: that would fail the required Gmail path.
-    expect(projectCommand("xaq-123456", false)).not.toContain("pubsub");
-    expect(projectCommand("xaq-123456", true)).not.toContain("pubsub");
+  it("links to enabling the Gmail API", () => {
     expect(cloudUrl.enableGmail("xaq-123456")).toBe("https://console.cloud.google.com/flows/enableapi?apiid=gmail.googleapis.com&project=xaq-123456");
-    expect(cloudUrl.enablePubsub("xaq-123456")).toBe("https://console.cloud.google.com/flows/enableapi?apiid=pubsub.googleapis.com&project=xaq-123456");
   });
 
   it("enables the Calendar API under its service name, matching the server's link and command", () => {
@@ -165,27 +159,7 @@ describe("project IDs", () => {
 describe("scopes listed in the wizard", () => {
   it("are the ones the server asks Google for", () => {
     expect(SCOPES.gmail).toBe(GMAIL_SCOPE);
-    expect(SCOPES.pubsub).toBe(PUBSUB_SCOPE);
     expect([...SCOPES.calendar]).toEqual([...CALENDAR_SCOPES]);
-  });
-});
-
-describe("IAM binding command", () => {
-  it("quotes the member and project for the shell", () => {
-    expect(iamBindingCommand("xaq-123456", "ops@acme.dev")).toBe(
-      "gcloud projects add-iam-policy-binding xaq-123456 --member=user:ops@acme.dev --role=roles/pubsub.admin",
-    );
-    // A quote in the address (valid in an email local part) can't end the quoting.
-    expect(iamBindingCommand("xaq-123456", "o'brien@acme.dev")).toBe(
-      `gcloud projects add-iam-policy-binding xaq-123456 --member='user:o'"'"'brien@acme.dev' --role=roles/pubsub.admin`,
-    );
-    expect(iamBindingCommand("xaq-123456", "a$(id)@acme.dev")).toContain(`--member='user:a$(id)@acme.dev'`);
-    expect(iamBindingCommand("example.com:my-project", "ops@acme.dev")).toContain(" example.com:my-project ");
-  });
-
-  it("returns null for an invalid project ID or an empty email", () => {
-    for (const bad of ["", "x; rm -rf ~", "$(id)", "My Project"]) expect(iamBindingCommand(bad, "ops@acme.dev")).toBeNull();
-    expect(iamBindingCommand("xaq-123456", " ")).toBeNull();
   });
 });
 
@@ -232,51 +206,6 @@ describe("soft wrap points", () => {
   });
 });
 
-describe("delivery speed claims", () => {
-  const SUB = "projects/p/subscriptions/s";
-  const NOW = Date.parse("2026-10-15T10:00:00.000Z");
-  const watching = { status: "active" as const, lastError: null, watchExpiresAt: "2026-10-20T10:00:00.000Z" };
-
-  it("says within seconds only while Pub/Sub is provisioned, pulling and (for an account) watching", () => {
-    const ok = { lastError: null };
-    expect(deliveryMode({ mode: "pubsub", subscription: SUB }, ok)).toBe("realtime");
-    expect(deliveryMode({ mode: "pubsub", subscription: SUB }, ok, watching, NOW)).toBe("realtime");
-    expect(deliveryMode({ mode: "poll", subscription: SUB }, ok)).toBe("poll");
-    expect(deliveryMode({ mode: "pubsub", subscription: null }, ok)).toBe("unfinished");
-    expect(deliveryMode({ mode: "pubsub", subscription: SUB }, { lastError: "Pub/Sub pull failed" })).toBe("broken");
-    // The account the claim is about: no watch, an expired one, an error, or not active.
-    expect(deliveryMode({ mode: "pubsub", subscription: SUB }, ok, { ...watching, watchExpiresAt: null }, NOW)).toBe("broken");
-    expect(deliveryMode({ mode: "pubsub", subscription: SUB }, ok, { ...watching, watchExpiresAt: "2026-10-15T09:00:00.000Z" }, NOW)).toBe("broken");
-    expect(deliveryMode({ mode: "pubsub", subscription: SUB }, ok, { ...watching, lastError: `${GMAIL_WATCH_ERROR}: 403 forbidden` }, NOW)).toBe("broken");
-  });
-
-  it("doesn't call real-time broken for errors that aren't the Gmail watch's", () => {
-    const ok = { lastError: null };
-    // What ingest writes for a failed sync: push still works, the next sync retries.
-    expect(deliveryMode({ mode: "pubsub", subscription: SUB }, ok, { ...watching, lastError: "Sync failed: Google API error: 503" }, NOW)).toBe("realtime");
-    expect(deliveryMode({ mode: "pubsub", subscription: SUB }, ok, { ...watching, lastError: "Connected, but initial sync setup failed: boom" }, NOW)).toBe("realtime");
-    expect(GMAIL_WATCH_ERROR).toBe("Gmail watch failed");
-  });
-
-  it("makes no speed claim for an account that isn't synced (paused, needs reconnecting, removed)", () => {
-    for (const pubsub of [{ mode: "pubsub" as const, subscription: SUB }, { mode: "poll" as const, subscription: null }]) {
-      expect(deliveryMode(pubsub, { lastError: null }, { ...watching, status: "paused" }, NOW)).toBe("inactive");
-      expect(deliveryMode(pubsub, { lastError: null }, { ...watching, status: "needs_reauth", lastError: "Reconnect" }, NOW)).toBe("inactive");
-      expect(deliveryMode(pubsub, { lastError: "Pub/Sub pull failed" }, null, NOW)).toBe("inactive");
-    }
-  });
-
-  it("puts the poll interval in words", () => {
-    expect(intervalInWords(5)).toBe("5 seconds");
-    expect(intervalInWords(30)).toBe("30 seconds");
-    expect(intervalInWords(90)).toBe("90 seconds");
-    expect(intervalInWords(119)).toBe("119 seconds");
-    expect(intervalInWords(120)).toBe("2 minutes");
-    expect(intervalInWords(300)).toBe("5 minutes");
-    expect(intervalInWords(3600)).toBe("an hour");
-  });
-});
-
 describe("connect dialog: what Add Google Calendar takes over", () => {
   it("hands back a cancel or unticked Calendar (mail is fine), and keeps real failures in the connect dialog", () => {
     expect(handsBack("oauth_calendar_not_granted")).toBe(true);
@@ -299,32 +228,32 @@ describe("connect dialog: one sign-in attempt", () => {
   const add = { scopes: false, reauth: false, reauthFromBroken: false };
   const reconnectWorking = { scopes: false, reauth: true, reauthFromBroken: false };
   const reconnectBroken = { scopes: false, reauth: true, reauthFromBroken: true };
-  const pubsub = { scopes: true, reauth: false, reauthFromBroken: false };
-  const pubsubReauth = { scopes: true, reauth: true, reauthFromBroken: false };
+  const calendar = { scopes: true, reauth: false, reauthFromBroken: false };
+  const calendarReauth = { scopes: true, reauth: true, reauthFromBroken: false };
 
   it("stops once the server reported the outcome (the answer already moved the dialog on)", () => {
-    for (const c of [add, reconnectWorking, reconnectBroken, pubsub, pubsubReauth]) {
+    for (const c of [add, reconnectWorking, reconnectBroken, calendar, calendarReauth]) {
       expect(checkAgainStep("connected", c)).toEqual({ kind: "stop" });
       expect(checkAgainStep("failed", c)).toEqual({ kind: "stop" });
     }
   });
 
-  it("keeps waiting while the sign-in is pending, Pub/Sub grants included", () => {
+  it("keeps waiting while the sign-in is pending, extra-access grants included", () => {
     expect(checkAgainStep("pending", add)).toEqual({ kind: "note", note: "pending" });
-    expect(checkAgainStep("pending", pubsub)).toEqual({ kind: "note", note: "pending" });
+    expect(checkAgainStep("pending", calendar)).toEqual({ kind: "note", note: "pending" });
     expect(checkAgainStep("pending", reconnectWorking)).toEqual({ kind: "note", note: "pending-reauth" });
     expect(checkAgainStep("pending", reconnectBroken)).toEqual({ kind: "note", note: "pending-reauth" });
-    expect(checkAgainStep("pending", pubsubReauth)).toEqual({ kind: "note", note: "pending-reauth" });
+    expect(checkAgainStep("pending", calendarReauth)).toEqual({ kind: "note", note: "pending-reauth" });
   });
 
   it("says xaq is unreachable when the status request fails, whatever the flow", () => {
-    for (const c of [add, reconnectWorking, reconnectBroken, pubsub, pubsubReauth]) expect(checkAgainStep(null, c)).toEqual({ kind: "note", note: "unreachable" });
+    for (const c of [add, reconnectWorking, reconnectBroken, calendar, calendarReauth]) expect(checkAgainStep(null, c)).toEqual({ kind: "note", note: "unreachable" });
   });
 
   it("falls back by flow when the server doesn't know the attempt", () => {
-    // Pub/Sub grant: the provisioning retry is the real check.
-    expect(checkAgainStep("unknown", pubsub)).toEqual({ kind: "finish-unconfirmed" });
-    expect(checkAgainStep("unknown", pubsubReauth)).toEqual({ kind: "finish-unconfirmed" });
+    // Extra access (Add Calendar): close unconfirmed.
+    expect(checkAgainStep("unknown", calendar)).toEqual({ kind: "finish-unconfirmed" });
+    expect(checkAgainStep("unknown", calendarReauth)).toEqual({ kind: "finish-unconfirmed" });
     // A working account: the list can't show a reconnect.
     expect(checkAgainStep("unknown", reconnectWorking)).toEqual({ kind: "note", note: "already-connected" });
     // A new account or a needs_reauth repair: the list can.

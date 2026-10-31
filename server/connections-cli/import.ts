@@ -6,7 +6,7 @@ import { DEFAULT_PROFILE, profilePath } from "../listen/paths.ts";
 import { loadProfile, type Profile, profileExists } from "../listen/profile.ts";
 import { safeText } from "../listen/ui.ts";
 import { NPX } from "../listen/version.ts";
-import type { LookupFn } from "../webhooks/ssrf.ts";
+import type { LookupFn } from "../util/ssrf.ts";
 import { accessLabel, agentsLabel, chooseAccess, chooseAgents, parseAccess } from "./access.ts";
 import { isWorking, waitWorking } from "./manage.ts";
 import { confinedRoutes } from "./routes.ts";
