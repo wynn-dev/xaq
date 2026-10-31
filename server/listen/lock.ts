@@ -1,31 +1,28 @@
 import { closeSync, constants, mkdirSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ensurePrivateDir } from "./fsutil.ts";
-import { profileStateDir } from "./paths.ts";
+import { listenStateDir } from "./paths.ts";
 import { pidAlive } from "./state.ts";
 import { NPX } from "./version.ts";
 
 /**
- * One listener per profile: two would share a consumer cursor and run every event twice. The lock is
+ * One listener per machine: two would share a consumer cursor and run every event twice. The lock is
  * a file with the owner's pid and start time, created exclusively; a lock whose process is gone is
  * stale and taken over.
  */
 
-export const lockPath = (profile: string) => join(profileStateDir(profile), "listen.lock");
+export const lockPath = () => join(listenStateDir(), "listen.lock");
 
 export interface LockInfo {
   pid: number;
   startedAt: string;
 }
 
-export class ProfileLockedError extends Error {
-  constructor(
-    readonly holder: LockInfo,
-    profile: string,
-  ) {
+export class ListenerLockedError extends Error {
+  constructor(readonly holder: LockInfo) {
     super(
-      `Another listener is already running profile "${profile}" (pid ${holder.pid}, since ${holder.startedAt}).\n` +
-        `  If it's the background service, check it with \`${NPX} listen service status${profile === "default" ? "" : ` --profile ${profile}`}\`; stop it before running one in the foreground.`,
+      `Another listener is already running (pid ${holder.pid}, since ${holder.startedAt}).\n` +
+        `  If it's the background service, check it with \`${NPX} listen service status\`; stop it before running one in the foreground.`,
     );
   }
 }
@@ -90,20 +87,17 @@ export function acquireFileLock(path: string, busy: (holder: LockInfo) => Error,
   throw new Error(`Could not take the lock ${path}.`);
 }
 
-/** Takes the profile's listener lock or throws ProfileLockedError. */
-export function acquireProfileLock(profile: string): () => void {
-  return acquireFileLock(lockPath(profile), (holder) => new ProfileLockedError(holder, profile));
+/** Takes the listener lock or throws ListenerLockedError. */
+export function acquireListenerLock(): () => void {
+  return acquireFileLock(lockPath(), (holder) => new ListenerLockedError(holder));
 }
 
 /**
- * `listen --backfill` has its own lock: it uses its own cursor, so it runs fine next to the profile's
- * listener (or its service), but two backfills at once would run every stored event twice.
+ * `listen --backfill` has its own lock: it uses its own cursor, so it runs fine next to the listener (or
+ * its service), but two backfills at once would run every stored event twice.
  */
-export const backfillLockPath = (profile: string) => join(profileStateDir(profile), "backfill.lock");
+export const backfillLockPath = () => join(listenStateDir(), "backfill.lock");
 
-export function acquireBackfillLock(profile: string): () => void {
-  return acquireFileLock(
-    backfillLockPath(profile),
-    (holder) => new Error(`A backfill is already running for profile "${profile}" (pid ${holder.pid}, since ${holder.startedAt}). Let it finish, or stop it first.`),
-  );
+export function acquireBackfillLock(): () => void {
+  return acquireFileLock(backfillLockPath(), (holder) => new Error(`A backfill is already running (pid ${holder.pid}, since ${holder.startedAt}). Let it finish, or stop it first.`));
 }

@@ -13,7 +13,7 @@ beforeEach(() => {
   env = isolateXdg();
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
-  for (const p of ["default", "work"]) saveProfile(p, { url: "https://mail.example.com", apiKey: FAKE_KEY, agentId: "a", agentName: "n", consumer: p, exec: "cat > /dev/null" });
+  saveProfile({ url: "https://mail.example.com", apiKey: FAKE_KEY, agentId: "a", agentName: "n", consumer: "c", exec: "cat > /dev/null" });
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -64,7 +64,7 @@ const failingStage = () => {
   throw new Error("Installing xaq failed, so the existing service was left as it was. npm ERR!");
 };
 const installed = () => readFileSync(join(listenAppDir(), "node_modules/xaq-cli/dist/cli.js"), "utf8");
-const unit = (p: string) => join(env.root, "units", `xaq-listen-${p}.service`);
+const unit = () => join(env.root, "units", "xaq-listen-default.service");
 const ok = async () => PID;
 const never = async () => null;
 const node = { path: "/usr/local/bin/node", version: "22.20.0", versioned: false, why: "a stable path that survives fnm/nvm upgrades" };
@@ -144,7 +144,7 @@ describe("listen service install", () => {
   it("first install that never starts rolls back to no service, no install, original settings", async () => {
     const ops = fakeOps();
     await expect(installListenService({ exec: "new-cmd" }, { ops, stage, waitStarted: never })).rejects.toThrow(/Removed the new service again/);
-    expect(existsSync(unit("default"))).toBe(false);
+    expect(existsSync(unit())).toBe(false);
     expect(existsSync(listenAppDir())).toBe(false);
     expect(loadProfile().exec).toBe("cat > /dev/null");
     expect(ops.calls).toContain("systemctl --user disable --now xaq-listen-default");
@@ -153,39 +153,37 @@ describe("listen service install", () => {
   it("a failed re-install (readiness timeout) restores the previous unit, install and settings, and restarts it", async () => {
     const ops = fakeOps();
     await installListenService({}, { ops, stage, waitStarted: ok, node });
-    const before = { unit: readFileSync(unit("default"), "utf8"), app: installed() };
+    const before = { unit: readFileSync(unit(), "utf8"), app: installed() };
     ops.calls.length = 0;
-    await expect(installListenService({ exec: "new-cmd", concurrency: 7 }, { ops, stage, waitStarted: never })).rejects.toThrow(/Put the previous install back; it is running again \(systemd active, MainPID 4242\)\./);
-    expect(readFileSync(unit("default"), "utf8")).toBe(before.unit);
+    await expect(installListenService({ exec: "new-cmd", types: "all" }, { ops, stage, waitStarted: never })).rejects.toThrow(/Put the previous install back; it is running again \(systemd active, MainPID 4242\)\./);
+    expect(readFileSync(unit(), "utf8")).toBe(before.unit);
     expect(installed()).toBe(before.app);
     expect(loadProfile()).toMatchObject({ exec: "cat > /dev/null" });
-    expect(loadProfile().concurrency).toBeUndefined();
+    expect(loadProfile().types).toBeUndefined();
     expect(ops.calls.filter((c) => c === "systemctl --user restart xaq-listen-default")).toHaveLength(2); // new attempt, then the restored one
   });
 
   it("a failed npm install changes nothing (settings included)", async () => {
     const ops = fakeOps();
     await installListenService({}, { ops, stage, waitStarted: ok, node });
-    const before = readFileSync(unit("default"), "utf8");
+    const before = readFileSync(unit(), "utf8");
     await expect(installListenService({ exec: "new-cmd" }, { ops, stage: failingStage, waitStarted: ok })).rejects.toThrow(/left as it was/);
     expect(loadProfile().exec).toBe("cat > /dev/null");
-    expect(readFileSync(unit("default"), "utf8")).toBe(before);
+    expect(readFileSync(unit(), "utf8")).toBe(before);
   });
 
-  it("restarts the other profiles onto the new install, and keeps the shared install until the last one is removed", async () => {
+  it("saves the flags given (none: keeps the saved ones); uninstall removes the unit and the install", async () => {
     const ops = fakeOps();
-    await installListenService({ profile: "work" }, { ops, stage, waitStarted: ok, node });
-    ops.calls.length = 0;
+    await installListenService({ recipe: "claude-code", notFrom: ["*@github.com"] }, { ops, stage, waitStarted: ok, node });
+    expect(loadProfile()).toMatchObject({ exec: expect.stringContaining("claude -p"), notFrom: ["*@github.com"] });
     await installListenService({}, { ops, stage, waitStarted: ok, node });
-    expect(ops.calls).toContain("systemctl --user try-restart xaq-listen-work");
-    expect(ops.calls).not.toContain("systemctl --user try-restart xaq-listen-default");
+    expect(loadProfile()).toMatchObject({ exec: expect.stringContaining("claude -p"), notFrom: ["*@github.com"] });
     expect(installed()).toBe(`// v${version}\n`);
 
-    uninstallListenService("default", true, { ops });
-    expect(existsSync(unit("default"))).toBe(false);
-    expect(existsSync(listenAppDir())).toBe(true); // "work" still runs from it
-    uninstallListenService("work", true, { ops });
+    uninstallListenService(true, { ops });
+    expect(existsSync(unit())).toBe(false);
     expect(existsSync(listenAppDir())).toBe(false);
+    expect(loadProfile().apiKey).toBe(FAKE_KEY);
   });
 
   it("checks that systemd itself runs the new listener: is-active and MainPID must match the listener that started", async () => {
@@ -200,16 +198,6 @@ describe("listen service install", () => {
     expect(log.mock.calls.flat().join("\n")).toContain("it is running as pid 4242");
   });
 
-  it("--recipe hermes: notes the change and warns when the Hermes gateway doesn't answer", async () => {
-    const checked: string[] = [];
-    const gatewayCheck = async (url: string) => (checked.push(url), "The Hermes gateway isn't answering at http://127.0.0.1:8644/health.");
-    await installListenService({ recipe: "hermes" }, { ops: fakeOps(), stage, waitStarted: ok, node, gatewayCheck });
-    expect(checked).toEqual(["http://127.0.0.1:8644/webhooks/xaq"]);
-    const text = vi.mocked(console.log).mock.calls.flat().join("\n");
-    expect(text).toContain("--recipe hermes now forwards each email to your running Hermes gateway");
-    expect(text).toContain("Warning:   The Hermes gateway isn't answering");
-  });
-
   it("says when restarting the previous install failed instead of claiming a rollback", async () => {
     const ops = fakeOps();
     await installListenService({}, { ops, stage, waitStarted: ok, node });
@@ -222,7 +210,7 @@ describe("listen service install", () => {
 
   it("runs the chosen stable node and says which and why", async () => {
     await installListenService({}, { ops: fakeOps(), stage, waitStarted: ok, node });
-    expect(readFileSync(unit("default"), "utf8")).toContain('ExecStart="/usr/local/bin/node" ');
+    expect(readFileSync(unit(), "utf8")).toContain('ExecStart="/usr/local/bin/node" ');
     expect(vi.mocked(console.log).mock.calls.flat().join("\n")).toContain("Node.js:   /usr/local/bin/node (v22.20.0): a stable path that survives fnm/nvm upgrades");
   });
 

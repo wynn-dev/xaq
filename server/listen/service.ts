@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import pc from "picocolors";
-import { envVar, LEGACY_PRODUCT, PRODUCT } from "../brand.ts";
+import { PRODUCT } from "../brand.ts";
 import {
   assertSupported,
   bootstrapLaunchd,
@@ -9,22 +9,18 @@ import {
   enableLinger,
   installedEntry,
   launchdTarget,
-  LEGACY_PACKAGE,
   preflight,
   readText,
   removeOwnInstall,
-  restoreUnit,
   sdQuote,
   serviceMainPid,
   type ServiceOps,
   stagePackage,
-  stopAndWait,
   swapIn,
   systemctl,
   systemOps,
   type UnitId,
   unitPath,
-  unitState,
   xmlEscape,
 } from "../service.ts";
 import { ensurePrivateDir } from "./fsutil.ts";
@@ -32,35 +28,22 @@ import { EXIT } from "./listen.ts";
 import { acquireFileLock } from "./lock.ts";
 import { type ListenFlags, resolveListen } from "./options.ts";
 import { serviceNode, type ServiceNodeChoice } from "./mcpheader.ts";
-import { DEFAULT_PROFILE, dataDir, listenAppDir, logPath, profilePath, profileStateDir, validProfileName } from "./paths.ts";
-import { gatewayWarning } from "./hermes.ts";
-import { hermesChangeNote, isHermesRoute, RECIPE_NAMES } from "./recipes.ts";
+import { dataDir, listenAppDir, listenStateDir, logPath, profilePath } from "./paths.ts";
 import { loadProfile, saveProfile } from "./profile.ts";
 import { pidAlive, readStatus } from "./state.ts";
 import { checkTransport } from "./transport.ts";
 import { NPX } from "./version.ts";
 
 /**
- * `xaq listen service install|uninstall|status`: one systemd user unit / launchd agent per
- * profile, running from a stable install (not the npx cache). The unit only says which profile to
- * run; settings and the key stay in the 0600 profile file. Installation reuses the daemon's
- * machinery (server/service.ts): systemd pre-check, the user manager's unit directory, staging into
- * app.new and swapping in, rollback when the new listener doesn't start.
- *
- * A listener installed before the rename (agentinbox-listen-<profile> / com.unlaboredlabs.agentinbox.listen.<profile>)
- * is replaced by `install` for its profile: stopped and waited for before the new one starts (one listener
- * per profile, never two), and put back exactly as it was if the new one fails. `status` and
- * `uninstall` find either name.
+ * `xaq listen service install|uninstall|status`: one systemd user unit / launchd agent per machine,
+ * running from a stable install (not the npx cache). Settings and the key stay in the 0600 profile file.
+ * Installation reuses the daemon's machinery (server/service.ts): systemd pre-check, the user manager's
+ * unit directory, staging into app.new and swapping in, rollback when the new listener doesn't start.
  */
 
-export const unitName = (profile: string) => `${PRODUCT}-listen-${profile}`;
-export const launchdLabel = (profile: string) => `sh.xaq.listen.${profile}`;
-/** The names before the rename. */
-export const legacyUnitName = (profile: string) => `${LEGACY_PRODUCT}-listen-${profile}`;
-export const legacyLaunchdLabel = (profile: string) => `com.unlaboredlabs.agentinbox.listen.${profile}`;
-
-export const listenUnit = (profile: string): UnitId => ({ launchd: launchdLabel(profile), systemd: unitName(profile) });
-export const legacyListenUnit = (profile: string): UnitId => ({ launchd: legacyLaunchdLabel(profile), systemd: legacyUnitName(profile) });
+export const UNIT_NAME = `${PRODUCT}-listen-default`;
+export const LAUNCHD_LABEL = "sh.xaq.listen.default";
+export const LISTEN_UNIT: UnitId = { launchd: LAUNCHD_LABEL, systemd: UNIT_NAME };
 
 /**
  * PATH for the service: this shell's PATH (so `claude`, `codex`… resolve as they do here) minus
@@ -77,27 +60,25 @@ export function servicePath(raw = process.env.PATH ?? "", node = process.execPat
 /** Environment the service needs to behave like the shell `service install` ran in. Never contains the key. */
 export function serviceEnvironment(node = process.execPath): Record<string, string> {
   const env: Record<string, string> = { XAQ_SERVICE: "1" };
-  // PATH matters most: `claude`, `codex`, `hermes`… usually live in ~/.local/bin, nvm or Homebrew dirs
+  // PATH matters most: `claude` and the like usually live in ~/.local/bin, nvm or Homebrew dirs
   // that a service manager's minimal PATH doesn't include.
   env.PATH = servicePath(undefined, node);
-  for (const key of ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME", "HERMES_HOME", "LANG"]) {
+  for (const key of ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "CLAUDE_CONFIG_DIR", "LANG", "XAQ_LOG_LEVEL"]) {
     if (process.env[key]) env[key] = process.env[key]!;
   }
-  const debug = envVar("DEBUG");
-  if (debug) env.XAQ_DEBUG = debug;
   return env;
 }
 
-export function systemdListenUnit(profile: string, entry: string, cwd: string, system = false, node = process.execPath): string {
+export function systemdListenUnit(entry: string, cwd: string, system = false, node = process.execPath): string {
   const vars = Object.entries(serviceEnvironment(node))
     .map(([k, v]) => `Environment=${sdQuote(`${k}=${v}`)}`)
     .join("\n");
   return `[Unit]
-Description=xaq listener (profile ${profile})${system ? "\nAfter=network-online.target\nWants=network-online.target" : ""}
+Description=xaq listener${system ? "\nAfter=network-online.target\nWants=network-online.target" : ""}
 StartLimitIntervalSec=0
 
 [Service]
-ExecStart=${sdQuote(node)} ${sdQuote(entry)} listen --profile ${profile}
+ExecStart=${sdQuote(node)} ${sdQuote(entry)} listen
 WorkingDirectory=${cwd.replace(/%/g, "%%")}
 ${vars}
 Restart=on-failure
@@ -115,26 +96,24 @@ WantedBy=${system ? "multi-user.target" : "default.target"}
 `;
 }
 
-export function launchdListenPlist(profile: string, entry: string, cwd: string, node = process.execPath): string {
+export function launchdListenPlist(entry: string, cwd: string, node = process.execPath): string {
   const esc = xmlEscape;
   const vars = Object.entries(serviceEnvironment(node))
     .map(([k, v]) => `    <key>${esc(k)}</key><string>${esc(v)}</string>`)
     .join("\n");
   // The listener logs to the rotated listen.log and stays quiet on the console under launchd; only
   // crashes reach stderr, so this file stays small.
-  const errLog = esc(join(profileStateDir(profile), "service-stderr.log"));
+  const errLog = esc(join(listenStateDir(), "service-stderr.log"));
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>${esc(launchdLabel(profile))}</string>
+  <key>Label</key><string>${esc(LAUNCHD_LABEL)}</string>
   <key>ProgramArguments</key>
   <array>
     <string>${esc(node)}</string>
     <string>${esc(entry)}</string>
     <string>listen</string>
-    <string>--profile</string>
-    <string>${esc(profile)}</string>
   </array>
   <key>WorkingDirectory</key><string>${esc(cwd)}</string>
   <key>EnvironmentVariables</key>
@@ -151,80 +130,46 @@ ${vars}
 `;
 }
 
-const unitFile = (ops: ServiceOps, profile: string) => unitPath(ops, listenUnit(profile));
-const label = (ops: Pick<ServiceOps, "platform">, id: UnitId) => (ops.platform === "linux" ? id.systemd : id.launchd);
+const label = (ops: Pick<ServiceOps, "platform">) => (ops.platform === "linux" ? UNIT_NAME : LAUNCHD_LABEL);
 
-/** Listener profiles with a unit file under the new names, or (`legacy`) under the names from before the rename. */
-function profilesWithUnits(ops: ServiceOps, legacy: boolean): string[] {
-  const dir = ops.unitDir();
-  if (!existsSync(dir)) return [];
-  const re =
-    ops.platform === "darwin"
-      ? legacy
-        ? /^com\.unlaboredlabs\.agentinbox\.listen\.(.+)\.plist$/
-        : /^sh\.xaq\.listen\.(.+)\.plist$/
-      : legacy
-        ? /^agentinbox-listen-(.+)\.service$/
-        : /^xaq-listen-(.+)\.service$/;
-  return readdirSync(dir)
-    .map((f) => re.exec(f)?.[1])
-    .filter((p): p is string => !!p);
-}
-
-/** Installed listener profiles (from the unit directory), under either name. */
-function installedProfiles(ops: ServiceOps): string[] {
-  return [...new Set([...profilesWithUnits(ops, false), ...profilesWithUnits(ops, true)])];
-}
-
-/** The profile's installed listener service: the new one, else one from before the rename; null when neither. */
-export function installedListenUnit(profile: string, ops: ServiceOps = systemOps()): { id: UnitId; file: string; legacy: boolean } | null {
+/** The listener service's unit file, or null when none is installed (or the platform has none). */
+function installedUnitFile(ops: ServiceOps): string | null {
   if (ops.platform !== "linux" && ops.platform !== "darwin") return null;
   try {
-    for (const [id, legacy] of [
-      [listenUnit(profile), false],
-      [legacyListenUnit(profile), true],
-    ] as const) {
-      const file = unitPath(ops, id);
-      if (existsSync(file)) return { id, file, legacy };
-    }
+    const file = unitPath(ops, LISTEN_UNIT);
+    return existsSync(file) ? file : null;
   } catch {
-    // No unit directory to look in.
+    return null; // No unit directory to look in.
   }
-  return null;
 }
 
-export function isServiceInstalled(profile: string, ops: ServiceOps = systemOps()): boolean {
-  return installedListenUnit(profile, ops) !== null;
-}
+export const isServiceInstalled = (ops: ServiceOps = systemOps()): boolean => installedUnitFile(ops) !== null;
 
-/** The service's name as the platform knows it (for status lines), under whichever name it is installed. */
-export const installedServiceLabel = (profile: string, ops: ServiceOps = systemOps()): string | null => {
-  const u = installedListenUnit(profile, ops);
-  return u ? label(ops, u.id) : null;
-};
+/** The service's name as the platform knows it (for status lines), or null when it isn't installed. */
+export const installedServiceLabel = (ops: ServiceOps = systemOps()): string | null => (installedUnitFile(ops) ? label(ops) : null);
 
-function listenerHints(ops: ServiceOps, profile: string, id: UnitId = listenUnit(profile)): string[] {
-  if (ops.platform === "darwin") return [`launchctl print ${launchdTarget(ops)}/${id.launchd}`, `the log ${logPath(profile)}`];
+function listenerHints(ops: ServiceOps): string[] {
+  if (ops.platform === "darwin") return [`launchctl print ${launchdTarget(ops)}/${LAUNCHD_LABEL}`, `the log ${logPath()}`];
   const scope = ops.root ? "" : " --user";
-  return [`systemctl${scope} status ${id.systemd}`, `journalctl${scope} -u ${id.systemd} -e`, `the log ${logPath(profile)}`];
+  return [`systemctl${scope} status ${UNIT_NAME}`, `journalctl${scope} -u ${UNIT_NAME} -e`, `the log ${logPath()}`];
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * The pid of a listener started after `since` for the profile (it writes status.json on start), once it
+ * The pid of a listener started after `since` (it writes status.json on start), once it
  * has stayed up for a moment; null if none did within the timeout, or it stopped again.
  */
-export async function waitListenerStarted(profile: string, since: number, timeoutMs = 20_000): Promise<number | null> {
+export async function waitListenerStarted(since: number, timeoutMs = 20_000): Promise<number | null> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const st = readStatus(profile);
+    const st = readStatus();
     if (st && Date.parse(st.startedAt) >= since - 1000) {
       if (st.stoppedAt) return null;
       if (pidAlive(st.pid)) {
         // A listener that exits at once (bad settings, revoked key) must not count as started.
         await sleep(1000);
-        const again = readStatus(profile);
+        const again = readStatus();
         return again?.pid === st.pid && !again.stoppedAt && pidAlive(st.pid) ? st.pid : null;
       }
     }
@@ -235,8 +180,8 @@ export async function waitListenerStarted(profile: string, since: number, timeou
 
 const why = commandFailure;
 
-/** What the service manager says about the profile's listener (under `id`'s names): running (with its pid), or why not. */
-export function managerState(ops: ServiceOps, profile: string, id: UnitId = listenUnit(profile)): { running: boolean; pid: number | null; detail: string } {
+/** What the service manager says about the listener: running (with its pid), or why not. */
+export function managerState(ops: ServiceOps, id: UnitId = LISTEN_UNIT): { running: boolean; pid: number | null; detail: string } {
   const pid = serviceMainPid(ops, id);
   if (ops.platform === "darwin") {
     let text: string;
@@ -257,23 +202,23 @@ export function managerState(ops: ServiceOps, profile: string, id: UnitId = list
   return { running: active === "active" && pid !== null, pid, detail: `systemd ${active || "unknown"}${pid ? `, MainPID ${pid}` : ""}` };
 }
 
-/** (Re)starts the profile's unit with the file just written (launchd: see bootstrapLaunchd). */
-async function startUnit(ops: ServiceOps, profile: string, file: string, pollMs = 250): Promise<void> {
+/** (Re)starts the unit with the file just written (launchd: see bootstrapLaunchd). */
+async function startUnit(ops: ServiceOps, file: string, pollMs = 250): Promise<void> {
   if (ops.platform === "linux") {
     systemctl(ops, "daemon-reload");
-    systemctl(ops, "enable", unitName(profile));
+    systemctl(ops, "enable", UNIT_NAME);
     // restart, not start: a re-install must pick up the new install and settings.
-    systemctl(ops, "restart", unitName(profile));
+    systemctl(ops, "restart", UNIT_NAME);
     return;
   }
-  await bootstrapLaunchd(ops, launchdLabel(profile), file, { pollMs });
+  await bootstrapLaunchd(ops, LAUNCHD_LABEL, file, { pollMs });
 }
 
-/** Stops and removes one unit (no waiting: for uninstall and for undoing a new unit that never ran). */
-function removeUnit(ops: ServiceOps, id: UnitId, file: string): void {
+/** Stops and removes the unit (no waiting: for uninstall and for undoing a new unit that never ran). */
+function removeUnit(ops: ServiceOps, file: string): void {
   if (ops.platform === "linux") {
     try {
-      systemctl(ops, "disable", "--now", id.systemd);
+      systemctl(ops, "disable", "--now", UNIT_NAME);
     } catch {
       // Already stopped.
     }
@@ -281,7 +226,7 @@ function removeUnit(ops: ServiceOps, id: UnitId, file: string): void {
     systemctl(ops, "daemon-reload");
   } else {
     try {
-      ops.exec("launchctl", ["bootout", `${launchdTarget(ops)}/${id.launchd}`], { quiet: true });
+      ops.exec("launchctl", ["bootout", `${launchdTarget(ops)}/${LAUNCHD_LABEL}`], { quiet: true });
     } catch {
       // Not loaded.
     }
@@ -289,20 +234,7 @@ function removeUnit(ops: ServiceOps, id: UnitId, file: string): void {
   }
 }
 
-/**
- * Listener units from before the rename start `<app>/node_modules/agentinbox-cli/dist/cli.js`. While some
- * still run from this shared install (other profiles not moved yet), it keeps that path working: a tiny
- * module there runs xaq-cli, so those listeners run the new version under their old names until
- * `listen service install --profile <name>` moves them too.
- */
-export function writeLegacyEntry(app: string): void {
-  const dir = join(app, "node_modules", LEGACY_PACKAGE);
-  mkdirSync(join(dir, "dist"), { recursive: true });
-  writeFileSync(join(dir, "package.json"), `${JSON.stringify({ name: LEGACY_PACKAGE, private: true, type: "module", description: "Runs xaq-cli for listener services installed before the rename." }, null, 2)}\n`);
-  writeFileSync(join(dir, "dist", "cli.js"), `// Listener services installed as agentinbox still start this path: run xaq-cli.\nimport "../../xaq-cli/dist/cli.js";\n`);
-}
-
-/** Stages the listeners' install (no web console needed). */
+/** Stages the listener's install (no web console needed). */
 export const stageListenerApp = (staging: string): string => stagePackage(staging, { where: dirname(staging), requireWeb: false });
 
 export interface ListenServiceDeps {
@@ -310,45 +242,37 @@ export interface ListenServiceDeps {
   /** Installs the package into the given staging dir (tests). */
   stage?: (staging: string) => string;
   /** Readiness check after (re)starting the unit: the new listener's pid (tests). */
-  waitStarted?: (profile: string, since: number) => Promise<number | null>;
+  waitStarted?: (since: number) => Promise<number | null>;
   /** The node the unit runs (tests). */
   node?: ServiceNodeChoice;
   /** launchd polling interval (tests). */
   pollMs?: number;
-  /** Probes the Hermes gateway (tests). */
-  gatewayCheck?: (url: string) => Promise<string | null>;
 }
 
 export async function installListenService(flags: ListenFlags, deps: ListenServiceDeps = {}): Promise<void> {
   const ops = deps.ops ?? systemOps();
   assertSupported(ops);
-  const profileName = validProfileName(flags.profile ?? DEFAULT_PROFILE);
-  const profile = loadProfile(profileName);
-  // Service settings live in the profile: save whatever was passed with this command.
-  const { config, next } = resolveListen(profileName, profile, { ...flags, save: true });
-  if (!config.exec && !config.forward) {
-    throw new Error(`Nothing for the service to run. Pass --recipe <name> (${RECIPE_NAMES.join(", ")}), --exec "<command>" and/or --forward <url> (they are saved to profile "${profileName}").`);
-  }
-  await checkTransport(next.url, { insecure: config.insecure });
+  const profile = loadProfile();
+  // Service settings live in the profile: the flags given here, else what is saved already.
+  const { config, settings } = resolveListen(profile, flags);
+  if (!config.exec) throw new Error(`Nothing for the service to run. Pass --recipe claude-code or --exec "<command>" (they are saved).`);
+  await checkTransport(profile.url, { insecure: config.insecure });
   preflight(ops);
   const shared = dataDir();
   // A daemon started with --data pointing here would share (and lose) its app/ install with us.
-  const daemonDb = [`${PRODUCT}.db`, `${LEGACY_PRODUCT}.db`].find((f) => existsSync(join(shared, f)));
-  if (daemonDb) {
-    throw new Error(`${shared} holds a xaq daemon's data (${daemonDb}), so the listener can't install there. Run the daemon with another --data directory, or set XDG_DATA_HOME for the listener.`);
+  if (existsSync(join(shared, `${PRODUCT}.db`))) {
+    throw new Error(`${shared} holds a xaq daemon's data (${PRODUCT}.db), so the listener can't install there. Run the daemon with another --data directory, or set XDG_DATA_HOME for the listener.`);
   }
 
-  const p = profileName === DEFAULT_PROFILE ? "" : ` --profile ${profileName}`;
   const node = deps.node ?? serviceNode();
   let runningPid = 0;
-  let replacedLegacy = false;
-  // Commands run in config.cwd (a private dir unless --cwd was given); the unit uses it too.
+  // Commands run in the private work dir; the unit uses it too.
   const cwd = config.cwd;
-  mkdirSync(profileStateDir(profileName), { recursive: true, mode: 0o700 });
-  if (config.cwdIsDefault) ensurePrivateDir(cwd);
+  mkdirSync(listenStateDir(), { recursive: true, mode: 0o700 });
+  ensurePrivateDir(cwd);
 
-  // The same install path as the daemon (stage into app.new, swap into app), under a lock: all
-  // profiles share this install, so two installs at once would trip over app.new / app.old.
+  // The same install path as the daemon (stage into app.new, swap into app), under a lock: two installs at
+  // once would trip over app.new / app.old.
   mkdirSync(shared, { recursive: true, mode: 0o700 });
   const releaseInstallLock = acquireFileLock(
     join(shared, "install.lock"),
@@ -364,44 +288,27 @@ export async function installListenService(flags: ListenFlags, deps: ListenServi
   async function installLocked(): Promise<void> {
     const staging = (deps.stage ?? stageListenerApp)(join(shared, "app.new"));
     // Saved only once the new version is staged: a failed npm install changes nothing.
-    saveProfile(profileName, next);
+    saveProfile({ ...profile, ...settings });
     const app = listenAppDir();
     const entry = installedEntry(app);
-    const file = unitFile(ops, profileName);
+    const file = unitPath(ops, LISTEN_UNIT);
     const previousUnit = readText(file);
-    // This profile's listener from before the rename, if any: replaced, or put back on failure.
-    const legacyId = legacyListenUnit(profileName);
-    const legacyFile = unitPath(ops, legacyId);
-    const legacyText = readText(legacyFile);
-    const legacyState = legacyText !== null ? unitState(ops, legacyId) : null;
-    let legacyStopped = false;
-    // Other profiles' pre-rename units that run from this same install must keep a working entry point.
-    const legacyEntry = join(app, "node_modules", LEGACY_PACKAGE);
-    const othersOnLegacy = profilesWithUnits(ops, true).filter((o) => o !== profileName && (readText(unitPath(ops, legacyListenUnit(o))) ?? "").includes(legacyEntry));
-    if (othersOnLegacy.length) writeLegacyEntry(staging);
     const since = Date.now();
     let swap: ReturnType<typeof swapIn> | null = null;
     try {
       swap = swapIn(staging, app);
       mkdirSync(ops.unitDir(), { recursive: true });
-      if (ops.platform === "linux") writeFileSync(file, systemdListenUnit(profileName, entry, cwd, ops.root, node.path));
-      else writeFileSync(file, launchdListenPlist(profileName, entry, cwd, node.path), { mode: 0o600 });
-      if (legacyText !== null) {
-        // One listener per profile: the old one is gone (launchd: unloaded) before the new one starts.
-        legacyStopped = true;
-        await stopAndWait(ops, legacyId, { pollMs: deps.pollMs });
-        rmSync(legacyFile, { force: true });
-      }
-      await startUnit(ops, profileName, file, deps.pollMs);
-      const pid = await (deps.waitStarted ?? waitListenerStarted)(profileName, since);
+      if (ops.platform === "linux") writeFileSync(file, systemdListenUnit(entry, cwd, ops.root, node.path));
+      else writeFileSync(file, launchdListenPlist(entry, cwd, node.path), { mode: 0o600 });
+      await startUnit(ops, file, deps.pollMs);
+      const pid = await (deps.waitStarted ?? waitListenerStarted)(since);
       if (!pid) throw new Error("the listener did not start");
       // Only a listener the service manager itself runs counts: not an older job still loaded, nor a
-      // foreground one (the profile lock keeps those apart, so a pid match means it is ours).
-      const svc = managerState(ops, profileName);
+      // foreground one (the listener lock keeps those apart, so a pid match means it is ours).
+      const svc = managerState(ops);
       if (!svc.running) throw new Error(`the service manager doesn't report it running (${svc.detail})`);
       if (svc.pid !== pid) throw new Error(`the listener that started (pid ${pid}) isn't the service's process (${svc.detail})`);
       runningPid = pid;
-      replacedLegacy = legacyText !== null;
     } catch (err) {
       // Best effort, but reported as it went: never claim a rollback that didn't happen.
       const failed: string[] = [];
@@ -414,123 +321,74 @@ export async function installListenService(flags: ListenFlags, deps: ListenServi
       };
       if (swap) step("restoring the previous install", () => swap!.restore());
       // The settings this install saved go back too, so the restored listener runs as before.
-      step("restoring the profile's settings", () => saveProfile(profileName, profile));
+      step("restoring the saved settings", () => saveProfile(profile));
       step("removing the staged install", () => rmSync(staging, { recursive: true, force: true }));
       let outcome: string;
       if (previousUnit !== null) {
         step("restoring the previous unit file", () => writeFileSync(file, previousUnit, { mode: ops.platform === "darwin" ? 0o600 : 0o644 }));
-        const restarted = await startUnit(ops, profileName, file, deps.pollMs).then(
+        const restarted = await startUnit(ops, file, deps.pollMs).then(
           () => null,
           (e: unknown) => why(e),
         );
-        const svc = restarted ? null : managerState(ops, profileName);
+        const svc = restarted ? null : managerState(ops);
         outcome = restarted
           ? `Put the previous install back, but restarting it failed (${restarted}), so no listener service is running now`
           : svc!.running
             ? `Put the previous install back; it is running again (${svc!.detail})`
             : `Put the previous install back and started it, but the service manager doesn't report it running (${svc!.detail})`;
       } else {
-        // Before the old listener comes back, the new one must be gone (launchd tears it down asynchronously).
-        if (legacyStopped) await stopAndWait(ops, listenUnit(profileName), { pollMs: deps.pollMs }).catch((e: unknown) => failed.push(`stopping the new service: ${why(e)}`));
         step("removing the new service", () => {
-          if (existsSync(file)) removeUnit(ops, listenUnit(profileName), file);
+          if (existsSync(file)) removeUnit(ops, file);
         });
-        outcome = legacyText !== null ? "Removed the new service again" : "Removed the new service again (no listener service is installed)";
-      }
-      if (legacyText !== null && legacyStopped) {
-        // The pre-rename listener comes back under its own name, running (and enabled) only if it was before.
-        const restored = await restoreUnit(ops, legacyId, legacyFile, legacyText, legacyState!, deps.pollMs).then(
-          () => null,
-          (e: unknown) => why(e),
-        );
-        const svc = restored || !legacyState!.running ? null : managerState(ops, profileName, legacyId);
-        outcome += restored
-          ? `. Putting the ${LEGACY_PRODUCT} listener (${label(ops, legacyId)}) back failed (${restored})`
-          : svc
-            ? `. Put the ${LEGACY_PRODUCT} listener (${label(ops, legacyId)}) back${svc.running ? `; it is running again (${svc.detail})` : `, but the service manager doesn't report it running (${svc.detail})`}`
-            : `. Put the ${LEGACY_PRODUCT} listener (${label(ops, legacyId)}) back, stopped as it was`;
-      } else if (legacyText !== null) {
-        outcome += `. The ${LEGACY_PRODUCT} listener (${label(ops, legacyId)}) was left as it was`;
+        outcome = "Removed the new service again (no listener service is installed)";
       }
       if (failed.length) outcome += `. These rollback steps failed too: ${failed.join("; ")}`;
-      const hints = listenerHints(ops, profileName, legacyText !== null && previousUnit === null ? legacyId : listenUnit(profileName))
+      const hints = listenerHints(ops)
         .map((h) => `    ${h}`)
         .join("\n");
       throw new Error(`Starting the listener service failed (${why(err)}). ${outcome}.\n  To find out why:\n${hints}`);
     }
     swap.commit();
     enableLinger(ops);
-    // The other profiles' listeners share the install: move them onto the new one (whichever name they run under).
-    for (const other of profilesWithUnits(ops, false).filter((o) => o !== profileName)) restartOther(listenUnit(other));
-    for (const other of othersOnLegacy) restartOther(legacyListenUnit(other));
-    if (othersOnLegacy.length) {
-      const list = othersOnLegacy.map((o) => `${o} (\`${NPX} listen service install --profile ${o}\`)`).join(", ");
-      console.log(`\n  ${pc.yellow("!")} Still under their ${LEGACY_PRODUCT} service names (running this version): ${list}. Run those to move them to xaq too.`);
-    }
-  }
-
-  function restartOther(id: UnitId): void {
-    try {
-      if (ops.platform === "linux") systemctl(ops, "try-restart", id.systemd);
-      else ops.exec("launchctl", ["kickstart", "-k", `${launchdTarget(ops)}/${id.launchd}`], { quiet: true });
-    } catch {
-      // Not running: nothing to restart.
-    }
   }
 
   const kind = ops.platform === "linux" ? (ops.root ? "systemd system service" : "systemd user service") : "launchd agent";
-  console.log(
-    `\n  ${pc.green("✔")} Installed the listener for profile "${profileName}" as a ${kind} (${label(ops, listenUnit(profileName))}); it is running as pid ${runningPid}.`,
-  );
-  if (replacedLegacy) console.log(`    Replaced:  the ${LEGACY_PRODUCT} listener service ${label(ops, legacyListenUnit(profileName))} (removed; the profile, its key and its cursor are unchanged)`);
-  console.log(`    Runs:      ${config.exec ? `--exec ${config.exec}` : ""}${config.exec && config.forward ? "  and  " : ""}${config.forward ? `--forward ${config.forward.url}` : ""}`);
-  console.log(`    Directory: ${cwd}${config.cwdIsDefault ? " (private; pass --cwd to run in a project)" : ""}`);
-  console.log(`    Node.js:   ${node.path} (v${node.version}): ${node.why}. If you remove it, run \`${NPX} listen service install${p}\` again.`);
-  console.log(`    Settings:  ${profilePath(profileName)} (change them with \`${NPX} listen${p} … --save\`, then reinstall)`);
-  console.log(`    Log:       ${logPath(profileName)}`);
-  const change = hermesChangeNote(flags.recipe, config.exec);
-  if (change) console.log(`    Note:      ${change}`);
-  if (config.forward && isHermesRoute(config.forward.url)) {
-    const w = await (deps.gatewayCheck ?? gatewayWarning)(config.forward.url);
-    if (w) console.log(pc.yellow(`    Warning:   ${w}`));
-  }
-  console.log(`    Status:    ${NPX} listen status${p}`);
-  if (ops.platform === "linux") console.log(`    Follow:    journalctl ${ops.root ? "" : "--user "}-u ${unitName(profileName)} -f`);
+  console.log(`\n  ${pc.green("✔")} Installed the listener as a ${kind} (${label(ops)}); it is running as pid ${runningPid}.`);
+  console.log(`    Runs:      --exec ${config.exec}`);
+  console.log(`    Directory: ${cwd} (private)`);
+  console.log(`    Node.js:   ${node.path} (v${node.version}): ${node.why}. If you remove it, run \`${NPX} listen service install\` again.`);
+  console.log(`    Settings:  ${profilePath()} (change them with \`${NPX} listen service install <flags>\`)`);
+  console.log(`    Log:       ${logPath()}`);
+  console.log(`    Status:    ${NPX} listen status`);
+  if (ops.platform === "linux") console.log(`    Follow:    journalctl ${ops.root ? "" : "--user "}-u ${UNIT_NAME} -f`);
   console.log();
 }
 
-export function uninstallListenService(profileName: string, quiet = false, deps: ListenServiceDeps = {}): void {
+export function uninstallListenService(quiet = false, deps: ListenServiceDeps = {}): void {
   const ops = deps.ops ?? systemOps();
   assertSupported(ops);
-  const name = validProfileName(profileName);
-  const units = [listenUnit(name), legacyListenUnit(name)].map((id) => ({ id, file: unitPath(ops, id) })).filter((u) => existsSync(u.file));
-  if (!units.length) {
-    if (!quiet) console.log(`No listener service is installed for profile "${name}".`);
+  const file = installedUnitFile(ops);
+  if (!file) {
+    if (!quiet) console.log("No listener service is installed.");
     return;
   }
-  for (const u of units) removeUnit(ops, u.id, u.file);
-  // The last listener gone: remove the shared install too (only if it really is ours).
-  if (!installedProfiles(ops).length) removeOwnInstall(dataDir());
-  if (!quiet) console.log(`Removed the listener service for profile "${name}". The profile (and its key) was kept: ${profilePath(name)}`);
+  removeUnit(ops, file);
+  // Remove the install too (only if it really is ours).
+  removeOwnInstall(dataDir());
+  if (!quiet) console.log(`Removed the listener service. The pairing (and its key) was kept: ${profilePath()}`);
 }
 
-export function listenServiceStatus(profileName: string, deps: ListenServiceDeps = {}): void {
+export function listenServiceStatus(deps: ListenServiceDeps = {}): void {
   const ops = deps.ops ?? systemOps();
   assertSupported(ops);
-  const name = validProfileName(profileName);
-  const p = name === DEFAULT_PROFILE ? "" : ` --profile ${name}`;
-  const installed = installedListenUnit(name, ops);
-  if (!installed) {
-    console.log(`No listener service is installed for profile "${name}". Install one with \`${NPX} listen service install${p}\`.`);
+  if (!installedUnitFile(ops)) {
+    console.log(`No listener service is installed. Install one with \`${NPX} listen service install --recipe claude-code\`.`);
     process.exitCode = 1;
     return;
   }
-  if (installed.legacy) {
-    console.log(`This listener runs under its name from before the rename to xaq (${label(ops, installed.id)}). \`${NPX} listen service install${p}\` moves it to ${label(ops, listenUnit(name))}.\n`);
-  }
   try {
-    if (ops.platform === "linux") systemctl(ops, "status", installed.id.systemd, "--no-pager");
-    else ops.exec("launchctl", ["print", `${launchdTarget(ops)}/${installed.id.launchd}`]);
+    if (ops.platform === "linux") systemctl(ops, "status", UNIT_NAME, "--no-pager");
+    else ops.exec("launchctl", ["print", `${launchdTarget(ops)}/${LAUNCHD_LABEL}`]);
   } catch {
     process.exitCode = 1;
   }

@@ -229,15 +229,14 @@ program
   },
 );
 
-// Agent side: `connect` (device-flow pairing), `setup-mcp`, `mcp-header` and `listen …` (see
+// Agent side: `connect` (device-flow pairing), `setup-mcp` and `listen …` (see
 // docs/listen.md). Imported after the Node check, like everything else.
 const { registerListenCommands } = await import("./listen/commands.ts");
 registerListenCommands(program);
 // Short one-liners for the command list; each command's own --help keeps its full description.
 const AGENT_SUMMARIES: Record<string, string> = {
   connect: "pair an agent; you approve it in the console",
-  "setup-mcp": "add xaq to the agent's MCP config",
-  "mcp-header": "print the agent's auth header (MCP clients)",
+  "setup-mcp": "add xaq to Claude Code's MCP config",
   listen: "wake the agent when new mail arrives",
 };
 for (const cmd of program.commands) {

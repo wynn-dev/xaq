@@ -22,24 +22,20 @@ export interface Recipe {
   note: string;
 }
 
+const OWN_SCRIPT = "The built-in recipe is Claude Code's: start this agent from your own script with --exec. It gets the event as JSON on stdin; give listener agents draft-only access.";
+
 /**
- * The console never spells out `listen --exec` commands itself: for known tools it uses
- * `listen --recipe <tool>`, so the confined command (and this machine's paths) always come
- * from the CLI that runs it. The trigger is an email anyone can send, so confinement matters.
+ * The console never spells out the Claude Code command itself: it uses `listen --recipe claude-code`, so the
+ * confined command (and this machine's paths) always come from the CLI that runs it. The trigger is an email
+ * anyone can send, so confinement matters.
  */
 export const RECIPES: Record<AgentTool, Recipe> = {
   "claude-code": {
     note: "Claude triages each email with its built-in tools turned off, only the xaq MCP server loaded and project settings ignored. Its reply is only logged on that machine: it can't notify you by itself.",
   },
-  codex: {
-    note: "Codex triages each email in a read-only sandbox with its shell tool off. Other MCP servers you configured stay available, so give listener agents draft-only access. Its reply is only logged.",
-  },
-  cursor: {
-    note: "Cursor's CLI can't be confined by flags: deny other tools in its permissions config (see docs/listen.md) and give listener agents draft-only access. Its reply is only logged.",
-  },
-  hermes: {
-    note: "Each email goes to your running Hermes gateway, which triages it with only the xaq tools and tells you where the route says (Telegram, Discord…) only when it matters.",
-  },
+  codex: { note: OWN_SCRIPT },
+  cursor: { note: OWN_SCRIPT },
+  hermes: { note: OWN_SCRIPT },
   other: {
     note: "Your command gets the event as JSON on stdin (also in $XAQ_EVENT_FILE). Exit 0 when done; anything else is retried.",
   },
@@ -86,20 +82,18 @@ export function transportOf(publicUrl: string): Transport {
 // ───────────── Commands ─────────────
 
 export interface ConnectCommands {
-  /** `connect <url> --tool <tool> --setup-mcp`: pairing, then the MCP setup in the tool. */
+  /** `connect <url> --tool <tool>` (Claude Code: `--setup-mcp`, the MCP setup in the tool). */
   connect: string;
-  /** Register the MCP server in the tool again (after connect without --setup-mcp, or a reinstall). */
-  setupMcp: string;
+  /** Claude Code only: register the MCP server again (after connect without --setup-mcp, or a reinstall). */
+  setupMcp: string | null;
   /** How to see that the tool has the server, when it has a command for that. */
   mcpCheck: string | null;
   /** Install the xaq skill for this tool. */
   skillInstall: string;
-  /** Try the listener in the foreground first (Ctrl-C stops it). `--save` keeps the command for the service. */
+  /** Try the listener in the foreground first (Ctrl-C stops it). */
   listenTry: string;
-  /** Then keep it running in the background (systemd / launchd). */
+  /** Then keep it running in the background (systemd / launchd; saves the flags). */
   listenService: string;
-  /** Hermes only: create the gateway route the listener forwards to (before trying the listener). */
-  hermesRoute: string | null;
   /** Prompt for an agent that sets itself up from the skill. */
   selfSetup: string;
   insecure: boolean;
@@ -117,11 +111,6 @@ const SKILL_TARGET: Record<AgentTool, string> = {
   other: "./skills",
 };
 
-const MCP_CHECK: Partial<Record<AgentTool, string>> = {
-  "claude-code": "claude mcp list",
-  codex: "codex mcp list",
-  hermes: "hermes mcp test xaq",
-};
 
 /**
  * Commands for one tool, in the order `connect` itself prints them (server/listen/connect.ts).
@@ -131,19 +120,18 @@ export function connectCommands(publicUrl: string, tool: AgentTool, acceptInsecu
   const insecure = transportOf(publicUrl) === "insecure";
   const flag = insecure && acceptInsecure ? " --insecure" : "";
   const url = shellQuote(publicUrl);
-  // Known tools name the CLI's built-in recipe (never `--exec "$(npx … --print-recipe …)"`: inside `$(…)` npx's
-  // "Ok to proceed?" install prompt is captured, so the terminal looks idle and the prompt text becomes the command).
-  const target = tool === "other" ? "--exec /path/to/handle-email.sh" : `--recipe ${tool}`;
+  // Claude Code names the CLI's built-in recipe (never `--exec "$(npx … )"`: inside `$(…)` npx's "Ok to proceed?"
+  // install prompt is captured, so the terminal looks idle and the prompt text becomes the command).
+  const claude = tool === "claude-code";
   // Claude Code's web fetch refuses localhost, so point loopback setups at curl.
   const fetchSkill = transportOf(publicUrl) === "loopback" ? `Run curl -s ${publicUrl}/skill.md and follow it` : `Read ${publicUrl}/skill.md and follow it`;
   return {
-    connect: `${NPX} connect ${url} --tool ${tool}${tool === "other" ? "" : " --setup-mcp"}${flag}`,
-    setupMcp: `${NPX} setup-mcp --tool ${tool}`,
-    mcpCheck: MCP_CHECK[tool] ?? null,
+    connect: `${NPX} connect ${url} --tool ${tool}${claude ? " --setup-mcp" : ""}${flag}`,
+    setupMcp: claude ? `${NPX} setup-mcp` : null,
+    mcpCheck: claude ? "claude mcp list" : null,
     skillInstall: `${NPX} skill install --target ${SKILL_TARGET[tool]} --url ${url}`,
-    listenTry: tool === "other" ? `${NPX} listen --exec ${shellQuote(LISTEN_TEST_EXEC)}${flag}` : `${NPX} listen --save ${target}${flag}`,
-    listenService: `${NPX} listen service install ${target}${flag}`,
-    hermesRoute: tool === "hermes" ? `${NPX} listen hermes --deliver telegram --run` : null,
+    listenTry: claude ? `${NPX} listen --recipe claude-code` : `${NPX} listen --exec ${shellQuote(LISTEN_TEST_EXEC)}`,
+    listenService: `${NPX} listen service install ${claude ? "--recipe claude-code" : "--exec /path/to/handle-email.sh"}`,
     selfSetup: `${fetchSkill} to set yourself up with xaq.`,
     insecure,
   };

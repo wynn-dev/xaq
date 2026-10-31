@@ -3,7 +3,7 @@
 // code is present (test/e2e/features.ts); contract: shared/agent-api.ts, docs/listen.md.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Account, AuditEntry, MailEvent, Page, WebhookPayload } from "../shared/types.ts";
@@ -316,12 +316,14 @@ describe.runIf(HAS_AGENT_API && HAS_LISTEN_CLIENT)("xaq connect + listen (CLI en
     const control = join(execDir(), "CONTROL");
     execFileSync("sh", ["-c", `echo Invoice ${evilFor(control)}`], { stdio: "ignore" });
     expect(existsSync(control)).toBe(true);
-    const listenArgs = ["listen", "--exec", rec.command, "--include-body", "--consumer", "e2e"];
+    const listenArgs = ["listen", "--exec", rec.command, "--include-body"];
+    // The consumer connect chose (this machine's hostname).
+    const consumer = (JSON.parse(readFileSync(profile, "utf8")) as { consumer: string }).consumer;
     // A secret-looking XAQ_* variable in the listener's environment must not reach the command.
     const plant = { XAQ_PLANTED: "do-not-leak" };
     let listener = spawnCli(listenArgs, home, plant);
     const connected = async () =>
-      waitFor(async () => (await s.admin.get<{ listeners?: { consumer: string; connected: boolean }[] }>(`/api/agents/${agent.id}`)).listeners?.find((l) => l.consumer === "e2e" && l.connected), {
+      waitFor(async () => (await s.admin.get<{ listeners?: { consumer: string; connected: boolean }[] }>(`/api/agents/${agent.id}`)).listeners?.find((l) => l.consumer === consumer && l.connected), {
         what: "listener connected",
         timeout: 10_000,
       });
@@ -356,7 +358,7 @@ describe.runIf(HAS_AGENT_API && HAS_LISTEN_CLIENT)("xaq connect + listen (CLI en
     await stays(() => existsSync(canary), 300, "the canary file");
 
     // Kill the listener once it has acked, deliver while it's down, restart: nothing lost, nothing re-run.
-    await waitFor(async () => (await s.admin.get<{ listeners: { consumer: string; ackedSeq: number }[] }>(`/api/agents/${agent.id}`)).listeners.find((l) => l.consumer === "e2e" && l.ackedSeq >= ev.seq), {
+    await waitFor(async () => (await s.admin.get<{ listeners: { consumer: string; ackedSeq: number }[] }>(`/api/agents/${agent.id}`)).listeners.find((l) => l.consumer === consumer && l.ackedSeq >= ev.seq), {
       what: "ack of the first event",
     });
     expect(await listener.kill("SIGTERM")).not.toBeNull();
@@ -373,7 +375,7 @@ describe.runIf(HAS_AGENT_API && HAS_LISTEN_CLIENT)("xaq connect + listen (CLI en
       expect(existsSync(canary)).toBe(false);
 
       // The daemon restarts under a running listener: it reconnects by itself and nothing runs twice.
-      await waitFor(async () => (await s.admin.get<{ listeners: { consumer: string; ackedSeq: number }[] }>(`/api/agents/${agent.id}`)).listeners.find((l) => l.consumer === "e2e" && l.ackedSeq >= evDown2.seq), {
+      await waitFor(async () => (await s.admin.get<{ listeners: { consumer: string; ackedSeq: number }[] }>(`/api/agents/${agent.id}`)).listeners.find((l) => l.consumer === consumer && l.ackedSeq >= evDown2.seq), {
         what: "acks before the daemon restart",
       });
       await s.restart();

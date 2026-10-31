@@ -1,24 +1,19 @@
-// Review fixes: replay-from-head, reversible refusals, per-profile lock, safe reinstall, --force,
+// Review fixes: replay-from-head, reversible refusals, one-listener lock, safe reinstall, --force,
 // MCP URL, --log, field cleaning, cwd, symlinks, contract headers.
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { swapIn } from "../server/service.ts";
-import { replayDead } from "../server/listen/admin.ts";
 import { openConnectLog, runConnect } from "../server/listen/connect.ts";
 import { commandInput, eventEnv } from "../server/listen/event.ts";
 import { runCommand } from "../server/listen/exec.ts";
-import { forwardEvent } from "../server/listen/forward.ts";
 import { writePrivateFile } from "../server/listen/fsutil.ts";
 import { EXIT, runListener, type RunListenerOptions } from "../server/listen/listen.ts";
-import { acquireProfileLock, lockPath, ProfileLockedError } from "../server/listen/lock.ts";
-import { claudeMcpConfigPath } from "../server/listen/mcpheader.ts";
-import { setupMcp } from "../server/listen/mcpsetup.ts";
-import { resolveListen } from "../server/listen/options.ts";
+import { acquireListenerLock, ListenerLockedError, lockPath } from "../server/listen/lock.ts";
+import { claudeMcpConfigPath, writeClaudeMcpConfig } from "../server/listen/mcpheader.ts";
 import { workDir } from "../server/listen/paths.ts";
 import { loadProfile, saveProfile } from "../server/listen/profile.ts";
-import { appendDead } from "../server/listen/state.ts";
 import { checkTransport } from "../server/listen/transport.ts";
 import { FAKE_KEY, FakeAgentApi, isolateXdg, makeEvent, waitFor } from "./listen-client-fake.ts";
 
@@ -54,39 +49,17 @@ function start(extra: Partial<RunListenerOptions> = {}) {
 }
 
 describe("starting point", () => {
-  it("a new consumer listens from now on; --from-start asks for the beginning only while the consumer is new", async () => {
-    saveProfile("default", baseProfile());
-    let l = start({ flags: { fromStart: true } });
+  it("a new consumer listens from now on", async () => {
+    saveProfile(baseProfile());
+    const l = start();
     await waitFor(() => connected() === 1, 5000, "stream");
-    expect(api.streamRequests[0]).toMatchObject({ start: "beginning", consumer: "c" });
-    expect(output).toContain("Processing every stored event");
-    l.stop();
-    await l.done;
-
-    // The consumer exists now: --from-start would do nothing, so say so and how to backfill.
-    output = "";
-    l = start({ flags: { fromStart: true } });
-    await waitFor(() => connected() === 1, 5000, "second stream");
-    expect(api.streamRequests).toHaveLength(2);
-    expect(output).toContain('already has a position on the daemon, so --from-start does nothing');
-    expect(output).toContain("npx xaq-cli listen --backfill");
-    expect(output).not.toContain("Processing every stored event");
-    l.stop();
-    await l.done;
-
-    // A fresh consumer without the flag: "from now on" plus the backfill hint.
-    output = "";
-    l = start({ flags: { consumer: "fresh" } });
-    await waitFor(() => connected() === 1, 5000, "third stream");
-    expect(api.streamRequests).toHaveLength(3);
-    expect(api.streamRequests[2]!.start).toBeNull();
-    expect(output).toContain("Listening for new events from now on. To also run the mail from before this listener started, once (in another terminal, while this keeps running): npx xaq-cli listen --backfill");
+    expect(api.streamRequests[0]).toMatchObject({ start: null, consumer: "c" });
     l.stop();
     await l.done;
   });
 
   it("--dry-run uses a throwaway consumer that starts at the head and leaves the real one untouched", async () => {
-    saveProfile("default", { ...baseProfile(), consumer: "real" });
+    saveProfile({ ...baseProfile(), consumer: "real" });
     for (const s of [1, 2, 3]) api.events.push(makeEvent(s));
     const l = start({ flags: { dryRun: true } });
     await waitFor(() => connected() === 1, 5000, "stream");
@@ -98,13 +71,12 @@ describe("starting point", () => {
     expect(api.acks).toEqual([]);
     expect(output).not.toContain("#3 message.received");
 
-    // The real consumer is still new afterwards.
+    // The real consumer is used afterwards, from the head.
     output = "";
     const r = start();
     await waitFor(() => connected() === 1, 5000, "real stream");
     expect(api.streamRequests).toHaveLength(2);
-    expect(api.streamRequests[1]!.consumer).toBe("real");
-    expect(output).toContain("Listening for new events from now on");
+    expect(api.streamRequests[1]).toMatchObject({ consumer: "real", start: null });
     r.stop();
     await r.done;
   });
@@ -112,7 +84,7 @@ describe("starting point", () => {
 
 describe("refusals", () => {
   it("waits through reversible refusals (403 agent_disabled, revoked no_read_grant) and resumes", async () => {
-    saveProfile("default", baseProfile());
+    saveProfile(baseProfile());
     api.blockedCode = "agent_disabled";
     const l = start();
     await waitFor(() => api.streamRequests.length >= 3, 5000, "retries while disabled");
@@ -134,27 +106,27 @@ describe("refusals", () => {
   });
 
   it("exits 78 on permanent refusals (401)", async () => {
-    saveProfile("default", baseProfile());
+    saveProfile(baseProfile());
     api.keyValid = false;
     expect(await start().done).toBe(EXIT.revoked);
     expect(output).toContain("doesn't recognize this API key");
   });
 });
 
-describe("one listener per profile", () => {
+describe("one listener per machine", () => {
   it("refuses a second listener and takes over a stale lock", async () => {
-    saveProfile("default", baseProfile());
+    saveProfile(baseProfile());
     const l = start();
     await waitFor(() => connected() === 1, 5000, "stream");
-    await expect(runListener({ flags: {} })).rejects.toBeInstanceOf(ProfileLockedError);
+    await expect(runListener({ flags: {} })).rejects.toBeInstanceOf(ListenerLockedError);
     l.stop();
     await l.done;
-    expect(existsSync(lockPath("default"))).toBe(false);
+    expect(existsSync(lockPath())).toBe(false);
 
     // A lock left by a crashed process (pid not alive) is taken over.
-    writeFileSync(lockPath("default"), JSON.stringify({ pid: 2 ** 22 + 12345, startedAt: "x" }));
-    const release = acquireProfileLock("default");
-    expect(JSON.parse(readFileSync(lockPath("default"), "utf8")).pid).toBe(process.pid);
+    writeFileSync(lockPath(), JSON.stringify({ pid: 2 ** 22 + 12345, startedAt: "x" }));
+    const release = acquireListenerLock();
+    expect(JSON.parse(readFileSync(lockPath(), "utf8")).pid).toBe(process.pid);
     release();
   });
 });
@@ -182,20 +154,20 @@ describe("connect --force, MCP URL, --log", () => {
   const approved = (agentId: string, mcpUrl: string) => ({ status: "approved" as const, apiKey: FAKE_KEY, agent: { id: agentId, name: "n" }, mcpUrl, skillUrl: "x" });
 
   it("keeps listener settings and the consumer, derives the MCP URL from the paired URL", async () => {
-    saveProfile("default", { ...baseProfile(), consumer: "keep-me", types: ["message.received"], maxAttempts: 9, forwardSecret: "whsec_AAAA" });
+    saveProfile({ ...baseProfile(), consumer: "keep-me", types: ["message.received"], notFrom: ["*@x.com"], allCategories: true });
     api.pollScript = [approved("agt_2", "http://localhost:8425/mcp")];
     expect(await runConnect(api.url, { force: true }, { pollIntervalMs: 10 })).toBe(0);
     const p = loadProfile();
-    expect(p).toMatchObject({ agentId: "agt_2", consumer: "keep-me", exec: "cat > /dev/null", types: ["message.received"], maxAttempts: 9, forwardSecret: "whsec_AAAA" });
+    expect(p).toMatchObject({ agentId: "agt_2", consumer: "keep-me", exec: "cat > /dev/null", types: ["message.received"], notFrom: ["*@x.com"], allCategories: true });
     expect(p.mcpUrl).toBe(`${api.url}/mcp`);
     expect(output).toContain("advertises its MCP endpoint as http://localhost:8425/mcp");
-    expect(output).toContain("Kept this profile's listener settings");
+    expect(output).toContain("Kept the listener settings");
     expect(output).toContain("still works until you rotate it");
     // The Claude Code recipe's MCP config: no key, URL from the paired address.
-    const cfg = readFileSync(claudeMcpConfigPath("default"), "utf8");
+    const cfg = readFileSync(claudeMcpConfigPath(), "utf8");
     expect(cfg).not.toContain(FAKE_KEY);
     expect(cfg).toContain(`${api.url}/mcp`);
-    expect(statSync(claudeMcpConfigPath("default")).mode & 0o777).toBe(0o600);
+    expect(statSync(claudeMcpConfigPath()).mode & 0o777).toBe(0o600);
   });
 
   it("--log is created 0600, accepts a mktemp file, and refuses symlinks", async () => {
@@ -245,8 +217,8 @@ describe("untrusted fields and environment", () => {
 });
 
 describe("working directory", () => {
-  it("defaults to a private dir and refuses untrusted --cwd", async () => {
-    saveProfile("default", { ...baseProfile(), exec: `pwd > "$LISTEN_TEST_OUT"` });
+  it("runs commands in a private dir", async () => {
+    saveProfile({ ...baseProfile(), exec: `pwd > "$LISTEN_TEST_OUT"` });
     const out = join(env.root, "pwd.txt");
     process.env.LISTEN_TEST_OUT = out;
     try {
@@ -256,15 +228,11 @@ describe("working directory", () => {
       await waitFor(() => existsSync(out), 5000, "command ran");
       l.stop();
       await l.done;
-      expect(readFileSync(out, "utf8").trim()).toBe(workDir("default"));
-      expect(statSync(workDir("default")).mode & 0o777).toBe(0o700);
+      expect(readFileSync(out, "utf8").trim()).toBe(workDir());
+      expect(statSync(workDir()).mode & 0o777).toBe(0o700);
     } finally {
       delete process.env.LISTEN_TEST_OUT;
     }
-    const open = mkdtempSync(join(tmpdir(), "aib-open-"));
-    chmodSync(open, 0o777);
-    expect(() => resolveListen("default", loadProfile(), { cwd: open })).toThrow(/writable by group or others/);
-    expect(() => resolveListen("default", loadProfile(), { cwd: "/" })).toThrow(/another user/);
   });
 });
 
@@ -282,34 +250,18 @@ describe("process groups on shutdown", () => {
   }, 15_000);
 });
 
-describe("dead letter replay", () => {
-  it("re-runs only the targets that never succeeded", async () => {
-    const rx: string[] = [];
-    const { createServer } = await import("node:http");
-    const server = createServer((req, res) => {
-      rx.push(req.url ?? "");
-      res.end("ok");
-    });
-    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-    const port = (server.address() as { port: number }).port;
-    try {
-      const marker = join(env.root, "ran.txt");
-      saveProfile("default", { ...baseProfile(), exec: `echo x >> ${marker}`, forward: { url: `http://127.0.0.1:${port}/hook`, secret: "whsec_AAAA" } });
-      appendDead("default", { deadAt: "x", seq: 1, id: "evt_1", type: "message.received", attempts: 5, error: "e", targets: ["exec"], payload: makeEvent(1) });
-      expect(await replayDead({})).toBe(0);
-      expect(readFileSync(marker, "utf8")).toBe("x\n");
-      expect(rx).toHaveLength(0); // the forward had succeeded: not POSTed again
-    } finally {
-      server.close();
-    }
-  });
-});
-
 describe("misc hardening", () => {
   it("*.localhost must resolve to loopback", async () => {
     expect((await checkTransport("http://app.localhost:8425", { resolve: async () => ["127.0.0.1"] })).kind).toBe("loopback");
     await expect(checkTransport("http://app.localhost:8425", { resolve: async () => ["203.0.113.9"] })).rejects.toThrow(/Refusing/);
     await expect(checkTransport("http://app.localhost:8425", { resolve: async () => [] })).rejects.toThrow(/Refusing/);
+  });
+
+  it("never overwrites a file of the same name it didn't write (header helper)", () => {
+    mkdirSync(join(env.root, "config", "xaq", "bin"), { recursive: true });
+    writeFileSync(join(env.root, "config", "xaq", "bin", "mcp-header.mjs"), "// someone else's script\n");
+    expect(() => writeClaudeMcpConfig("https://mail.example.com/mcp")).toThrow(/mcp-header\.mjs already exists and isn't xaq's MCP header helper/);
+    expect(readFileSync(join(env.root, "config", "xaq", "bin", "mcp-header.mjs"), "utf8")).toBe("// someone else's script\n");
   });
 
   it("writes through a symlinked config instead of replacing the link", () => {
@@ -323,29 +275,8 @@ describe("misc hardening", () => {
     expect(readFileSync(real, "utf8")).toBe("b = 2\n");
   });
 
-  it("Codex setup is idempotent", () => {
-    const home = join(env.root, "home");
-    mkdirSync(join(home, ".codex"), { recursive: true });
-    const saved = process.env.CODEX_HOME;
-    process.env.CODEX_HOME = join(home, ".codex");
-    try {
-      const file = join(home, ".codex", "config.toml");
-      writeFileSync(file, 'model = "o5"\n');
-      const t = { name: "xaq", url: "https://m/mcp", key: FAKE_KEY };
-      setupMcp("codex", t, "/p");
-      const once = readFileSync(file, "utf8");
-      setupMcp("codex", t, "/p");
-      setupMcp("codex", t, "/p");
-      expect(readFileSync(file, "utf8")).toBe(once);
-      expect(once.match(/# Added by/g)).toHaveLength(1);
-    } finally {
-      if (saved === undefined) delete process.env.CODEX_HOME;
-      else process.env.CODEX_HOME = saved;
-    }
-  });
-
-  it("forward marks payloads untrusted; requests honor the server contract", async () => {
-    saveProfile("default", baseProfile());
+  it("requests honor the server contract", async () => {
+    saveProfile(baseProfile());
     const l = start();
     await waitFor(() => api.live.size === 1, 5000, "stream");
     api.publish(makeEvent(1));
@@ -357,17 +288,5 @@ describe("misc hardening", () => {
       if (r.method === "POST") expect(r.contentType).toBe("application/json");
     }
     expect(api.streamRequests.every((r) => r.secFetchSite === null)).toBe(true);
-
-    const { createServer } = await import("node:http");
-    let untrusted: string | undefined;
-    const server = createServer((req, res) => {
-      untrusted = req.headers["x-agentinbox-untrusted"] as string | undefined;
-      res.end();
-    });
-    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-    const port = (server.address() as { port: number }).port;
-    await forwardEvent(`http://127.0.0.1:${port}/`, "whsec_AAAA", makeEvent(1), { timeoutMs: 2000 });
-    server.close();
-    expect(untrusted).toBe("1");
   });
 });

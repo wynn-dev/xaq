@@ -1,9 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertOurs, writePrivateFile } from "./fsutil.ts";
-import { profileBrand } from "./names.ts";
-import { configDir, profilePath, validProfileName } from "./paths.ts";
-import { loadProfile } from "./profile.ts";
+import { PRODUCT } from "../brand.ts";
+import { configDir, profilePath } from "./paths.ts";
 
 /**
  * Keeps the API key out of argv and out of agent config files: Claude Code's `headersHelper` runs a
@@ -14,21 +13,18 @@ import { loadProfile } from "./profile.ts";
 
 export const helperScriptPath = () => join(configDir(), "bin", "mcp-header.mjs");
 /** The MCP config the Claude Code recipe loads with --strict-mcp-config (no key inside). */
-export const claudeMcpConfigPath = (profile: string) => join(configDir(), "mcp", `${validProfileName(profile)}.claude.json`);
+export const claudeMcpConfigPath = () => join(configDir(), "mcp", "default.claude.json");
 
 /** POSIX single-quoting for the shell Claude Code runs the helper in. */
 const sq = (s: string) => `'${s.replace(/'/g, `'"'"'`)}'`;
 
-export function helperScript(profilesDir: string): string {
+export function helperScript(profileFile: string): string {
   return `#!/usr/bin/env node
 // xaq MCP header helper (written by \`xaq connect\` / \`setup-mcp\`). Prints the
-// Authorization header for one xaq profile as JSON for Claude Code's headersHelper.
+// Authorization header of this machine's xaq pairing as JSON for Claude Code's headersHelper.
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
-const name = process.argv[2] || "default";
-if (!/^[a-z0-9][a-z0-9_-]{0,39}$/.test(name)) { console.error("invalid profile name"); process.exit(2); }
 if (process.stdout.isTTY) { console.error("This prints a secret header; it is meant to be piped to an MCP client."); process.exit(2); }
-const profile = JSON.parse(readFileSync(join(${JSON.stringify(profilesDir)}, name + ".json"), "utf8"));
+const profile = JSON.parse(readFileSync(${JSON.stringify(profileFile)}, "utf8"));
 process.stdout.write(JSON.stringify({ Authorization: "Bearer " + profile.apiKey }));
 `;
 }
@@ -72,10 +68,10 @@ let chosenNode: NodeChoice | undefined;
 export const helperNodeChoice = (): NodeChoice => (chosenNode ??= helperNode());
 
 /** The shell command Claude Code runs as headersHelper (nothing is written). */
-export const headerHelperCommand = (profile: string) => `${sq(helperNodeChoice().path)} ${sq(helperScriptPath())} ${validProfileName(profile)}`;
+export const headerHelperCommand = () => `${sq(helperNodeChoice().path)} ${sq(helperScriptPath())}`;
 
 /** The note setup-mcp prints about the recorded node (like `listen service install`'s Node.js line). */
-export function helperNodeNote(profile: string, rerun: string): string {
+export function helperNodeNote(rerun: string): string {
   const { path, versioned } = helperNodeChoice();
   const v = path === process.execPath ? ` (v${process.versions.node})` : "";
   return versioned
@@ -84,19 +80,19 @@ export function helperNodeNote(profile: string, rerun: string): string {
 }
 
 /** Writes (or refreshes) the helper script, 0700. Returns the shell command for headersHelper. */
-export function installHeaderHelper(profile: string): string {
-  const command = headerHelperCommand(profile);
-  // Ours: written by connect / setup-mcp (named agentinbox in helpers from before the rename). bin/ may sit in a
-  // directory another program called xaq owns, so an existing bin/ keeps its mode.
-  assertOurs(helperScriptPath(), (p) => /^#!\/usr\/bin\/env node\n\/\/ (?:xaq|agentinbox) MCP header helper/.test(readFileSync(p, "utf8")), "MCP header helper");
-  writePrivateFile(helperScriptPath(), helperScript(join(configDir(), "profiles")), { privateDir: "new" });
+export function installHeaderHelper(): string {
+  const command = headerHelperCommand();
+  // Ours: written by connect / setup-mcp. bin/ may sit in a directory another program called xaq owns, so an
+  // existing bin/ keeps its mode.
+  assertOurs(helperScriptPath(), (p) => /^#!\/usr\/bin\/env node\n\/\/ xaq MCP header helper/.test(readFileSync(p, "utf8")), "MCP header helper");
+  writePrivateFile(helperScriptPath(), helperScript(profilePath()), { privateDir: "new" });
   // writePrivateFile leaves 0600; the script itself is run through node, so it needn't be executable.
   return command;
 }
 
 /** Claude Code MCP server entry: URL plus the helper, no secret. `install: false` (dry runs) doesn't write the helper. */
-export function claudeServerEntry(url: string, profile: string, opts: { install?: boolean } = {}): { type: "http"; url: string; headersHelper: string } {
-  return { type: "http", url, headersHelper: opts.install === false ? headerHelperCommand(profile) : installHeaderHelper(profile) };
+export function claudeServerEntry(url: string, opts: { install?: boolean } = {}): { type: "http"; url: string; headersHelper: string } {
+  return { type: "http", url, headersHelper: opts.install === false ? headerHelperCommand() : installHeaderHelper() };
 }
 
 /** One of our keyless MCP configs: a single server whose headers come from our header helper. */
@@ -106,24 +102,11 @@ function isOurClaudeMcpConfig(path: string): boolean {
   return entries.length === 1 && typeof entries[0]?.headersHelper === "string" && entries[0].headersHelper.includes("mcp-header.mjs");
 }
 
-/** Writes the per-profile MCP config the Claude Code listener recipe uses. Returns its path. */
-export function writeClaudeMcpConfig(profile: string, url: string): string {
-  const path = claudeMcpConfigPath(profile);
-  // The recipe allows exactly `mcp__<brand>`, so the server is always named that in this file: xaq, or
-  // agentinbox for a profile from before the rename, whose saved recipe allows `mcp__agentinbox`.
+/** Writes the MCP config the Claude Code listener recipe uses. Returns its path. */
+export function writeClaudeMcpConfig(url: string): string {
+  const path = claudeMcpConfigPath();
+  // The recipe allows exactly `mcp__xaq`, so the server is always named that in this file.
   assertOurs(path, isOurClaudeMcpConfig, "Claude Code MCP config");
-  writePrivateFile(path, JSON.stringify({ mcpServers: { [profileBrand(profile)]: claudeServerEntry(url, profile) } }, null, 2) + "\n", { privateDir: "new" });
+  writePrivateFile(path, JSON.stringify({ mcpServers: { [PRODUCT]: claudeServerEntry(url) } }, null, 2) + "\n", { privateDir: "new" });
   return path;
-}
-
-/** `xaq mcp-header`: the header JSON for MCP clients that run a helper. Refuses to print to a terminal. */
-export function printMcpHeader(profile: string): number {
-  const name = validProfileName(profile);
-  if (process.stdout.isTTY) {
-    process.stderr.write(`This prints the agent's secret Authorization header; pipe it into the tool that needs it (profile file: ${profilePath(name)}).\n`);
-    return 2;
-  }
-  const p = loadProfile(name);
-  process.stdout.write(JSON.stringify({ Authorization: `Bearer ${p.apiKey}` }));
-  return 0;
 }

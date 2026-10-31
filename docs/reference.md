@@ -265,10 +265,8 @@ the cleaned text in `content` (not on cancellations).
 - **Agents without an HTTP endpoint** use the MCP tools `wait_for_events` (long poll), `list_events` and `ack_events`
   while a session runs; the server keeps each agent's position. To start an agent when mail arrives, use
   [`xaq listen`](listen.md), e.g. `npx xaq-cli listen --recipe claude-code` (new mail only by default;
-  `--types` adds the others). The listener skips Gmail's Promotions, Social and Forums tabs by default
-  (`--all-categories`), takes `--not-from` / `--not-label` exclusions, and `--batch 60s` runs a burst as one command.
-  With Hermes, `--recipe hermes` forwards each event to the Hermes gateway (`listen hermes --deliver <platform> --run`
-  creates the route), which triages it and messages you; `--recipe hermes-oneshot` runs Hermes once per email.
+  `--types` adds the others; any other agent runs through `--exec`). The listener skips Gmail's Promotions, Social and
+  Forums tabs by default (`--all-categories`) and takes `--not-from` exclusions.
 - **Agents with an endpoint** get webhooks (**Webhooks** in the console), optionally with the cleaned message body.
   Webhooks list their event types, so existing ones never start receiving calendar events. For calendar events the
   filter's `calendarIds` keeps only those calendars (the primary calendar's id is the account's email address; mail

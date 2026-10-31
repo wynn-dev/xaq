@@ -80,37 +80,5 @@ export function tighten(path: string): void {
   if (process.platform !== "win32" && existsSync(path) && (statSync(path).mode & 0o077) !== 0) chmodSync(path, 0o600);
 }
 
-/**
- * A directory commands may run in: must exist, be owned by this user and not be writable by group or
- * others (otherwise someone else could plant agent instructions, MCP configs or hooks there).
- */
-export function assertTrustedDir(dir: string): string {
-  let st;
-  try {
-    st = statSync(dir);
-  } catch {
-    throw new Error(`--cwd ${dir} does not exist.`);
-  }
-  if (!st.isDirectory()) throw new Error(`--cwd ${dir} is not a directory.`);
-  const uid = process.getuid?.();
-  if (uid !== undefined && st.uid !== uid) throw new Error(`Refusing --cwd ${dir}: it belongs to another user, who could plant instructions or hooks for the agent there.`);
-  if (process.platform !== "win32" && (st.mode & 0o022) !== 0) {
-    throw new Error(`Refusing --cwd ${dir}: it is writable by group or others (mode ${(st.mode & 0o777).toString(8)}). Use a directory only you can write to.`);
-  }
-  // A parent others can write to (without the sticky bit) lets them swap this directory out.
-  for (let p = dirname(dir); p !== dirname(p); p = dirname(p)) {
-    try {
-      const ps = statSync(p);
-      if (process.platform !== "win32" && (ps.mode & 0o022) !== 0 && (ps.mode & 0o1000) === 0) {
-        process.stderr.write(`warning: --cwd ${dir}: its parent ${p} is writable by group or others, so they could replace it.\n`);
-        break;
-      }
-    } catch {
-      break;
-    }
-  }
-  return dir;
-}
-
 /** True when group or others can read/write the file. */
 export const isTooOpen = (path: string) => process.platform !== "win32" && (statSync(path).mode & 0o077) !== 0;
