@@ -4,7 +4,7 @@ import { BotIcon, ChevronRightIcon, KeyRoundIcon, MailIcon } from "lucide-react"
 import { StatusDot, TimeAgo, ToneBadge } from "@/components/common";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { grantInWords } from "./grant-words";
+import { grantInWords } from "@/lib/grants";
 
 export function AgentCard({ agent: a, accounts }: { agent: Agent; accounts: Account[] }) {
   const emailOf = (id: string) => accounts.find((x) => x.id === id)?.email ?? "Removed account";
@@ -45,7 +45,6 @@ export function AgentCard({ agent: a, accounts }: { agent: Agent; accounts: Acco
                   {/* The grant summary wraps: it's what the card is for. */}
                   <span className="block break-words">
                     {grantInWords(g)}
-                    {g.labelScope && ` · ${g.labelScope.length} label${g.labelScope.length === 1 ? "" : "s"}`}
                   </span>
                 </span>
               </div>

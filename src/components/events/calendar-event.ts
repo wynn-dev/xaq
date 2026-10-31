@@ -1,31 +1,9 @@
-// Pure (relative imports only, no React): event visibility and the words of a calendar event row. Unit
+// Pure (relative imports only, no React): the words of a calendar event row. Unit
 // tests load it.
 
-import { type CalendarEventChange, type CalendarEventSummary, type EventType, type Grant, isCalendarEventType, type MailEvent } from "../../../shared/types.ts";
+import { type CalendarEventChange, type CalendarEventSummary, isCalendarEventType, type MailEvent } from "../../../shared/types.ts";
 import { fmtAddressShort, fmtEventWhen } from "../../lib/format.ts";
 import { CALENDAR_CHANGE_LABEL, CALENDAR_RESPONSE_LABEL } from "../../lib/labels.ts";
-
-/** Account-level events: any agent that can read the account's mail or calendar gets them, whatever its scopes. */
-const ACCOUNT_EVENTS: EventType[] = ["account.auth_failed", "sync.gap"];
-
-/**
- * Whether this grant lets its agent see the event; mirrors policy.canSeeEvent. Calendar events need
- * calendar.read and the event's calendar in the calendar scope; mail events need read (and the label scope);
- * account events need read or calendar.read.
- */
-export function grantSees(g: Grant, e: MailEvent): boolean {
-  if (g.accountId !== e.accountId) return false;
-  if (ACCOUNT_EVENTS.includes(e.type)) return g.capabilities.includes("read") || g.capabilities.includes("calendar.read");
-  if (isCalendarEventType(e.type)) {
-    const calendarId = e.calendarEvent?.calendarId;
-    return g.capabilities.includes("calendar.read") && !!calendarId && (g.calendarScope === null || g.calendarScope.includes(calendarId));
-  }
-  if (!g.capabilities.includes("read")) return false;
-  if (g.labelScope === null) return true;
-  // threadLabelIds comes with console events; the message's own labels are a (narrower) stand-in.
-  const labels = e.threadLabelIds ?? e.message?.labelIds ?? [];
-  return labels.some((id) => g.labelScope!.includes(id));
-}
 
 /** The URL when it is https, else null: links from events (organizer-supplied) are only ever clickable over https. */
 export function httpsUrl(url: string | null | undefined): string | null {

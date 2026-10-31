@@ -1,8 +1,7 @@
 // A changed upstream tool just keeps working (the owner removed the tool-change hold on 2026-10-16), through the
 // real broker wiring and a fake upstream: a description or schema change is used at once under the same name;
 // nothing goes on hold, no event, webhook or listener ping is sent, and the only trace is one
-// audit entry with the old and new definition hash. Access levels, approvals for risky tools and "always allow" rules
-// apply to the changed tool as before. A tool an older version left on hold is usable after the upgrade.
+// audit entry with the old and new definition hash. Access levels apply to the changed tool as before.
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -33,7 +32,7 @@ interface Setup {
   api: (path: string, init?: RequestInit & { json?: unknown }) => Promise<Response>;
   conId: string;
   deleted: string[];
-  agent(name: string, level: "full" | "ask" | "read"): Promise<{ id: string; apiKey: string }>;
+  agent(name: string, level: "full" | "read"): Promise<{ id: string; apiKey: string }>;
   mcp(apiKey: string): Promise<Client>;
   storedHash(name: string): string;
   toolAudits(): { action: string; target: string | null; actor_type: string; detail: Record<string, unknown> }[];
@@ -64,7 +63,7 @@ async function setup(): Promise<Setup> {
   const cookie = await h.claim();
   const api = (path: string, init: RequestInit & { json?: unknown } = {}) => h.request(`/api${path}`, { cookie, ...init, headers: { ...CSRF, ...(init.headers as object) } });
 
-  const con = await json(await api("/connections", { method: "POST", json: { url: up.url, slug: "fake", name: "Fake", agentIds: [], levelDefault: "ask" } }));
+  const con = await json(await api("/connections", { method: "POST", json: { url: up.url, slug: "fake", name: "Fake", agentIds: [], levelDefault: "full" } }));
   await json(await api(`/connections/${con.id}/private-target`, { method: "PUT", json: { allow: true } }));
   expect(await json(await api(`/connections/${con.id}/connect`, { method: "POST", json: {} }))).toMatchObject({ status: "connected" });
   expect(await ctx.broker.catalog.refresh(con.id)).toMatchObject({ ok: true });
@@ -171,21 +170,14 @@ describe("a changed upstream tool keeps working", () => {
     ]);
   }, 20_000);
 
-  it("access levels, approvals for risky tools and always-allow rules apply to the changed tool as before", async () => {
+  it("access levels apply to the changed tool as before", async () => {
     const s = await setup();
-    const asker = await s.agent("Asker", "ask");
-    const other = await s.agent("Other", "ask");
+    const writer = await s.agent("Writer", "full");
     const reader = await s.agent("Reader", "read");
-    const askMcp = await s.mcp(asker.apiKey);
-    const otherMcp = await s.mcp(other.apiKey);
+    const writeMcp = await s.mcp(writer.apiKey);
     const readMcp = await s.mcp(reader.apiKey);
 
-    // Before the change: the risky tool asks; the owner approves with "always allow".
-    const pending = await askMcp.callTool({ name: "fake__delete_page", arguments: { id: "p1" } });
-    expect(text(pending)).toContain("pending_approval");
-    const approvalId = /apr_[a-z0-9]+/.exec(text(pending))![0];
-    expect(await json(await s.api(`/approvals/${approvalId}/approve`, { method: "POST", json: { alwaysAllow: {} } }))).toMatchObject({ status: "sent" });
-    expect(s.deleted).toEqual(["p1"]);
+    expect(text(await writeMcp.callTool({ name: "fake__delete_page", arguments: { id: "p1" } }))).toContain("Deleted p1");
 
     await change(s, {
       name: "delete_page",
@@ -196,25 +188,19 @@ describe("a changed upstream tool keeps working", () => {
         return { content: [{ type: "text", text: `Deleted ${(args as { id: string }).id}` }] };
       },
     });
-    // The rule still applies: runs at once.
-    const ruled = await askMcp.callTool({ name: "fake__delete_page", arguments: { id: "p2" } });
-    expect(text(ruled)).toContain("Deleted p2");
-    expect(s.deleted).toEqual(["p1", "p2"]);
-    // Another agent at "ask" without a rule still waits for approval.
-    expect(text(await otherMcp.callTool({ name: "fake__delete_page", arguments: { id: "p3" } }))).toContain("pending_approval");
+    // Full access still runs it at once.
+    expect(text(await writeMcp.callTool({ name: "fake__delete_page", arguments: { id: "p2" } }))).toContain("Deleted p2");
     expect(s.deleted).toEqual(["p1", "p2"]);
     // The read level still lists read tools only.
     expect((await readMcp.listTools()).tools.map((t) => t.name).filter((n) => n.startsWith("fake__"))).toEqual(["fake__get_page"]);
 
-    // A schema change that classifies the read tool as risky: the normal risky rules apply (not a hold).
+    // A schema change that classifies the read tool as risky: it leaves the read level (not a hold).
     await change(s, getPage({ description: "Read a page; can also purge it.", annotations: { destructiveHint: true } }));
-    const askRead = await askMcp.callTool({ name: "fake__get_page", arguments: { id: "p4" } });
-    expect(text(askRead)).toContain("pending_approval");
     s.h.ctx.broker.invalidate("all");
     expect((await (await s.mcp(reader.apiKey)).listTools()).tools.map((t) => t.name).filter((n) => n.startsWith("fake__"))).toEqual([]);
 
-    // No tool-change event at any point; only the approval events of the risky calls.
-    expect(s.connectionEvents().filter((t) => t !== "approval.requested")).toEqual([]);
+    // No tool-change event at any point.
+    expect(s.connectionEvents()).toEqual([]);
     expect(s.toolAudits().map((e) => [e.action, e.target])).toEqual([
       ["connection.tool_changed", "fake__delete_page"],
       ["connection.tool_changed", "fake__get_page"],

@@ -48,17 +48,11 @@ describe("overview", () => {
     db.run("INSERT INTO audit_log (ts, actor_type, action, outcome) VALUES (?, 'agent', 'pairing.key_delivered', 'ok')", ago(3 * HOUR));
     db.run("INSERT INTO audit_log (ts, actor_type, action, outcome) VALUES (?, 'admin', 'agent.create', 'ok')", ago(60_000));
 
-    const approval = (id: string, status: string, expiresAt: string) =>
-      db.run("INSERT INTO approvals (id, agent_id, account_id, kind, status, draft_id, payload, created_at, expires_at) VALUES (?, 'g1', 'a1', 'send', ?, 'd', '{}', ?, ?)", id, status, ago(0), expiresAt);
-    approval("p1", "pending", ago(-HOUR));
-    approval("p2", "pending", ago(HOUR)); // overdue, about to expire
-    approval("p3", "sent", ago(-HOUR));
 
     const s = overviewStats(t.ctx, at);
     expect(s.accounts).toEqual({ total: 3, active: 1, needsAttention: 1 });
     expect(s.agents).toEqual({ total: 2, activeLast24h: 1 });
     expect(s.events24h).toBe(4);
-    expect(s.pendingApprovals).toBe(1);
     expect(s.toolCalls24h).toBe(3);
     expect(s.denied24h).toBe(1);
 

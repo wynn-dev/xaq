@@ -1,4 +1,4 @@
-import type { AgentWithKey, CreateAgentInput } from "@shared/types";
+import type { AccessLevel, AgentWithKey, CreateAgentInput } from "@shared/types";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { ChoiceCards } from "@/components/choice-cards";
@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import { GRANT_PRESETS, grantInput, presetGrant } from "@/lib/grants";
+import { grantInput } from "@/lib/grants";
 import { useApiMutation } from "@/lib/mutations";
 import { keys, queries } from "@/lib/queries";
 import { rememberKey } from "@/lib/revealed-keys";
@@ -34,7 +34,7 @@ export function AgentCreateForm({
   const [name, setName] = useState(defaultName);
   const [description, setDescription] = useState("");
   const [picked, setPicked] = useState<string[] | null>(null);
-  const [preset, setPreset] = useState(GRANT_PRESETS[0]!.id);
+  const [level, setLevel] = useState<AccessLevel>("read");
   const [touched, setTouched] = useState(false);
   // Default to every connected account until the user changes the selection.
   const selected = picked ?? (accounts.data ?? []).map((a) => a.id);
@@ -56,11 +56,10 @@ export function AgentCreateForm({
     e.preventDefault();
     setTouched(true);
     if (nameError) return;
-    const p = GRANT_PRESETS.find((x) => x.id === preset)!;
     create.mutate({
       name: name.trim(),
       description: description.trim() || null,
-      grants: selected.map((accountId) => grantInput(accountId, presetGrant(p))),
+      grants: selected.map((accountId) => grantInput(accountId, { level, allowTo: [] })),
     });
   };
 
@@ -79,7 +78,7 @@ export function AgentCreateForm({
             onChange={(e) => setName(e.target.value)}
             aria-invalid={touched && !!nameError}
           />
-          {touched && nameError ? <FieldError>{nameError}</FieldError> : <FieldDescription>Shown in audit logs and approval requests.</FieldDescription>}
+          {touched && nameError ? <FieldError>{nameError}</FieldError> : <FieldDescription>Shown in the audit log.</FieldDescription>}
         </Field>
         <Field>
           <FieldLabel htmlFor="agent-desc">
@@ -104,14 +103,17 @@ export function AgentCreateForm({
         </FieldSet>
         {selected.length > 0 && (
           <FieldSet>
-            <FieldLegend variant="label">Starting permissions</FieldLegend>
-            <FieldDescription>Fine-tune capabilities, labels, recipients and limits per mailbox afterwards.</FieldDescription>
+            <FieldLegend variant="label">Access</FieldLegend>
+            <FieldDescription>Change it, or limit who it can send to, per mailbox afterwards.</FieldDescription>
             <ChoiceCards
-              aria-label="Starting permissions"
-              value={preset}
-              onChange={setPreset}
+              aria-label="Access"
+              value={level}
+              onChange={setLevel}
               columns={2}
-              choices={GRANT_PRESETS.map((p) => ({ value: p.id, title: p.label, description: p.description }))}
+              choices={[
+                { value: "read", title: "Read only", description: "Search and read mail and calendars, and receive events. Can't change or send anything." },
+                { value: "full", title: "Full access", description: "Also organizes, drafts and sends mail and changes calendars, at once. Only for agents you trust." },
+              ]}
             />
           </FieldSet>
         )}

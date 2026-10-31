@@ -3,18 +3,14 @@ import { bool, type Db, json } from "../db/index.ts";
 import { mcpToolCallSql } from "../audit.ts";
 import { visibleConnectionIds } from "../broker/access.ts";
 import type { AppContext } from "../context.ts";
-import { EVENT_SELECT, type EventRow, toStoredEvent } from "../events/repo.ts";
 import { badRequest, HttpError } from "../util/errors.ts";
 
 const CONSUMER_RE = /^[A-Za-z0-9._-]{1,100}$/;
 
-/** Capabilities that put events in an agent's feed: mail `read` for mail events, `calendar.read` for calendar ones. */
-export const readsEvents = (capabilities: readonly string[]): boolean => capabilities.includes("read") || capabilities.includes("calendar.read");
-
 export type RevokeReason = "agent_deleted" | "agent_disabled" | "key_rotated" | "no_read_grant";
 
 /**
- * Why a live stream must end, or null while the key, agent and a read grant (mail or calendar) are all still valid.
+ * Why a live stream must end, or null while the key, agent and a grant on an account are all still valid.
  * Any connection grant counts as a read grant too: an agent with connections and no Gmail can listen for its connection events.
  */
 export function accessProblem(db: Db, agentId: string, keyHash: string): RevokeReason | null {
@@ -22,8 +18,7 @@ export function accessProblem(db: Db, agentId: string, keyHash: string): RevokeR
   if (!a) return "agent_deleted";
   if (a.key_hash !== keyHash) return "key_rotated";
   if (bool(a.disabled)) return "agent_disabled";
-  const grants = db.all<{ capabilities: string }>("SELECT capabilities FROM grants WHERE agent_id = ?", agentId);
-  if (grants.some((g) => readsEvents(json.parse<string[]>(g.capabilities, [])))) return null;
+  if (db.get("SELECT 1 AS x FROM grants WHERE agent_id = ?", agentId)) return null;
   if (visibleConnectionIds(db, agentId).length) return null;
   return "no_read_grant";
 }
@@ -84,19 +79,14 @@ export function parseConsumer(raw: unknown, opts: { throwaway?: boolean } = {}):
 export const ackedSeq = (db: Db, agentId: string, consumer: string): number =>
   db.get<{ acked_seq: number }>("SELECT acked_seq FROM listener_cursors WHERE agent_id = ? AND consumer = ?", agentId, consumer)?.acked_seq ?? 0;
 
-/** Rows examined when looking for the newest event an agent can see. */
-const VISIBLE_SCAN_MAX = 2000;
-
 /**
- * Cursor cap: the newest event seq in the accounts this agent can read mail or calendars of (one indexed lookup per
- * account, no label check). Capping acks, `after` and Last-Event-ID there means a client can't skip
- * future events by acking ahead, and only learns seqs of accounts it already reads. Anything between
- * the newest visible event and this cap is invisible to the agent, so a new consumer starts here too.
+ * Cursor cap, and /me `headSeq`: the newest event seq in the accounts and connections this agent can see (one
+ * indexed lookup each). Capping acks, `after` and Last-Event-ID there means a client can't skip
+ * future events by acking ahead, and only learns seqs of accounts it already reads. A new consumer starts here.
  */
 export function newestGrantedSeq(ctx: AppContext, agentId: string): number {
   let max = 0;
   for (const g of ctx.policy.grants(agentId)) {
-    if (!readsEvents(g.capabilities)) continue;
     const r = ctx.db.get<{ m: number | null }>("SELECT MAX(seq) AS m FROM events WHERE account_id = ?", g.accountId);
     max = Math.max(max, r?.m ?? 0);
   }
@@ -106,35 +96,6 @@ export function newestGrantedSeq(ctx: AppContext, agentId: string): number {
     max = Math.max(max, r?.m ?? 0);
   }
   return max;
-}
-
-/**
- * The newest event seq this agent may actually see (label scope included), or 0 if none: reported
- * as /me `headSeq`. When the scan budget runs out (narrow scope on a busy mailbox), the newest
- * granted seq stands in: everything scanned was invisible, so nothing visible lies above it.
- */
-export function newestVisibleSeq(ctx: AppContext, agentId: string): number {
-  const accounts = ctx.policy
-    .grants(agentId)
-    .filter((g) => readsEvents(g.capabilities))
-    .map((g) => g.accountId);
-  const connections = visibleConnectionIds(ctx.db, agentId);
-  if (!accounts.length && !connections.length) return 0;
-  const inList = (ids: string[]) => (ids.length ? ids.map(() => "?").join(", ") : "NULL");
-  const sql = `${EVENT_SELECT} WHERE e.seq < ? AND (e.account_id IN (${inList(accounts)}) OR e.connection_id IN (${inList(connections)})) ORDER BY e.seq DESC LIMIT 200`;
-  let before = Number.MAX_SAFE_INTEGER;
-  for (let scanned = 0; ; ) {
-    if (scanned >= VISIBLE_SCAN_MAX) return newestGrantedSeq(ctx, agentId);
-    const rows = ctx.db.all<EventRow>(sql, before, ...accounts, ...connections);
-    for (const r of rows) {
-      const ev = toStoredEvent(r);
-      if (ctx.policy.canSeeEvent(agentId, ev)) return ev.seq;
-      before = r.seq;
-    }
-    scanned += rows.length;
-    if (rows.length < 200) break;
-  }
-  return 0;
 }
 
 /**

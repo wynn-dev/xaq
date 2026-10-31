@@ -11,7 +11,7 @@ export interface SearchableTool {
   inputSchema: Record<string, unknown>;
   /** Run through call_read_tool (true) or call_write_tool (false). */
   read: boolean;
-  /** Irreversible (send, delete, …): may ask for approval. */
+  /** Irreversible (send, delete, …). */
   risky: boolean;
 }
 

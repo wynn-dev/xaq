@@ -35,7 +35,7 @@ function registered(n: number): RegisteredTool[] {
       slug,
       def: { name, description: t.description, inputSchema: t.inputSchema },
       cls: { risky: t.risky, read: t.read, source: "heuristic" },
-      level: "ask",
+      level: "full",
       pinHash: "h",
     };
   });
@@ -43,21 +43,16 @@ function registered(n: number): RegisteredTool[] {
 
 /**
  * Stubs the broker's view and calls on ctx.broker (the real /mcp seam, registerBrokerTools, stays). Like the real
- * calls, `call` audits under the real name; risky tools come back pending_approval at once. The real wiring is
+ * calls, `call` audits under the real name. The real wiring is
  * exercised end to end in the last test.
  */
 function fakeBroker(ctx: AppContext, tools: RegisteredTool[]) {
   const calls: { agentId: string; name: string; args: Record<string, unknown>; signal: AbortSignal }[] = [];
   const slugs = [...new Set(tools.map((t) => t.slug))];
-  ctx.broker.view = () => ({ connections: slugs.map((slug) => ({ connectionId: `con_${slug}`, slug, name: slug, level: "ask" as const })), tools });
+  ctx.broker.view = () => ({ connections: slugs.map((slug) => ({ connectionId: `con_${slug}`, slug, name: slug, level: "full" as const })), tools });
   const brokerCalls: BrokerService["calls"] = {
     async call(agentId, name, args, signal): Promise<ToolResult> {
       calls.push({ agentId, name, args, signal });
-      const tool = tools.find((t) => t.exposedName === name)!;
-      if (tool.cls.risky) {
-        ctx.audit.record({ actorType: "agent", actorId: agentId, action: name, outcome: "ok", reason: "pending_approval" });
-        return { content: [{ type: "text", text: JSON.stringify({ status: "pending_approval", approval_id: "apr_1" }) }] };
-      }
       ctx.audit.record({ actorType: "agent", actorId: agentId, action: name, outcome: "ok" });
       return { content: [{ type: "text", text: `ran ${name}` }] };
     },
@@ -79,7 +74,7 @@ function setup() {
     subject: "Hi",
     text: "Hello",
   });
-  const reader = t.addAgent("reader", [grantInput("acc_a", { capabilities: ["read"] })]);
+  const reader = t.addAgent("reader", [grantInput("acc_a", { level: "read" })]);
   const connect = async (opts: BuildOptions = {}, agentId = reader.agent.id) => {
     const server = buildMcpServer(t.ctx, { agentId, name: "reader" }, opts);
     const client = new Client({ name: "test", version: "1" });
@@ -104,16 +99,16 @@ describe("search mode: when it applies", () => {
     expect(chooseMode(9, SEARCH_MODE_THRESHOLD - 8)).toBe("search");
   });
 
-  it("turns on above SEARCH_MODE_THRESHOLD visible tools (native + broker), with get_call_status exposed and the flow in the instructions", async () => {
+  it("turns on above SEARCH_MODE_THRESHOLD visible tools (native + broker), with the flow in the instructions", async () => {
     const { ctx, connect, reader } = setup();
     fakeBroker(ctx, registered(SEARCH_MODE_THRESHOLD - READER_TOOLS.length));
     const direct = await connect();
-    expect(await direct.names()).toHaveLength(SEARCH_MODE_THRESHOLD + 1); // + get_call_status
+    expect(await direct.names()).toHaveLength(SEARCH_MODE_THRESHOLD);
     expect(direct.client.getInstructions()).not.toContain(SEARCH_INSTRUCTIONS);
 
     fakeBroker(ctx, registered(SEARCH_MODE_THRESHOLD - READER_TOOLS.length + 1));
     const c = await connect();
-    expect(await c.names()).toEqual([...META, "get_call_status"].sort());
+    expect(await c.names()).toEqual([...META].sort());
     expect(c.client.getInstructions()!.endsWith(`\n\n${SEARCH_INSTRUCTIONS}`)).toBe(true);
     expect(SEARCH_INSTRUCTIONS.split("\n")).toHaveLength(3);
 
@@ -126,7 +121,7 @@ describe("search mode: when it applies", () => {
     const client = new Client({ name: "test", version: "1" });
     await client.connect(transport);
     cleanup.push(() => client.close());
-    expect((await client.listTools()).tools.map((x) => x.name).sort()).toEqual([...META, "get_call_status"].sort());
+    expect((await client.listTools()).tools.map((x) => x.name).sort()).toEqual([...META].sort());
   });
 });
 
@@ -174,7 +169,7 @@ describe("search mode: the meta-tools", () => {
     ]);
   });
 
-  it("runs broker tools through the broker's calls under the real name: a risky call still waits for approval", async () => {
+  it("runs broker tools through the broker's calls under the real name", async () => {
     const { ctx, connect, reader } = setup();
     const f = fakeBroker(ctx, registered(100));
     const c = await connect();
@@ -182,7 +177,7 @@ describe("search mode: the meta-tools", () => {
     const args = { channel_id: "C1", text: "Ship it" };
     const r = await c.call("call_write_tool", { name: "slack__post_message", arguments: args });
     expect(r.isError).toBe(false);
-    expect(JSON.parse(r.text)).toEqual({ status: "pending_approval", approval_id: "apr_1" });
+    expect(r.text).toBe("ran slack__post_message");
     expect(f.calls).toHaveLength(1);
     expect(f.calls[0]).toMatchObject({ agentId: reader.agent.id, name: "slack__post_message", args });
 
@@ -247,7 +242,7 @@ describe("search mode: calling a tool by name", () => {
 
     const f = fakeBroker(ctx, registered(100));
     const search = await connect();
-    expect(await search.names()).toEqual([...META, "get_call_status"].sort());
+    expect(await search.names()).toEqual([...META].sort());
     const s = [];
     for (const n of names) s.push(await outcome(search, n, args[n]));
 
@@ -260,14 +255,14 @@ describe("search mode: calling a tool by name", () => {
     expect(f.calls).toEqual([]);
   });
 
-  it("runs a broker tool called by name through the broker's calls: a risky one is still pending approval", async () => {
+  it("runs a broker tool called by name through the broker's calls", async () => {
     const { ctx, connect, reader } = setup();
     const f = fakeBroker(ctx, registered(100));
     const c = await connect();
     expect(await c.names()).not.toContain("slack__post_message");
 
     const r = await c.call("slack__post_message", { channel_id: "C1", text: "Ship it" });
-    expect(JSON.parse(r.text)).toEqual({ status: "pending_approval", approval_id: "apr_1" });
+    expect(r.text).toBe("ran slack__post_message");
     expect((await c.call("notion__search", { query: "roadmap" })).text).toBe("ran notion__search");
     expect(f.calls.map((x) => [x.agentId, x.name])).toEqual([
       [reader.agent.id, "slack__post_message"],

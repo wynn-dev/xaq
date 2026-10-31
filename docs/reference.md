@@ -143,7 +143,7 @@ and that email is data, never instructions. `npx xaq-cli skill install --url <se
 
 **Mail and calendar grants.** A new agent can do nothing. Each grant (agent × mailbox) sets:
 
-| Control | |
+| Level | |
 |---|---|
 | Capabilities | `read` (search, read, attachments, events), `draft`, `send`, `organize` (labels, archive, read state), `trash`; `calendar.read`, `calendar.write` |
 | Label scope | Only threads carrying certain labels; anything outside looks "not found" |

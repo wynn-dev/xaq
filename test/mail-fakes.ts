@@ -18,6 +18,8 @@ interface AccountRow {
   email: string;
   display_name: string | null;
   status: Account["status"];
+  /** "active" gives the account Google Calendar (Account.calendar); NULL = mail only. */
+  calendar_status: string | null;
   created_at: string;
 }
 
@@ -36,7 +38,7 @@ export function fakeAccounts(ctx: AppContext): AccountsService {
     refreshTokenExpiryKind: null,
     workspaceDomain: null,
     grantedScopes: null,
-    calendar: null,
+    calendar: r.calendar_status === "active" ? { status: "active", missingScopes: [], lastSyncAt: null, error: null } : null,
   });
   const get = (id: string) => {
     const r = ctx.db.get<AccountRow>("SELECT * FROM accounts WHERE id = ?", id);
@@ -75,9 +77,7 @@ export class FakeEvents {
         .filter((e) => e.seq > after)
         .filter((e) => !opts.types || opts.types.includes(e.type))
         .filter((e) => !opts.accountIds || opts.accountIds.includes(e.accountId))
-        .filter((e) =>
-          ctx.policy.canSeeEvent(agentId, { accountId: e.accountId, type: e.type, threadLabelIds: e.message?.labelIds ?? [], calendarEvent: e.calendarEvent ?? null }),
-        )
+        .filter((e) => ctx.policy.canSeeEvent(agentId, { accountId: e.accountId, type: e.type }))
         .slice(0, opts.limit ?? 50);
       // `hasMore` is additive in the events contract (feat/events-webhooks); harmless before it lands.
       const result: FeedResult & { hasMore: boolean } = { events, cursor: events.at(-1)?.seq ?? after, ackedSeq, hasMore: false };
@@ -95,19 +95,7 @@ export class FakeEvents {
   }
 }
 
-export const ALL_CAPS: GrantInput["capabilities"] = ["read", "draft", "send", "organize", "trash"];
-
-export const grantInput = (accountId: string, patch: Partial<GrantInput> = {}): GrantInput => ({
-  accountId,
-  capabilities: ["read"],
-  labelScope: null,
-  sendMode: "direct",
-  allowTo: [],
-  replyOnly: false,
-  maxSendsPerHour: null,
-  maxSendsPerDay: null,
-  ...patch,
-});
+export const grantInput = (accountId: string, patch: Partial<GrantInput> = {}): GrantInput => ({ accountId, level: "read", allowTo: [], ...patch });
 
 /** A context with fake Google, accounts, ingest and events, plus helpers. */
 export function mailTestContext() {

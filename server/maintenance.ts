@@ -32,11 +32,9 @@ export function runMaintenance(ctx: AppContext): MaintenanceResult {
     audit: step("audit log", () => ctx.audit.prune(before)),
     sessions: step("sessions", () => adminAuth(ctx).sessions.pruneExpired()),
   };
-  // Decided approvals keep full message bodies; they follow the same retention.
-  const approvals = step("approvals", () => ctx.mail.prune(before));
   // Calendar sync state is only needed until an event has been over for a day (not a retention setting).
   const calendarEvents = step("calendar sync state", () => pruneEventStates(ctx.db, new Date(Date.now() - KEEP_ENDED_MS).toISOString()));
-  if (approvals > 0 || calendarEvents > 0 || Object.values(result).some((n) => n > 0)) log.info("Pruned old data", { ...result, approvals, calendarEvents });
+  if (calendarEvents > 0 || Object.values(result).some((n) => n > 0)) log.info("Pruned old data", { ...result, calendarEvents });
   return result;
 }
 

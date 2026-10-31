@@ -116,21 +116,6 @@ describe("Notion extension", () => {
     expect(classifyNotionTool(tool(name))).toMatchObject({ risky: true, read: false, source: "preset" });
   });
 
-  it("takes the target from the tool's schema as a JSON Pointer", () => {
-    const target = (name: string, props: Record<string, unknown>) => classifyNotionTool(tool(name, props))?.targetPath;
-    expect(target("notion-delete-pages", { page_ids: {}, user_confirmed: {} })).toBe("/page_ids");
-    expect(target("notion-delete-databases", { database_ids: {} })).toBe("/database_ids");
-    expect(target("notion-delete-comment", { comment_id: {} })).toBe("/comment_id");
-    expect(target("notion-spawn-session", { agent_url: {}, message: {} })).toBe("/agent_url");
-    expect(target("notion-send-message-to-session", { session_url: {}, message: {} })).toBe("/session_url");
-    expect(target("notion-stop-session", { session_url: {} })).toBeUndefined();
-    // No known id argument: no target rather than a wrong one.
-    expect(classifyNotionTool(tool("notion-delete-pages", { user_confirmed: {} }))?.targetPath).toBeUndefined();
-    expect(classifyNotionTool({ name: "notion-delete-pages", description: "", inputSchema: {} })?.targetPath).toBeUndefined();
-    // Non-delete tools never carry a target.
-    expect(classifyNotionTool(tool("notion-update-page", { page_id: {} }))?.targetPath).toBeUndefined();
-  });
-
   it("maps the documented short aliases", () => {
     expect(classifyNotionTool(tool("fetch"))).toEqual({ risky: false, read: true, source: "preset" });
     expect(classifyNotionTool(tool("ai-search"))?.read).toBe(true);

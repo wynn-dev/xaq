@@ -86,7 +86,7 @@ export function createEventsService(ctx: AppContext): EventsService {
     }
     const limit = clamp(q.limit ?? 50, 1, 200);
     const rows = ctx.db.all<EventRow>(`${EVENT_SELECT} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY e.seq DESC LIMIT ?`, ...params, limit + 1);
-    // Console only: keeps threadLabelIds (label scopes match them) for the "Delivered to" line.
+    // Console only: keeps threadLabelIds.
     const items = rows.slice(0, limit).map((r) => toStoredEvent(r));
     return { items, nextCursor: rows.length > limit ? String(items.at(-1)!.seq) : null };
   }

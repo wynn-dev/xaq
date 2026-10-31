@@ -2,7 +2,7 @@
 // resyncs never duplicate events; agent keys, cursors and pending approvals survive a restart.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Account, Approval, MailEvent, SetupStatus } from "../shared/types.ts";
+import type { Account, MailEvent, SetupStatus } from "../shared/types.ts";
 import { HAS_AGENTS } from "./e2e/features.ts";
 import { feedLastSeq, MCP_TEXT } from "./e2e/mcp.ts";
 import { grant, mailbox, type Stack, startStack } from "./e2e/harness.ts";
@@ -18,7 +18,7 @@ beforeAll(async () => {
   email = mailbox("restart");
   [account] = (await s.bootstrap({ accounts: [email] })) as [Account];
   if (!HAS_AGENTS) return;
-  apiKey = (await s.createAgent("durable", [grant(account.id, { capabilities: ["read"] })])).apiKey;
+  apiKey = (await s.createAgent("durable", [grant(account.id, { level: "read" })])).apiKey;
 });
 afterAll(async () => {
   await s.close();
@@ -76,20 +76,5 @@ describe("restart durability", () => {
     const gaps = events.filter((e) => e.type === "sync.gap");
     expect(gaps.map((e) => e.detail?.reason).sort()).toEqual(["history_expired", "manual"]);
 
-  });
-
-  it.runIf(HAS_AGENTS)("keeps a pending approval across a restart and sends it when approved afterwards", async () => {
-    const sender = await s.createAgent("restart-sender", [grant(account.id, { capabilities: ["read", "send"], sendMode: "approval" })]);
-    const msg = s.fake.deliver(email, { from: "Alice <alice@client.test>", subject: "Pending over restart", text: "?" });
-    const mcp = await s.agent(sender.apiKey);
-    const r = await mcp.json<{ approvalId: string }>("reply", { message_id: msg.id, body: "Answer after restart" });
-    await mcp.close();
-
-    await s.restart();
-    const pending = await s.admin.get<Approval[]>("/api/approvals?status=pending");
-    expect(pending.map((a) => a.id)).toContain(r.approvalId);
-    const sent = await s.admin.post<Approval>(`/api/approvals/${r.approvalId}/approve`);
-    expect(sent.status).toBe("sent");
-    expect(s.fake.sent(email).some((m) => m.id === sent.sentMessageId && m.threadId === msg.threadId)).toBe(true);
   });
 });

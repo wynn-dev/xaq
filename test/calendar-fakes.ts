@@ -1,4 +1,4 @@
-// The calendar policy and approval test harness, on the in-process Calendar fake (test/fake-google.ts).
+// The calendar policy test harness, on the in-process Calendar fake (test/fake-google.ts).
 
 import { AgentCalendar } from "../server/calendar/agent.ts";
 import { createCalendarService } from "../server/calendar/index.ts";
@@ -84,20 +84,16 @@ export async function tool<T>(
     const reason = error instanceof PolicyDenied ? error.reason : error instanceof ToolError ? error.code : "internal";
     r = { error, outcome, reason, detail: trace.detail };
   }
-  try {
-    ctx.audit.record({
-      actorType: "agent",
-      actorId: agentId,
-      action,
-      accountId: trace.accountId ?? null,
-      target: trace.target ?? null,
-      outcome: r.outcome,
-      reason: r.reason,
-      detail: Object.keys(trace.detail).length ? trace.detail : null,
-    });
-  } finally {
-    trace.release?.();
-  }
+  ctx.audit.record({
+    actorType: "agent",
+    actorId: agentId,
+    action,
+    accountId: trace.accountId ?? null,
+    target: trace.target ?? null,
+    outcome: r.outcome,
+    reason: r.reason,
+    detail: Object.keys(trace.detail).length ? trace.detail : null,
+  });
   return r;
 }
 

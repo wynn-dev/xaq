@@ -1,7 +1,6 @@
-// Search mode through the real broker wiring (M3 done-when: approvals still hold through call_write_tool): a fake
+// Search mode through the real broker wiring (M3 done-when: access still holds through call_write_tool): a fake
 // upstream connection with enough tools that the agent goes over SEARCH_MODE_THRESHOLD, so /mcp switches to search
-// mode by itself; search_tools finds the upstream tool, call_write_tool on a risky one returns pending_approval, and
-// after the owner approves, get_call_status has the result.
+// mode by itself; search_tools finds the upstream tool and call_write_tool runs a risky one.
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -19,7 +18,7 @@ afterEach(async () => {
 const text = (r: unknown) => (r as { content: { text?: string }[] }).content.map((c) => c.text ?? "").join("\n");
 
 describe("search mode end to end (fake upstream)", () => {
-  it("switches on above the threshold; search, a risky call through call_write_tool, approve, get_call_status", async () => {
+  it("switches on above the threshold; search, a risky call through call_write_tool", async () => {
     const deleted: string[] = [];
     const reads = Array.from({ length: SEARCH_MODE_THRESHOLD }, (_, i) => ({
       name: `get_record_${i}`,
@@ -51,7 +50,7 @@ describe("search mode end to end (fake upstream)", () => {
     const api = (path: string, init: RequestInit & { json?: unknown } = {}) => h.request(`/api${path}`, { cookie, ...init, headers: { ...CSRF, ...(init.headers as object) } });
     const { agent, apiKey } = ctx.policy.createAgent({ name: "Hermes" });
 
-    const con = await json(await api("/connections", { method: "POST", json: { url: up.url, slug: "wiki", name: "Wiki", agentIds: [agent.id], levelDefault: "ask" } }));
+    const con = await json(await api("/connections", { method: "POST", json: { url: up.url, slug: "wiki", name: "Wiki", agentIds: [agent.id], levelDefault: "full" } }));
     await json(await api(`/connections/${con.id}/private-target`, { method: "PUT", json: { allow: true } }));
     expect(await json(await api(`/connections/${con.id}/connect`, { method: "POST", json: {} }))).toMatchObject({ status: "connected" });
     expect(await ctx.broker.catalog.refresh(con.id)).toMatchObject({ ok: true });
@@ -66,7 +65,7 @@ describe("search mode end to end (fake upstream)", () => {
       }),
     );
     cleanup.push(() => client.close());
-    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(["call_read_tool", "call_write_tool", "get_call_status", "search_tools"]);
+    expect((await client.listTools()).tools.map((t) => t.name).sort()).toEqual(["call_read_tool", "call_write_tool", "search_tools"]);
     expect(client.getInstructions()).toMatch(/search_tools/);
 
     // search_tools finds the upstream tool, with its schema and the broker's classification.
@@ -79,17 +78,10 @@ describe("search mode end to end (fake upstream)", () => {
     // A read runs at once through call_read_tool.
     expect(text(await client.callTool({ name: "call_read_tool", arguments: { name: "wiki__get_record_3", arguments: { id: "r1" } } }))).toContain("Record r1");
 
-    // The risky one at "ask": pending at once, nothing sent upstream.
-    const pending = await client.callTool({ name: "call_write_tool", arguments: { name: "wiki__delete_page", arguments: { id: "p2" } } });
-    expect(text(pending)).toContain("pending_approval");
-    const approvalId = /apr_[a-z0-9]+/.exec(text(pending))![0];
-    expect(deleted).toEqual([]);
-    expect(text(await client.callTool({ name: "get_call_status", arguments: { approval_id: approvalId } }))).toMatch(/pending/);
-
-    // The owner approves: the stored call runs once, and get_call_status has its result.
-    expect(await json(await api(`/approvals/${approvalId}/approve`, { method: "POST", json: {} }))).toMatchObject({ status: "sent" });
+    // The risky one at "full" runs once.
+    const risky = await client.callTool({ name: "call_write_tool", arguments: { name: "wiki__delete_page", arguments: { id: "p2" } } });
+    expect(text(risky)).toContain("Deleted p2");
     expect(deleted).toEqual(["p2"]);
-    expect(text(await client.callTool({ name: "get_call_status", arguments: { approval_id: approvalId } }))).toContain("Deleted p2");
 
     // Audited once each, under the real names; the search by its length only.
     const rows = ctx.db.all<{ action: string; outcome: string; detail: string | null }>("SELECT action, outcome, detail FROM audit_log WHERE actor_id = ? ORDER BY id", agent.id);
@@ -100,11 +92,11 @@ describe("search mode end to end (fake upstream)", () => {
     expect(actions.some((a) => a.startsWith("call_") || a === "search_tools" || a === "unknown_tool")).toBe(false);
     expect(JSON.stringify(rows)).not.toContain("wiki page");
 
-    // Called by name, unlisted: the same broker path. A read runs; the risky one is pending at once, nothing sent.
+    // Called by name, unlisted: the same broker path. A read runs, and so does the risky one.
     expect(text(await client.callTool({ name: "wiki__get_record_4", arguments: { id: "r2" } }))).toContain("Record r2");
     const direct = await client.callTool({ name: "wiki__delete_page", arguments: { id: "p3" } });
-    expect(text(direct)).toContain("pending_approval");
-    expect(deleted).toEqual(["p2"]);
+    expect(text(direct)).toContain("Deleted p3");
+    expect(deleted).toEqual(["p2", "p3"]);
 
     // Read only: the write tool is refused by name exactly as in direct mode (it isn't the agent's tool any more).
     expect(await json(await api(`/connections/${con.id}/grants`, { method: "PUT", json: { grants: [{ agentId: agent.id, level: "read" }] } }))).toHaveLength(1);
@@ -113,6 +105,6 @@ describe("search mode end to end (fake upstream)", () => {
       return typeof r === "string" ? r : text(r);
     };
     expect(await refusal()).toMatch(/-32602.*wiki__delete_page not found/);
-    expect(deleted).toEqual(["p2"]);
+    expect(deleted).toEqual(["p2", "p3"]);
   }, 20_000);
 });

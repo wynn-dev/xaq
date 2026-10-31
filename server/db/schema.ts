@@ -523,4 +523,35 @@ export const MIGRATIONS: string[] = [
   /* 15: tools an older version held for a change: gone; the next listing adds them again, classified afresh. */ `
   DELETE FROM upstream_tools WHERE state = 'held';
   `,
+  /* 16: one permission model (full or read, plus the recipient allowlist); no approvals. */ `
+  -- Grants: any write capability (draft, send, organize, trash, calendar.write) becomes full, the rest read.
+  -- The recipient allowlist (allow_to) stays; label and calendar scopes, send modes, reply-only and send caps go.
+  ALTER TABLE grants ADD COLUMN level TEXT NOT NULL DEFAULT 'read' CHECK (level IN ('full', 'read'));
+  UPDATE grants SET level = 'full'
+    WHERE EXISTS (SELECT 1 FROM json_each(grants.capabilities) WHERE value IN ('draft', 'send', 'organize', 'trash', 'calendar.write'));
+  ALTER TABLE grants DROP COLUMN capabilities;
+  ALTER TABLE grants DROP COLUMN label_scope;
+  ALTER TABLE grants DROP COLUMN send_mode;
+  ALTER TABLE grants DROP COLUMN reply_only;
+  ALTER TABLE grants DROP COLUMN max_sends_per_hour;
+  ALTER TABLE grants DROP COLUMN max_sends_per_day;
+  ALTER TABLE grants DROP COLUMN calendar_scope;
+  ALTER TABLE grants DROP COLUMN calendar_write_mode;
+
+  -- Connection levels: ask becomes full. A column's own CHECK goes with it, so swap the columns.
+  ALTER TABLE connection_grants RENAME COLUMN level TO level_old;
+  ALTER TABLE connection_grants ADD COLUMN level TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('full', 'read'));
+  UPDATE connection_grants SET level = CASE level_old WHEN 'read' THEN 'read' ELSE 'full' END;
+  ALTER TABLE connection_grants DROP COLUMN level_old;
+  ALTER TABLE connections RENAME COLUMN level_default TO level_default_old;
+  ALTER TABLE connections ADD COLUMN level_default TEXT NOT NULL DEFAULT 'full' CHECK (level_default IN ('full', 'read'));
+  UPDATE connections SET level_default = CASE level_default_old WHEN 'read' THEN 'read' ELSE 'full' END;
+  ALTER TABLE connections DROP COLUMN level_default_old;
+
+  DROP TABLE approvals;
+  DROP TABLE approval_rules;
+  DELETE FROM events WHERE type = 'approval.requested';
+  DELETE FROM settings WHERE key = 'broker.policy';
+  UPDATE settings SET value = json_remove(value, '$.approvalTtlHours') WHERE key = 'settings' AND json_valid(value);
+  `,
 ];

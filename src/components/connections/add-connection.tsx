@@ -813,7 +813,7 @@ function AccessPage({ draft, set }: { draft: ConnectionDraft; set: (p: Partial<C
   );
 }
 
-/** The one access choice: Full / Ask before risky actions (the default) / Read only. */
+/** The one access choice: Full (the default) / Read only. */
 export function LevelChoice({ value, onChange }: { value: AccessLevel; onChange: (v: AccessLevel) => void }) {
   return (
     <ChoiceCards
@@ -824,7 +824,6 @@ export function LevelChoice({ value, onChange }: { value: AccessLevel; onChange:
         value: l,
         title: LEVEL_INFO[l].label,
         description: LEVEL_INFO[l].description,
-        badge: l === "ask" ? <span className="rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground">Recommended</span> : undefined,
       }))}
     />
   );

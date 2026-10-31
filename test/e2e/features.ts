@@ -9,8 +9,8 @@ const REPO = resolve(import.meta.dirname, "..", "..");
 const file = (p: string) => resolve(REPO, p);
 const real = (p: string) => existsSync(file(p)) && !readFileSync(file(p), "utf8").includes("PLACEHOLDER");
 
-/** feat/policy-mcp: agents/grants API, MCP endpoint, mail actions, approvals, content cleaning. */
-export const HAS_AGENTS = ["server/policy/index.ts", "server/mcp/index.ts", "server/mail/index.ts", "server/api/agents.ts", "server/api/approvals.ts"].every(real);
+/** feat/policy-mcp: agents/grants API, MCP endpoint, mail actions, content cleaning. */
+export const HAS_AGENTS = ["server/policy/index.ts", "server/mcp/index.ts", "server/mail/index.ts", "server/api/agents.ts"].every(real);
 
 /** feat/listen-server: device-flow pairing and the /agent/v1 event stream (needs policy). */
 export const HAS_AGENT_API = HAS_AGENTS && existsSync(file("server/agentapi/index.ts")) && existsSync(file("server/api/pairings.ts"));

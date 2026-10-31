@@ -69,7 +69,7 @@ const OPEN_REFUSALS: Record<RevokeReason, [string, string]> = {
   agent_deleted: ["This agent no longer exists", "Pair again with `npx xaq-cli connect`."],
   agent_disabled: ["This agent is disabled", "Enable it in the xaq console under Agents."],
   key_rotated: ["This API key was replaced", "Pair again with `npx xaq-cli connect`, or use the new key."],
-  no_read_grant: ["This agent has no read access to any account or connection", "Grant it read or calendar.read on an account (or access to a connection) in the xaq console."],
+  no_read_grant: ["This agent has no read access to any account or connection", "Give it access to an account (or a connection) in the xaq console."],
 };
 
 /** Destroys the underlying socket (a stalled client never drains, so a graceful end would hang). */
@@ -186,7 +186,7 @@ export function streamEvents(ctx: AppContext, c: Context<AgentApiEnv>, opts: Str
       if (reason) revoke(reason);
       return !reason;
     };
-    const visible = (ev: StoredEvent) => ctx.policy.canSeeEvent(agentId, ev, "listener");
+    const visible = (ev: StoredEvent) => ctx.policy.canSeeEvent(agentId, ev);
 
     let pumping = false;
     let again = false;

@@ -210,7 +210,7 @@ export function ConnectAgentGuide({
               <Step n={3} icon={BookOpenIcon} title={`Teach ${label} the rules`}>
                 <Command code={c.skillInstall} label="skill install command" />
                 <p className="text-xs text-muted-foreground">
-                  Installs the xaq skill: how to triage, reply in threads, wait for approvals, and treat email content as untrusted.
+                  Installs the xaq skill: how to triage, reply in threads, and treat email content as untrusted.
                 </p>
               </Step>
               <Step

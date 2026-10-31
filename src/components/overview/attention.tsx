@@ -1,9 +1,8 @@
-import type { Account, Approval, PairingRequest } from "@shared/types";
+import type { Account, PairingRequest } from "@shared/types";
 import { Link } from "@tanstack/react-router";
-import { AlertTriangleIcon, ArrowRightIcon, KeyRoundIcon, StampIcon, UnplugIcon } from "lucide-react";
+import { AlertTriangleIcon, ArrowRightIcon, KeyRoundIcon, UnplugIcon } from "lucide-react";
 import { AccountStatusBadge } from "@/components/accounts/account-status";
 import { connectAccount } from "@/components/accounts/connect-host";
-import { asMcpApproval } from "@/components/approvals/mcp-call";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -45,37 +44,6 @@ export function AccountsAttention({ accounts }: { accounts: Account[] }) {
   );
 }
 
-export function ApprovalsCallout({ approvals }: { approvals: Approval[] }) {
-  if (!approvals.length) return null;
-  const first = approvals[0]!;
-  const firstCall = asMcpApproval(first);
-  // Broker tool calls wait here too: then it's "requests", not "messages".
-  const what = approvals.some((a) => asMcpApproval(a)) ? ["request", "requests"] : ["message", "messages"];
-  return (
-    <Card className="border-warning/40 bg-warning/[0.06]">
-      <CardContent className="flex flex-wrap items-center gap-3">
-        <span className="flex size-9 items-center justify-center rounded-lg bg-warning/20">
-          <StampIcon className="size-4" />
-        </span>
-        <div className="min-w-48 flex-1">
-          <div className="font-medium">
-            {approvals.length === 1 ? `1 ${what[0]} is waiting for your approval` : `${approvals.length} ${what[1]} are waiting for your approval`}
-          </div>
-          <p className="truncate text-sm text-muted-foreground">
-            {first.agentName}: {firstCall ? firstCall.call.tool : `“${first.subject || "(no subject)"}”`}
-            {approvals.length > 1 && " and more"}
-          </p>
-        </div>
-        <Button asChild>
-          <Link to="/approvals">
-            Review <ArrowRightIcon />
-          </Link>
-        </Button>
-      </CardContent>
-    </Card>
-  );
-}
-
 /** Agents waiting for access via `npx xaq-cli connect`. */
 export function PairingCallout({ pairings }: { pairings: PairingRequest[] }) {
   const waiting = pairings.filter((p) => p.status === "pending");
@@ -98,7 +66,7 @@ export function PairingCallout({ pairings }: { pairings: PairingRequest[] }) {
           </p>
         </div>
         <Button asChild>
-          <Link to="/approvals" search={{ tab: "access" }}>
+          <Link to="/approvals">
             Review <ArrowRightIcon />
           </Link>
         </Button>

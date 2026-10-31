@@ -72,7 +72,7 @@ export function AgentHeader({ agent }: { agent: Agent }) {
       title: `Delete ${agent.name}?`,
       description: (
         <>
-          <p>Its API key stops working, and its grants are deleted. Pending approvals it requested are rejected.</p>
+          <p>Its API key stops working, and its grants are deleted.</p>
           <p>Audit log entries are kept.</p>
         </>
       ),

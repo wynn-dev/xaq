@@ -1,7 +1,7 @@
 // The MCP broker as an AppContext service. It holds one ToolSource per connection, the
 // tool registry, the policy's call path and the connector, and owns the lifecycle and the kill switch.
-// The policy runtime (server/broker/policy) supplies calls, get_call_status, approved-call execution and the kill
-// switch. Tests pass fakes through createBrokerService(ctx, parts).
+// The policy runtime (server/broker/policy) supplies calls and the kill switch. Tests pass fakes through
+// createBrokerService(ctx, parts).
 
 import {
   type AccessLevel,
@@ -12,7 +12,6 @@ import {
   type EventType,
   isPresetEventType,
   type MailEvent,
-  type McpCallApproval,
   type StartConnectInput,
   type StartConnectResult,
 } from "../../shared/types.ts";
@@ -67,16 +66,8 @@ export interface Connector {
 export interface BrokerParts {
   /** Catalog (server/broker/catalog/*). */
   registry: Pick<CatalogRegistry, "forAgent" | "resolve">;
-  /** Policy and approvals (server/broker/policy/*): the single call path. */
+  /** Policy (server/broker/policy/*): the single call path. */
   calls: Pick<BrokerPolicyRuntime, "call">;
-  /** get_call_status(approval_id), from the policy runtime. */
-  callStatus(agentId: string, approvalId: string): ToolResult | Promise<ToolResult>;
-  /**
-   * Runs an mcp.call approval already claimed ("approved"): re-checks agent, grant, pin and args hash, forwards
-   * the stored bytes and records the outcome on the approval (sent with the result, back to pending, or failed
-   * with an unknown outcome). Approvals.approve calls it after claiming. Default: the policy runtime.
-   */
-  runApprovedCall?(approval: McpCallApproval): Promise<void>;
   connector: Connector;
   /** Native presets' source dependencies (credential store + token refresher). */
   nativeDeps?(connection: Connection): NativeSourceDeps;
@@ -114,31 +105,24 @@ export interface AgentBrokerView {
 export interface BrokerService extends Lifecycle {
   view(agentId: string): AgentBrokerView;
   calls: Pick<BrokerPolicyRuntime, "call">;
-  callStatus(agentId: string, approvalId: string): Promise<ToolResult>;
-  canRunApprovedCalls(): boolean;
-  runApprovedCall(approval: McpCallApproval): Promise<void>;
   /** The policy runtime (also reachable as brokerPolicyOf(ctx)). */
   policy: BrokerPolicyRuntime;
-  /** A connection grant changed level (admin API): the policy re-checks pending calls. */
-  onGrantChanged(agentId: string, connectionId: string): void;
-  /** A connection grant was removed: pending calls cancelled, "always allow" rules deleted. */
-  onGrantRemoved(agentId: string, connectionId: string): void;
   /** The connection's source, created on first use; null when the connection is missing or disabled. */
   source(connectionId: string): ToolSource | null;
   connector: Connector;
   presets(): IntegrationPreset[];
   /** Closes the connection's source (after its URL or credential changed); the next use builds a new one. */
   reload(connectionId: string): Promise<void>;
-  /** Kill switch: disable, run onKill, then the policy's kill (cancel pending calls, clear credentials, close the source). Audited. */
+  /** Kill switch: disable, run onKill, then the policy's kill (clear credentials, close the source). Audited. */
   kill(connectionId: string, reason: string): Promise<void>;
-  /** The kill switch, then the row (grants, pins, rules and approvals cascade). Audited. */
+  /** The kill switch, then the row (grants and pins cascade). Audited. */
   remove(connectionId: string): Promise<void>;
   invalidate(scope: InvalidateScope): void;
   /** The tool catalog. */
   catalog: Catalog;
   /** (Re)starts the catalog's tool listing for a connection (create, connect, URL change); no-op while disabled. */
   attach(connectionId: string): void;
-  /** Emits a connection event (connection.*, approval.requested, `<preset>.*`) through the events outbox. */
+  /** Emits a connection event (connection.*, `<preset>.*`) through the events outbox. */
   emitConnectionEvent(e: { type: EventType; connectionId: string; dedupeKey: string; detail?: Record<string, unknown> }): MailEvent | null;
   /** Polls every due native connection once. Returns the number of events emitted. */
   pollEvents(at?: number): Promise<number>;
@@ -193,7 +177,6 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
     store,
     connections: () => brokerConnections(ctx.db),
     grants: (agentId) => connectionGrants(ctx.db, agentId),
-    preset: (id) => presetFor(getConnection(ctx, id)?.preset ?? null),
   });
   catalog.onChange(() => catalogRegistry.invalidate());
   // A disabled (killed) connection's tools aren't listed; resolve still finds them, so a direct call gets the
@@ -214,29 +197,17 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
     else catalogRegistry.invalidate();
   };
 
-  // The policy runtime: calls, get_call_status, approved calls, grant hooks and the kill switch.
+  // The policy runtime: calls and the kill switch.
   const policy = createBrokerPolicyRuntime(ctx, {
     registry: base.registry,
     sources: { source: (id) => service.source(id), close: (id) => closeSource(id) },
     credentials,
     refresher: up.refresher,
-    onApprovalRequested: (ev) => {
-      try {
-        const { type, connectionId, ...detail } = ev;
-        ctx.events.emit({ type, connectionId, dedupeKey: `${type}:${ev.approvalId}`, detail });
-      } catch (err) {
-        log.error("approval.requested event failed", { error: errorMessage(err) });
-      }
-    },
   });
-  // A tool that left the upstream: its pending calls fail closed and its allow rules go.
   // The runtime registered for this context (brokerPolicyOf): this one, unless a test attached its own.
   const rt = (): BrokerPolicyRuntime => brokerPolicyOf(ctx) ?? policy;
-  catalog.onToolRemoved((e) => void rt().onToolRemoved(e.connectionId, e.name));
   const parts: BrokerParts = {
     calls: { call: (agentId, name, args, signal) => rt().call(agentId, name, args, signal) },
-    callStatus: (agentId, id) => rt().getCallStatus(agentId, id),
-    runApprovedCall: (approval) => rt().runApprovedCall(approval),
     ...base,
   };
 
@@ -424,8 +395,6 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
 
   const service: BrokerService = {
     policy,
-    onGrantChanged: (agentId, connectionId) => void rt().onGrantChanged(agentId, connectionId),
-    onGrantRemoved: (agentId, connectionId) => void rt().onGrantRemoved(agentId, connectionId),
 
     view(agentId) {
       const connections = connectionGrantsOf(ctx.db, agentId);
@@ -433,17 +402,6 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
     },
 
     calls: parts.calls,
-
-    async callStatus(agentId, approvalId) {
-      return parts.callStatus(agentId, approvalId);
-    },
-
-    canRunApprovedCalls: () => !!parts.runApprovedCall,
-
-    async runApprovedCall(approval) {
-      if (!parts.runApprovedCall) throw conflict("Tool call requests can't be approved by this version.", "Update xaq, or reject the request.");
-      return parts.runApprovedCall(approval);
-    },
 
     source(connectionId) {
       const c = getConnection(ctx, connectionId);
@@ -548,7 +506,6 @@ export function createBrokerService(ctx: AppContext, given: Partial<BrokerParts>
       } catch (err) {
         log.error("Couldn't load extensions", { error: errorMessage(err) });
       }
-      policy.start();
       // Google extensions' connections follow their accounts (consent, scopes backfilled, needs_reauth, reconnect).
       ctx.bus.on("account", onAccount);
       onAccount();

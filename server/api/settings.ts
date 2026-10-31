@@ -11,7 +11,6 @@ const SettingsPatch = z
     pollIntervalSeconds: z.number(),
     maxBodyChars: z.number(),
     retentionDays: z.number(),
-    approvalTtlHours: z.number(),
   })
   .partial()
   .strict() satisfies z.ZodType<Partial<Settings>>;

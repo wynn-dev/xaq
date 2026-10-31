@@ -7,7 +7,7 @@ import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react"
 import { useAgentOrigin, useMcpActivity } from "@/components/agents/agent-status";
 import { Command } from "@/components/agents/command";
 import { toolName, usePublicUrl } from "@/components/agents/connect-agent-guide";
-import { grantInWords } from "@/components/agents/grant-words";
+import { grantInWords } from "@/lib/grants";
 import { CopyButton, ErrorAlert, TimeAgo } from "@/components/common";
 import { Visible } from "@/components/hidden-chars";
 import { useNow } from "@/hooks/use-now";
@@ -593,7 +593,7 @@ function SendTest({ agent, sent, blocked }: { agent: Agent; sent: boolean; /** T
   // Paused, needs_reauth and error accounts don't pick up new mail: the test would never arrive.
   const all = (accounts.data ?? []).filter((a) => a.status === "active");
   // Prefer mailboxes this agent can read: only those events reach it.
-  const readable = all.filter((a) => agent.grants.some((g) => g.accountId === a.id && g.capabilities.includes("read")));
+  const readable = all.filter((a) => agent.grants.some((g) => g.accountId === a.id));
   const choices = readable.length ? readable : all;
   const [picked, setPicked] = useState<string>();
   const accountId = picked && choices.some((a) => a.id === picked) ? picked : choices[0]?.id;
@@ -888,7 +888,7 @@ function SuccessPanel({
           <Link to="/agents/$agentId" params={{ agentId: agent.id }} className="font-medium text-foreground underline underline-offset-4">
             its page
           </Link>
-          ; sends that need your OK and new agents asking for access wait in{" "}
+          ; new agents asking for access wait in{" "}
           <Link to="/approvals" className="font-medium text-foreground underline underline-offset-4">
             Approvals
           </Link>

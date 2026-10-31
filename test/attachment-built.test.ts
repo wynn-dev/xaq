@@ -43,7 +43,7 @@ describe("built attachment parser", () => {
     s = await startStack();
     const email = mailbox("built-attach");
     const [account] = (await s.bootstrap({ accounts: [{ email }] })) as [Account];
-    const { apiKey } = await s.createAgent("built-reader", [grant(account.id, { capabilities: ["read"] })]);
+    const { apiKey } = await s.createAgent("built-reader", [grant(account.id, { level: "read" })]);
     const msg = s.fake.deliver(email, {
       from: "files@vendor.test",
       subject: "Built",

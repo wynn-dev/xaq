@@ -48,17 +48,6 @@ export interface InternalState {
       activationUrl?: string | null;
     };
   };
-  /**
-   * MCP broker policy limits (server/broker/policy). Missing fields take the defaults in
-   * server/broker/policy/store.ts (BROKER_POLICY_DEFAULTS). null caps = no cap.
-   */
-  "broker.policy": {
-    /** mcp.call approvals expire after this many hours. */
-    approvalTtlHours?: number;
-    /** Per agent, risky tool calls (run, queued or of unknown outcome) per rolling hour / 24 hours. */
-    riskyPerHour?: number | null;
-    riskyPerDay?: number | null;
-  };
   "admin.passwordHash": string;
   /** When SetupState.verified first had evidence; kept so pruning the audit log doesn't undo it. */
   "setup.verifiedAt": string;
@@ -81,7 +70,6 @@ export class SettingsStore {
       pollIntervalSeconds: 30,
       maxBodyChars: 20_000,
       retentionDays: 30,
-      approvalTtlHours: 72,
       pairingEnabled: true,
       calendarPollSeconds: 60,
     };
@@ -141,7 +129,6 @@ function validate(s: Settings): Settings {
     pollIntervalSeconds: int(s.pollIntervalSeconds, "Poll interval", 5, 3600),
     maxBodyChars: int(s.maxBodyChars, "Max body characters", 0, 1_000_000),
     retentionDays: int(s.retentionDays, "Retention", 1, 3650),
-    approvalTtlHours: int(s.approvalTtlHours, "Approval expiry", 1, 24 * 30),
     pairingEnabled: s.pairingEnabled !== false,
     calendarPollSeconds: int(s.calendarPollSeconds, "Calendar poll interval", 15, 3600),
   };

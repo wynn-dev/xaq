@@ -2,7 +2,7 @@
 // registered tools and stored tokens.
 
 /** One choice per connection (and per agent × connection): Wynn's model. FROZEN. */
-export type AccessLevel = "full" | "ask" | "read";
+export type AccessLevel = "full" | "read";
 
 /** Where a tool's risk classification came from. FROZEN. */
 export type ClassSource = "preset" | "annotation" | "heuristic";
@@ -27,19 +27,13 @@ export interface ToolDef {
   annotations?: ToolAnnotations;
 }
 
-/** Classification used by levels and approvals. FROZEN. */
+/** Classification used by levels. FROZEN. */
 export interface ToolClass {
-  /** Irreversible: delete, send, publish/share externally, payments. Asks at the "ask" level. */
+  /** Irreversible: delete, send, publish/share externally, payments. Never listed at the "read" level. */
   risky: boolean;
   /** Listed at the "read" level. */
   read: boolean;
   source: ClassSource;
-  /**
-   * JSON Pointer (RFC 6901) into the call's arguments naming the target, offered for "always allow … for this
-   * target" (e.g. `/page_ids`). Not dot paths: `{"a.b": x}` vs `{a: {b: y}}` must never be confused. The value may
-   * be an array of ids; a rule matches only when every element is covered.
-   */
-  targetPath?: string;
 }
 
 /** A content block of a tool result (MCP CallToolResult content; kept SDK-agnostic). */
@@ -325,15 +319,11 @@ export interface RegisteredTool {
 }
 
 /** The policy's verdict on one call. FROZEN. */
-export type CallDecision =
-  /** `ruleId`: the "always allow" rule that let a risky call through at the "ask" level (audit). */
-  | { kind: "allow"; ruleId?: string }
-  | { kind: "ask" }
-  | { kind: "deny"; reason: string; message: string };
+export type CallDecision = { kind: "allow" } | { kind: "deny"; reason: string; message: string };
 
 export interface BrokerPolicy {
-  /** Level + risk + "always allow" rules + caps. Never runs the call. */
-  decide(agentId: string, tool: RegisteredTool, args: Record<string, unknown>): CallDecision;
+  /** Connection state + the agent's level. Never runs the call. */
+  decide(tool: RegisteredTool): CallDecision;
 }
 
 /** OAuth tokens as stored (encrypted at rest). */

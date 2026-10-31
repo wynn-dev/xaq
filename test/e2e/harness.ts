@@ -4,7 +4,7 @@
 //
 //   const s = await startStack();
 //   const [acc] = await s.bootstrap({ accounts: ["me@acme.test"] });
-//   const { apiKey } = await s.createAgent("bot", [grant(acc.id, { capabilities: ["read"] })]);
+//   const { apiKey } = await s.createAgent("bot", [grant(acc.id, { level: "full" })]);
 //   const agent = await s.agent(apiKey);
 //   s.fake.deliver("me@acme.test", { from: "a@b.test", subject: "Hi", text: "Hello" });
 //   await s.waitForEvent((e) => e.message?.subject === "Hi");
@@ -142,19 +142,9 @@ export class AdminClient {
 
 // ───────────── Grants ─────────────
 
-/** A full GrantInput with conservative defaults (read only, whole mailbox, draft_only). */
+/** A GrantInput, read only by default. */
 export function grant(accountId: string, patch: Partial<GrantInput> = {}): GrantInput {
-  return {
-    accountId,
-    capabilities: ["read"],
-    labelScope: null,
-    sendMode: "draft_only",
-    allowTo: [],
-    replyOnly: false,
-    maxSendsPerHour: null,
-    maxSendsPerDay: null,
-    ...patch,
-  };
+  return { accountId, level: "read", allowTo: [], ...patch };
 }
 
 // ───────────── Stack ─────────────

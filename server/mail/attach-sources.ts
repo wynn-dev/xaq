@@ -28,7 +28,7 @@ import {
   tooLarge,
 } from "./attachments.ts";
 
-/** An attachment of a message in the account, as the caller found it (label scope already enforced). */
+/** An attachment of a message in the account, as the caller found it (access already checked). */
 export interface MessagePart {
   messageId: string;
   /** The stable part id get_message shows. */

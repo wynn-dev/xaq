@@ -45,7 +45,6 @@ export function overviewStats(ctx: AppContext, at = new Date()): OverviewStats {
       activeLast24h: n("SELECT COUNT(*) AS n FROM agents WHERE last_used_at >= ?", since),
     },
     events24h: n("SELECT COUNT(*) AS n FROM events WHERE created_at >= ?", since),
-    pendingApprovals: n("SELECT COUNT(*) AS n FROM approvals WHERE status = 'pending' AND expires_at > ?", at.toISOString()),
     toolCalls24h: agentCalls.calls,
     denied24h: agentCalls.denied ?? 0,
     activity,

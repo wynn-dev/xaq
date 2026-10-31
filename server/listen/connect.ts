@@ -2,7 +2,6 @@ import { closeSync, constants, fchmodSync, lstatSync, openSync, writeSync } from
 import { hostname } from "node:os";
 import pc from "picocolors";
 import type { AgentSelf, AgentTool, PairingPoll, PairingStart, PairingStartInput } from "../../shared/agent-api.ts";
-import { CAPABILITIES, type Capability } from "../../shared/types.ts";
 import { ApiError, clientInfo, getSelf, pollPairing, startPairing } from "./api.ts";
 import { describeGrants, hasAccess } from "./grants.ts";
 import { writeClaudeMcpConfig } from "./mcpheader.ts";
@@ -20,7 +19,6 @@ export interface ConnectFlags {
   name?: string;
   tool?: string;
   account?: string[];
-  capabilities?: string;
   reason?: string;
   insecure?: boolean;
   force?: boolean;
@@ -44,17 +42,6 @@ export function parseTool(value: string | undefined): AgentTool {
   const v = value.trim().toLowerCase().replace(/^claude$/, "claude-code");
   if (!(TOOLS as readonly string[]).includes(v)) throw new Error(`Unknown --tool "${value}". Choose one of: ${TOOLS.join(", ")}.`);
   return v as AgentTool;
-}
-
-export function parseCapabilities(value: string | undefined): Capability[] | undefined {
-  if (value === undefined) return undefined;
-  const list = value
-    .split(",")
-    .map((s) => s.trim().toLowerCase())
-    .filter(Boolean);
-  const bad = list.filter((c) => !(CAPABILITIES as readonly string[]).includes(c));
-  if (bad.length) throw new Error(`Unknown capabilit${bad.length > 1 ? "ies" : "y"} ${bad.join(", ")}. Choose from: ${CAPABILITIES.join(", ")}.`);
-  return [...new Set(list)] as Capability[];
 }
 
 const shortHost = () => hostname().replace(/\.(local|lan|home)$/i, "");
@@ -141,7 +128,6 @@ async function connect(rawUrl: string, flags: ConnectFlags, opts: ConnectOptions
     throw new Error(`This machine is already paired${who}. Replace the pairing with --force.`);
   }
   const tool = parseTool(flags.tool);
-  const capabilities = parseCapabilities(flags.capabilities);
   // --force keeps the listener's consumer, so the server-side cursor carries on (no replay, no gap).
   const consumer = replacing?.consumer ?? defaultConsumer();
   const name = (flags.name?.trim() || `${tool === "other" ? "Agent" : TOOL_LABELS[tool]} on ${shortHost()}`).slice(0, 80);
@@ -150,7 +136,6 @@ async function connect(rawUrl: string, flags: ConnectFlags, opts: ConnectOptions
     name,
     requested: {
       ...(flags.account?.length ? { accounts: flags.account } : {}),
-      ...(capabilities ? { capabilities } : {}),
       ...(flags.reason ? { reason: flags.reason } : {}),
     },
     client: { ...clientInfo(), tool },

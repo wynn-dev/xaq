@@ -1,11 +1,8 @@
 import type { CalendarInfo } from "@shared/types";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQueries } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { ErrorAlert } from "@/components/common";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Skeleton } from "@/components/ui/skeleton";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { ApiError } from "@/lib/api";
 import { queries } from "@/lib/queries";
 
@@ -86,57 +83,6 @@ export function CalendarChecklist({
           <span className="shrink-0 text-xs text-muted-foreground">no longer listed</span>
         </label>
       ))}
-    </div>
-  );
-}
-
-/** A grant's calendar scope: every calendar in the account's list (null) or only the chosen ones. */
-export function CalendarScopePicker({
-  accountId,
-  value,
-  onChange,
-  disabled,
-}: {
-  accountId: string;
-  value: string[] | null;
-  onChange: (v: string[] | null) => void;
-  disabled?: boolean;
-}) {
-  // Only fetched once "Only some" is chosen: the list is live from Google.
-  const calendars = useQuery({ ...queries.accountCalendars(accountId), enabled: value !== null && !disabled });
-  return (
-    <div className="space-y-2">
-      <ToggleGroup
-        type="single"
-        variant="outline"
-        size="sm"
-        value={value === null ? "all" : "some"}
-        disabled={disabled}
-        onValueChange={(v) => v && onChange(v === "all" ? null : (value ?? []))}
-        aria-label="Calendar scope"
-      >
-        <ToggleGroupItem value="all">Every calendar</ToggleGroupItem>
-        <ToggleGroupItem value="some">Only some calendars</ToggleGroupItem>
-      </ToggleGroup>
-      {value === null ? (
-        <p className="text-xs text-muted-foreground">Every calendar in the account's list, including ones added later.</p>
-      ) : calendars.isPending ? (
-        <div className="grid gap-1.5 sm:grid-cols-2">
-          <Skeleton className="h-10" />
-          <Skeleton className="h-10" />
-        </div>
-      ) : calendars.isError ? (
-        calendarListProblem(calendars.error) ? (
-          <p className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-xs">{calendarListProblem(calendars.error)}</p>
-        ) : (
-          <ErrorAlert error={calendars.error} title="Couldn't load the account's calendars" />
-        )
-      ) : (
-        <>
-          <CalendarChecklist calendars={calendars.data} value={value} onChange={onChange} />
-          {value.length === 0 && <p className="text-xs text-warning">Pick at least one calendar, or the agent can't use any.</p>}
-        </>
-      )}
     </div>
   );
 }

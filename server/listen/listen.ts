@@ -43,7 +43,7 @@ export interface RunListenerOptions {
   grantsRefreshMs?: number;
   /**
    * --backfill safety net: quiet time (nothing received, nothing running) after which the rest up to the
-   * end is taken to be invisible to this listener (types filter, label scope, retention). Default 60 s.
+   * end is taken to be invisible to this listener (types filter, retention). Default 60 s.
    */
   backfillIdleMs?: number;
   /** --backfill gives up when the daemon stays unreachable this long. Default 10 min. */
@@ -430,7 +430,7 @@ export async function runListener(opts: RunListenerOptions): Promise<number> {
         }
         if (pastHead || dispatcher.lastSeq >= backfillHead) stop("backfill complete");
         else if (now - lastActivity >= idleMs) {
-          log.info(`No more stored events arrived for ${formatDuration(idleMs)}; the rest up to #${backfillHead} aren't visible to this listener (event types, label scope, or removed by retention).`);
+          log.info(`No more stored events arrived for ${formatDuration(idleMs)}; the rest up to #${backfillHead} aren't visible to this listener (event types, or removed by retention).`);
           stop("backfill complete");
         }
       }, 100);

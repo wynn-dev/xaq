@@ -1,11 +1,11 @@
 // E2E: files attached by an agent over MCP, against the fake Google. In-thread reply drafts with a PDF
-// (JSON and /upload/ paths), approval-mode sends that show their files to the human and send them on
-// approval, refusals (Gmail-blocked types, over 25 MB) before anything reaches Google, the audit record
+// (JSON and /upload/ paths), sends that carry their files, refusals (Gmail-blocked types, over 25 MB) before
+// anything reaches Google, the audit record
 // (names, types, sizes and hashes, never content) and the /mcp body limit (4 MB unless the agent key is valid).
 
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { Account, AgentWithKey, Approval, AuditEntry, GrantInput, Page } from "../shared/types.ts";
+import type { Account, AgentWithKey, AuditEntry, GrantInput, Page } from "../shared/types.ts";
 import type { GmailMessage } from "../server/google/types.ts";
 import { HAS_AGENTS } from "./e2e/features.ts";
 import { gmailHeader, grant, mailbox, type Stack, startStack } from "./e2e/harness.ts";
@@ -68,24 +68,24 @@ describe.runIf(HAS_AGENTS)("MCP attachments", () => {
     await s.close();
   });
 
-  it("reply in draft_only mode: an in-thread draft carrying the PDF (JSON body)", async () => {
+  it("reply: an in-thread message carrying the PDF (JSON body)", async () => {
     const msg = leaseRequest("Tenant form");
-    const { id, mcp } = await agentWith("form-filler", { capabilities: ["read", "send"], sendMode: "draft_only" });
+    const { id, mcp } = await agentWith("form-filler", { level: "full" });
     const file = pdf(4096);
-    const r = await mcp.json<{ status: string; draftId: string }>("reply", {
+    const r = await mcp.json<{ status: string; messageId: string }>("reply", {
       message_id: msg.id,
       body: "Here is the completed form.",
       attachments: [{ filename: "Tenant form (filled).pdf", mime_type: "application/pdf", content_base64: file.toString("base64") }],
     });
-    expect(r.status).toBe("draft_created");
+    expect(r.status).toBe("sent");
 
-    const draft = s.fake.drafts(email).find((d) => d.id === r.draftId)!;
-    expect(draft.message.threadId).toBe(msg.threadId);
-    expect(gmailHeader(draft.message, "Subject")).toBe("Re: Tenant form");
-    expect(gmailHeader(draft.message, "In-Reply-To")).toBe(gmailHeader(msg, "Message-ID"));
-    expect(gmailHeader(draft.message, "References")).toContain(gmailHeader(msg, "Message-ID")!);
-    expect(draft.message.payload?.mimeType).toBe("multipart/mixed");
-    const files = await filesOf(draft.message);
+    const sent = s.fake.sent(email).find((m) => m.id === r.messageId)!;
+    expect(sent.threadId).toBe(msg.threadId);
+    expect(gmailHeader(sent, "Subject")).toBe("Re: Tenant form");
+    expect(gmailHeader(sent, "In-Reply-To")).toBe(gmailHeader(msg, "Message-ID"));
+    expect(gmailHeader(sent, "References")).toContain(gmailHeader(msg, "Message-ID")!);
+    expect(sent.payload?.mimeType).toBe("multipart/mixed");
+    const files = await filesOf(sent);
     expect(files.map((f) => [f.filename, f.mimeType])).toEqual([["Tenant form (filled).pdf", "application/pdf"]]);
     expect(files[0]!.data.equals(file)).toBe(true);
 
@@ -97,7 +97,7 @@ describe.runIf(HAS_AGENTS)("MCP attachments", () => {
 
   it("create_draft in a thread with a 5 MB PDF: over the old 4 MB /mcp limit, sent through the multipart upload", async () => {
     const msg = leaseRequest("Lease documents");
-    const { mcp } = await agentWith("drafter", { capabilities: ["read", "draft"] });
+    const { mcp } = await agentWith("drafter", { level: "full" });
     const file = pdf(5 * 1024 * 1024);
     const before = s.fake.uploads.length;
     const out = await mcp.ok("create_draft", {
@@ -120,33 +120,20 @@ describe.runIf(HAS_AGENTS)("MCP attachments", () => {
     expect(files[0]!.data.equals(file)).toBe(true);
   });
 
-  it("approval mode: the console sees each file's name, type and size; approving sends them", async () => {
-    const { mcp } = await agentWith("approval-sender", { capabilities: ["read", "send"], sendMode: "approval", allowTo: ["*@offices.test"] });
+  it("send_message sends every file", async () => {
+    const { mcp } = await agentWith("sender", { level: "full", allowTo: ["*@offices.test"] });
     const form = pdf(2048);
-    const r = await mcp.json<{ status: string; approvalId: string }>("send_message", {
+    const r = await mcp.json<{ status: string; messageId: string }>("send_message", {
       to: "leasing@offices.test",
       subject: "Tenant application",
       body: "Application and ID attached.",
-      reason: "user asked to apply for the office",
       attachments: [
         { filename: "application.pdf", mime_type: "application/pdf", content_base64: form.toString("base64") },
         { filename: "notes.txt", content_base64: Buffer.from("Move-in: March").toString("base64") },
       ],
     });
-    expect(r.status).toBe("pending_approval");
-
-    const approval = await s.admin.get<Approval>(`/api/approvals/${r.approvalId}`);
-    expect(approval.attachments).toEqual([
-      { filename: "application.pdf", mimeType: "application/pdf", size: 2048, source: { kind: "upload" } },
-      { filename: "notes.txt", mimeType: "text/plain", size: 14, source: { kind: "upload" } },
-    ]);
-    expect(JSON.stringify(approval)).not.toContain(form.toString("base64").slice(0, 40));
-    const draft = s.fake.drafts(email).find((d) => d.id === approval.draftId)!;
-    expect((await filesOf(draft.message)).map((f) => f.filename)).toEqual(["application.pdf", "notes.txt"]);
-
-    const decided = await s.admin.post<Approval>(`/api/approvals/${r.approvalId}/approve`);
-    expect(decided).toMatchObject({ status: "sent", error: null });
-    const sent = s.fake.sent(email).find((m) => m.id === decided.sentMessageId)!;
+    expect(r.status).toBe("sent");
+    const sent = s.fake.sent(email).find((m) => m.id === r.messageId)!;
     expect(gmailHeader(sent, "To")).toContain("leasing@offices.test");
     const files = await filesOf(sent);
     expect(files.map((f) => [f.filename, f.mimeType])).toEqual([
@@ -156,10 +143,10 @@ describe.runIf(HAS_AGENTS)("MCP attachments", () => {
     expect(files[0]!.data.equals(form)).toBe(true);
   });
 
-  it("the grant still decides: no draft capability, recipients outside allowTo", async () => {
-    const reader = await agentWith("reader-only", { capabilities: ["read"] });
+  it("the grant still decides: read only, recipients outside allowTo", async () => {
+    const reader = await agentWith("reader-only", { level: "read" });
     expect(await reader.mcp.tools()).not.toContain("create_draft");
-    const { mcp } = await agentWith("allowlisted", { capabilities: ["read", "send"], sendMode: "direct", allowTo: ["*@offices.test"] });
+    const { mcp } = await agentWith("allowlisted", { level: "full", allowTo: ["*@offices.test"] });
     const before = s.fake.requests.length;
     const r = await mcp.call("send_message", {
       to: "someone@elsewhere.test",
@@ -174,7 +161,7 @@ describe.runIf(HAS_AGENTS)("MCP attachments", () => {
 
   it("refuses Gmail-blocked types and messages over 25 MB before anything reaches Google", async () => {
     const msg = leaseRequest("Refusals");
-    const { id, mcp } = await agentWith("refused", { capabilities: ["read", "draft", "send"], sendMode: "direct" });
+    const { id, mcp } = await agentWith("refused", { level: "full" });
     const posts = () => s.fake.requests.filter((q) => q.method === "POST" && /\/(drafts|messages\/send)$/.test(q.path)).length;
     const before = posts();
 
@@ -209,7 +196,7 @@ describe.runIf(HAS_AGENTS)("MCP attachments", () => {
   });
 
   it("/mcp buffers more than 4 MB only for a valid agent key", async () => {
-    const { key } = await agentWith("big-body", { capabilities: ["read"] });
+    const { key } = await agentWith("big-body", { level: "read" });
     const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: { pad: "x".repeat(5 * 1024 * 1024) } });
     const post = (auth?: string, chunked = false) =>
       fetch(`${s.url}/mcp`, {

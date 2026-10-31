@@ -91,8 +91,8 @@ function HeaderReconnectDialog({ connection: c, onClose }: { connection: Connect
 }
 
 export function useConnectionActions() {
-  const invalidate = [keys.connections, ["agent-connections"], keys.approvals, keys.overview] as const;
-  // The kill switch (POST /kill, the policy's): disabled, credentials deleted, pending calls cancelled. Reconnect brings it back.
+  const invalidate = [keys.connections, ["agent-connections"], keys.overview] as const;
+  // The kill switch (POST /kill, the policy's): disabled, credentials deleted. Reconnect brings it back.
   const kill = useApiMutation({
     mutationFn: (c: ConnectionView) => api(path(c, "/kill"), { body: {} }),
     invalidate,
@@ -109,7 +109,6 @@ export function useConnectionActions() {
   const killList = (c: ConnectionView) => (
     <ul className="list-disc space-y-1 pl-5">
       <li>stops every agent from using its tools,</li>
-      <li>cancels its calls waiting for approval,</li>
       <li>signs out of {c.name} and deletes the stored credentials.</li>
     </ul>
   );

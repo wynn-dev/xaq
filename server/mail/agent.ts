@@ -1,26 +1,16 @@
 // Agent-facing mail actions. Every method resolves the agent's grant for the account, enforces the
-// action-side guardrails (capabilities, label scope, send rules) and returns structured data that
+// action-side guardrails (full or read, the recipient allowlist) and returns structured data that
 // server/mcp formats for the agent. Denials throw PolicyDenied; bad input throws ToolError.
 
-import type { Account, Address, Approval, Attachment, Capability, GmailLabel, GoogleApproval, Grant, MessageSummary } from "../../shared/types.ts";
+import type { AccessLevel, Account, Address, Attachment, GmailLabel, Grant, MessageSummary } from "../../shared/types.ts";
 import type { AppContext } from "../context.ts";
 import type { GmailClient, GmailMessage, GmailPart, GmailThread, ParsedMessage } from "../google/types.ts";
 import { isOutcomeUnknown, rejectedBeforeProcessing, ResponseTooLargeError } from "../google/http.ts";
 import { AccountNeedsReauthError, GoogleApiError } from "../google/types.ts";
-import {
-  assertRecipientsAllowed,
-  CAPABILITY_HELP,
-  inScope,
-  notAccessible,
-  querySyntaxError,
-  reserveSend,
-  scopedSearch,
-  threadLabels,
-} from "../policy/enforce.ts";
+import { assertRecipientsAllowed, notAccessible, threadLabels } from "../policy/enforce.ts";
 import type { AgentPrincipal } from "../policy/types.ts";
 import { PolicyDenied } from "../util/errors.ts";
 import { matchesGlob } from "../util/glob.ts";
-import { Approvals, type ApprovalPayload, draftFingerprint } from "./approvals.ts";
 import { checkAttachmentInputs, type MessagePart, requestedSources, resolveAttachments } from "./attach-sources.ts";
 import {
   AttachmentError,
@@ -50,8 +40,6 @@ export interface ToolTrace {
   accountId?: string | null;
   target?: string | null;
   detail: Record<string, unknown>;
-  /** Releases a send-cap reservation; the MCP layer calls it after recording the audit entry. */
-  release?: () => void;
 }
 
 export interface Access {
@@ -76,10 +64,10 @@ export interface RenderedMessage {
   content: BuiltContent;
 }
 
-export type SendOutcome =
-  | { status: "sent"; messageId: string; threadId: string }
-  | { status: "draft_created"; draftId: string; message: string }
-  | { status: "pending_approval"; approvalId: string; expiresAt: string; message: string };
+export interface SendOutcome {
+  messageId: string;
+  threadId: string;
+}
 
 export interface ComposeArgs {
   to: string | string[];
@@ -96,10 +84,8 @@ type Target = { threadId?: string; messageId?: string };
 export const MAX_RECIPIENTS = 50;
 /** Binary attachments larger than this are not returned inline. */
 export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
-/** System labels agents may not add/remove via modify_labels (trash has its own capability; the rest are Gmail-managed). */
+/** System labels agents may not add/remove via modify_labels (trash has its own tool; the rest are Gmail-managed). */
 const PROTECTED_LABELS = new Set(["TRASH", "SPAM", "DRAFT", "SENT", "CHAT"]);
-/** System labels shown to label-scoped agents (they're needed for search and organizing). */
-const SCOPED_VISIBLE_SYSTEM = new Set(["INBOX", "SENT", "DRAFT", "SPAM", "TRASH", "STARRED", "IMPORTANT", "UNREAD"]);
 const EMAIL = /^[^\s@<>,;"]+@[^\s@<>,;"]+\.[^\s@<>,;"]+$/;
 const SUMMARY_HEADERS = ["From", "To", "Cc", "Subject", "Date"];
 
@@ -117,8 +103,6 @@ function recentLabelMisses(ctx: AppContext, accountId: string): Map<string, numb
   for (const [k, until] of misses) if (until <= now) misses.delete(k);
   return misses;
 }
-
-const DRAFT_ONLY_MESSAGE = "Saved as a draft; a human will review and send it from Gmail.";
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
@@ -200,15 +184,12 @@ const prefixSubject = (prefix: "Re" | "Fwd", subject: string) => {
 
 export class AgentMail {
   private readonly labelCache = new Map<string, Promise<GmailLabel[]>>();
-  private readonly approvals: Approvals;
 
   constructor(
     private readonly ctx: AppContext,
     readonly principal: AgentPrincipal,
     readonly trace: ToolTrace = { detail: {} },
-  ) {
-    this.approvals = new Approvals(ctx);
-  }
+  ) {}
 
   // ───────────── Access resolution ─────────────
 
@@ -220,10 +201,13 @@ export class AgentMail {
       .filter((x): x is { grant: Grant; account: Account } => x.account !== null);
   }
 
-  /** Picks the account for an action. `account` is an email or account id, optional when exactly one account qualifies. */
-  resolve(account: string | undefined, cap: Capability): Access {
+  /**
+   * Picks the account for an action. `account` is an email or account id, optional when exactly one account
+   * qualifies. `level` "full" is for anything that writes; every grant reads.
+   */
+  resolve(account: string | undefined, level: AccessLevel): Access {
     const all = this.accessible();
-    const capable = all.filter((x) => x.grant.capabilities.includes(cap));
+    const capable = level === "full" ? all.filter((x) => x.grant.level === "full") : all;
     const list = (xs: typeof all) => xs.map((x) => x.account.email).join(", ");
     let match: (typeof all)[number] | undefined;
     if (account?.trim()) {
@@ -231,22 +215,21 @@ export class AgentMail {
       match = all.find((x) => x.account.id.toLowerCase() === key || x.account.email.toLowerCase() === key);
       if (!match) {
         throw new PolicyDenied(
-          "capability",
+          "no_access",
           `You have no access to the account "${account}".` + (capable.length ? ` Accounts you can use for this: ${list(capable)}.` : ""),
         );
       }
       this.trace.accountId = match.account.id;
-      if (!match.grant.capabilities.includes(cap)) {
+      if (!capable.includes(match)) {
         throw new PolicyDenied(
-          "capability",
-          `Your access to ${match.account.email} does not include permission to ${CAPABILITY_HELP[cap]}.` +
-            (capable.length ? ` Accounts where you can: ${list(capable)}.` : ""),
+          "read_only",
+          `You have read-only access to ${match.account.email}.` + (capable.length ? ` Accounts with full access: ${list(capable)}.` : ""),
         );
       }
     } else if (capable.length === 1) {
       match = capable[0]!;
     } else if (!capable.length) {
-      throw new PolicyDenied("capability", `You don't have permission to ${CAPABILITY_HELP[cap]} on any account.`);
+      throw new PolicyDenied(all.length ? "read_only" : "no_access", all.length ? "You have read-only access to every account you can use." : "You have no access to any account.");
     } else {
       throw new ToolError("account_required", `You have access to several accounts; pass "account" as one of: ${list(capable)}.`);
     }
@@ -307,9 +290,7 @@ export class AgentMail {
     return this.ctx.settings.get().maxBodyChars;
   }
 
-  // ───────────── Label scope ─────────────
-
-  /** Gmail 404/400 on an id is reported exactly like an out-of-scope id. */
+  /** Gmail 404/400 on an id is reported as not found. */
   private async fetchById<T>(what: "Thread" | "Message", id: string, fn: () => Promise<T>): Promise<T> {
     try {
       return await fn();
@@ -319,57 +300,21 @@ export class AgentMail {
     }
   }
 
-  private assertThreadLabels(a: Access, labelIds: string[], what: "Thread" | "Message", id: string): void {
-    if (!inScope(a.grant.labelScope, labelIds)) throw new PolicyDenied("label_scope", notAccessible(what, id));
+  private loadMessage(a: Access, messageId: string, format: "full" | "minimal"): Promise<GmailMessage> {
+    return this.fetchById("Message", messageId, () => a.gmail.getMessage(messageId, format));
   }
 
-  /** Loads the thread's labels (format=minimal) and denies when out of scope. No-op for whole-mailbox grants. */
-  async assertThreadInScope(a: Access, threadId: string, what: "Thread" | "Message" = "Thread", id = threadId): Promise<void> {
-    if (a.grant.labelScope === null) return;
-    const thread = await this.fetchById(what, id, () => a.gmail.getThread(threadId, "minimal"));
-    this.assertThreadLabels(a, threadLabels(thread), what, id);
-  }
-
-  private async loadMessage(a: Access, messageId: string, format: "full" | "minimal"): Promise<GmailMessage> {
-    const msg = await this.fetchById("Message", messageId, () => a.gmail.getMessage(messageId, format));
-    await this.assertThreadInScope(a, msg.threadId, "Message", messageId);
-    return msg;
-  }
-
-  private async resolveTarget(a: Access, t: Target): Promise<{ kind: "thread" | "message"; id: string }> {
+  private resolveTarget(t: Target): { kind: "thread" | "message"; id: string } {
     if (!!t.threadId === !!t.messageId) throw new ToolError("invalid_arguments", "Pass exactly one of thread_id or message_id.");
-    if (t.threadId) {
-      this.trace.target = t.threadId;
-      await this.assertThreadInScope(a, t.threadId);
-      return { kind: "thread", id: t.threadId };
-    }
-    this.trace.target = t.messageId!;
-    if (a.grant.labelScope !== null) await this.loadMessage(a, t.messageId!, "minimal");
-    return { kind: "message", id: t.messageId! };
+    this.trace.target = t.threadId ?? t.messageId!;
+    return t.threadId ? { kind: "thread", id: t.threadId } : { kind: "message", id: t.messageId! };
   }
 
   // ───────────── Read ─────────────
 
-  async listLabels(account: string | undefined): Promise<{ account: Account; labels: GmailLabel[]; scope: string[] | null }> {
-    const a = this.resolveAny(account, ["read", "organize"]);
-    const scope = a.grant.labelScope;
-    const all = await this.labels(a);
-    const labels = scope === null ? all : all.filter((l) => scope.includes(l.id) || SCOPED_VISIBLE_SYSTEM.has(l.id));
-    return { account: a.account, labels, scope };
-  }
-
-  /** Like resolve, accepting any of several capabilities. */
-  private resolveAny(account: string | undefined, caps: Capability[]): Access {
-    let lastErr: unknown;
-    for (const cap of caps) {
-      try {
-        return this.resolve(account, cap);
-      } catch (err) {
-        if (!(err instanceof PolicyDenied)) throw err;
-        lastErr = err;
-      }
-    }
-    throw lastErr;
+  async listLabels(account: string | undefined): Promise<{ account: Account; labels: GmailLabel[] }> {
+    const a = this.resolve(account, "read");
+    return { account: a.account, labels: await this.labels(a) };
   }
 
   async searchThreads(
@@ -379,15 +324,9 @@ export class AgentMail {
     pageToken?: string,
   ): Promise<{ account: Account; threads: ThreadSummary[]; nextPageToken: string | null; hidden: number; labels: GmailLabel[] | null }> {
     const a = this.resolve(account, "read");
-    const syntax = querySyntaxError(query);
-    if (syntax) throw new ToolError("invalid_query", `${syntax} Fix the query and try again.`);
-    const scope = a.grant.labelScope;
-    // A scope label missing from the cached list may have just been created: look again once.
-    const search = scopedSearch(query, scope, scope === null ? [] : await this.labelsHaving(a, scope));
-    this.trace.detail = { queryLength: query.length, scoped: scope !== null };
+    this.trace.detail = { queryLength: query.length };
     const labels = await this.labelsSafe(a);
-    if (search === null) return { account: a.account, threads: [], nextPageToken: null, hidden: 0, labels };
-    const res = await a.gmail.listThreads({ q: search.q || undefined, labelIds: search.labelIds, maxResults, pageToken: pageToken || undefined });
+    const res = await a.gmail.listThreads({ q: query.trim() || undefined, maxResults, pageToken: pageToken || undefined });
     let failed = 0;
     const threads = await mapLimit(res.threads, 5, (t) =>
       a.gmail.getThread(t.id, "metadata", SUMMARY_HEADERS).catch(() => {
@@ -395,11 +334,9 @@ export class AgentMail {
         return null;
       }),
     );
-    // Defense in depth: the scoped search should already exclude these.
-    const visible = threads.filter((t): t is GmailThread => t !== null && inScope(scope, threadLabels(t)));
+    const visible = threads.filter((t): t is GmailThread => t !== null);
     const hidden = res.threads.length - visible.length;
     this.trace.detail.results = visible.length;
-    if (hidden) this.trace.detail.filtered = hidden - failed;
     if (failed) this.trace.detail.failed = failed;
     return { account: a.account, threads: visible.map((t) => this.summarizeThread(t)), nextPageToken: res.nextPageToken, hidden, labels };
   }
@@ -431,7 +368,6 @@ export class AgentMail {
     const a = this.resolve(account, "read");
     this.trace.target = threadId;
     const thread = await this.fetchById("Thread", threadId, () => a.gmail.getThread(threadId, "full"));
-    this.assertThreadLabels(a, threadLabels(thread), "Thread", threadId);
     const messages = await Promise.all((thread.messages ?? []).map((m) => this.render(a, m)));
     this.trace.detail = { messages: messages.length };
     return { account: a.account, threadId, messages, labels: await this.labelsSafe(a), maxChars: this.maxChars() };
@@ -456,7 +392,6 @@ export class AgentMail {
       const threadId = target.threadId;
       this.trace.target = threadId;
       const thread = await this.fetchById("Thread", threadId, () => a.gmail.getThread(threadId, "full"));
-      this.assertThreadLabels(a, threadLabels(thread), "Thread", threadId);
       messages = thread.messages ?? [];
     } else {
       this.trace.target = target.messageId!;
@@ -526,7 +461,6 @@ export class AgentMail {
   /** Threading headers so a new message lands in an existing thread. */
   private async threadingHeaders(a: Access, threadId: string): Promise<{ inReplyTo: string | null; references: string[] }> {
     const thread = await this.fetchById("Thread", threadId, () => a.gmail.getThread(threadId, "metadata", ["Message-ID", "References"]));
-    this.assertThreadLabels(a, threadLabels(thread), "Thread", threadId);
     const last = thread.messages?.at(-1);
     const messageId = header(last, "Message-ID");
     const refs = (header(last, "References") ?? "").split(/\s+/).filter(Boolean);
@@ -534,7 +468,7 @@ export class AgentMail {
   }
 
   async createDraft(account: string | undefined, args: ComposeArgs & { threadId?: string }): Promise<{ draftId: string; threadId: string | null }> {
-    const a = this.resolve(account, "draft");
+    const a = this.resolve(account, "full");
     const to = this.recipients(args.to, "to");
     const cc = this.recipients(args.cc, "cc");
     const bcc = this.recipients(args.bcc, "bcc");
@@ -583,11 +517,8 @@ export class AgentMail {
     }
   }
 
-  /** Another message's attachment, as a source: needs read access, and the message must be in the grant's label scope. */
+  /** Another message's attachment in the same account, as a source. */
   private async messagePart(a: Access, messageId: string, attachmentId: string): Promise<MessagePart> {
-    if (!a.grant.capabilities.includes("read")) {
-      throw new PolicyDenied("capability", `Attaching another message's file needs permission to ${CAPABILITY_HELP.read} on ${a.account.email}.`);
-    }
     const msg = await this.loadMessage(a, messageId, "full");
     const part = findPart(msg, messageId, attachmentId);
     return {
@@ -628,38 +559,28 @@ export class AgentMail {
     return raw;
   }
 
-  private denyReplyOnly(a: Access): never {
-    const draft = a.grant.capabilities.includes("draft") ? " or create_draft to save a draft for a human to send" : "";
-    throw new PolicyDenied(
-      "reply_only",
-      `Your access to ${a.account.email} only allows replies inside threads you can see. Use reply with a message_id from such a thread${draft}.`,
-    );
-  }
-
-  async sendMessage(account: string | undefined, args: ComposeArgs & { reason?: string }): Promise<SendOutcome> {
-    const a = this.resolve(account, "send");
-    if (a.grant.replyOnly) this.denyReplyOnly(a);
+  async sendMessage(account: string | undefined, args: ComposeArgs): Promise<SendOutcome> {
+    const a = this.resolve(account, "full");
     const to = this.recipients(args.to, "to");
     const cc = this.recipients(args.cc, "cc");
     const bcc = this.recipients(args.bcc, "bcc");
     this.checkAttachments(args.attachments);
-    return this.deliver(a, "send", {
+    return this.deliver(a, {
       to,
       cc,
       bcc,
       subject: args.subject,
       body: args.body,
       threadId: null,
-      reason: args.reason ?? null,
       attachments: args.attachments?.length ? () => this.attachments(a, args.attachments, args.body) : undefined,
     });
   }
 
   async reply(
     account: string | undefined,
-    args: { messageId: string; body: string; replyAll?: boolean; reason?: string; attachments?: AttachmentInput[] },
+    args: { messageId: string; body: string; replyAll?: boolean; attachments?: AttachmentInput[] },
   ): Promise<SendOutcome> {
-    const a = this.resolve(account, "send");
+    const a = this.resolve(account, "full");
     this.trace.target = args.messageId;
     // Cheap checks before loading the original.
     this.checkAttachments(args.attachments);
@@ -684,8 +605,6 @@ export class AgentMail {
     const ccList = dedupe(cc);
     if (!toList.length && !ccList.length) throw new ToolError("no_recipients", "This message has no one to reply to (it only involves this account).");
     const recipients = [...toList, ...ccList];
-    // Reply-only needs no extra recipient check here: drafts are refused above, so every recipient comes
-    // from a message that was actually sent or received in this thread.
     const hint =
       args.replyAll && !disallowed(a.grant, toList).length
         ? "Retry with reply_all: false to answer only the sender, or use send_message for the allowed recipients."
@@ -695,7 +614,7 @@ export class AgentMail {
       recipients.map((x) => x.email),
       hint,
     );
-    return this.deliver(a, "reply", {
+    return this.deliver(a, {
       to: toList.length ? toList : ccList,
       cc: toList.length ? ccList : [],
       bcc: [],
@@ -704,17 +623,15 @@ export class AgentMail {
       threadId: src.threadId,
       inReplyTo: p.messageId,
       references: p.messageId ? [...p.references.filter((r) => r !== p.messageId), p.messageId] : p.references,
-      reason: args.reason ?? null,
       attachments: args.attachments?.length ? () => this.attachments(a, args.attachments, args.body) : undefined,
     });
   }
 
   async forward(
     account: string | undefined,
-    args: { messageId: string; to: string | string[]; body?: string; includeAttachments?: boolean; attachments?: AttachmentInput[]; reason?: string },
+    args: { messageId: string; to: string | string[]; body?: string; includeAttachments?: boolean; attachments?: AttachmentInput[] },
   ): Promise<SendOutcome> {
-    const a = this.resolve(account, "send");
-    if (a.grant.replyOnly) this.denyReplyOnly(a);
+    const a = this.resolve(account, "full");
     this.trace.target = args.messageId;
     const to = this.recipients(args.to, "to");
     // Cheap checks before loading the original.
@@ -734,14 +651,13 @@ export class AgentMail {
       original.body,
     ].join("\n");
     const body = args.body?.trim() ? `${args.body.trimEnd()}\n\n${quoted}` : quoted;
-    return this.deliver(a, "forward", {
+    return this.deliver(a, {
       to,
       cc: [],
       bcc: [],
       subject: prefixSubject("Fwd", p.summary.subject),
       body,
       threadId: null,
-      reason: args.reason ?? null,
       attachments:
         args.includeAttachments || args.attachments?.length
           ? () => this.attachments(a, args.attachments, body, args.includeAttachments ? this.originals(a, p) : undefined)
@@ -761,10 +677,9 @@ export class AgentMail {
     }));
   }
 
-  /** Recipient allowlist, send caps, then the grant's send mode. */
+  /** Recipient allowlist, then send. */
   private async deliver(
     a: Access,
-    kind: GoogleApproval["kind"],
     m: {
       to: Address[];
       cc: Address[];
@@ -774,7 +689,6 @@ export class AgentMail {
       threadId: string | null;
       inReplyTo?: string | null;
       references?: string[];
-      reason: string | null;
       attachments?: () => Promise<OutgoingAttachment[]>;
     },
   ): Promise<SendOutcome> {
@@ -782,7 +696,6 @@ export class AgentMail {
     if (!m.to.length) throw new ToolError("no_recipients", "Add at least one recipient in to.");
     if (all.length > MAX_RECIPIENTS) throw new ToolError("too_many_recipients", `At most ${MAX_RECIPIENTS} recipients per message.`);
     this.trace.detail = {
-      mode: a.grant.sendMode,
       recipients: all.length,
       domains: [...new Set(all.map((x) => domainOf(x.email)))].slice(0, 10),
     };
@@ -790,8 +703,6 @@ export class AgentMail {
       a.grant,
       all.map((x) => x.email),
     );
-    // Synchronous check-and-reserve: no await between the cap check and taking the slot.
-    this.trace.release = reserveSend(this.ctx.db, a.grant);
     const attachments = m.attachments ? await m.attachments() : [];
     // Names, types, sizes and sha256 only: never the content.
     if (attachments.length) this.trace.detail.attachments = attachmentMeta(attachments);
@@ -807,57 +718,22 @@ export class AgentMail {
       attachments,
     }));
 
-    if (a.grant.sendMode === "direct") {
-      const sent = await this.uncertain(() => a.gmail.send(raw, m.threadId), "sent");
-      this.trace.target = sent.id;
-      try {
-        this.ctx.ingest.kick(a.account.id);
-      } catch {
-        // ingest.kick never throws once implemented; tolerate placeholders.
-      }
-      return { status: "sent", messageId: sent.id, threadId: sent.threadId };
-    }
-
-    const draft = await this.uncertain(() => a.gmail.createDraft(raw, m.threadId), "saved as a draft");
-    if (a.grant.sendMode === "draft_only") {
-      this.trace.target = draft.id;
-      return { status: "draft_created", draftId: draft.id, message: DRAFT_ONLY_MESSAGE };
-    }
-
-    let fingerprint: string;
+    const sent = await this.uncertain(() => a.gmail.send(raw, m.threadId));
+    this.trace.target = sent.id;
     try {
-      fingerprint = draftFingerprint((await a.gmail.getDraft(draft.id)).message);
-    } catch (err) {
-      await a.gmail.deleteDraft(draft.id).catch(() => {});
-      throw err;
+      this.ctx.ingest.kick(a.account.id);
+    } catch {
+      // ingest.kick never throws once implemented; tolerate placeholders.
     }
-    const payload: ApprovalPayload = {
-      to: m.to,
-      cc: m.cc,
-      bcc: m.bcc,
-      subject: m.subject,
-      body: m.body,
-      threadId: m.threadId,
-      attachments: attachmentMeta(attachments, false),
-      reason: m.reason,
-      fingerprint,
-    };
-    const approval = this.approvals.create({ agentId: this.principal.agentId, accountId: a.account.id, kind, draftId: draft.id, payload });
-    this.trace.target = approval.id;
-    return {
-      status: "pending_approval",
-      approvalId: approval.id,
-      expiresAt: approval.expiresAt,
-      message: "Queued for human approval; nothing has been sent yet. Check later with get_send_status.",
-    };
+    return { messageId: sent.id, threadId: sent.threadId };
   }
 
   /**
-   * Runs the Gmail write that sends (or saves) mail. A failure that may have happened after Gmail accepted
-   * it (5xx, a timeout or reset: status 0) is recorded as "maybeSent", which counts toward the send caps, and
-   * the agent is told to check before retrying. Only a connection that never reached Google is a clean failure.
+   * Runs the Gmail write that sends mail. A failure that may have happened after Gmail accepted it (5xx, a
+   * timeout or reset: status 0) is recorded as "maybeSent", and the agent is told to check before retrying.
+   * Only a connection that never reached Google is a clean failure.
    */
-  private async uncertain<T>(fn: () => Promise<T>, what: string): Promise<T> {
+  private async uncertain<T>(fn: () => Promise<T>): Promise<T> {
     try {
       return await fn();
     } catch (err) {
@@ -869,45 +745,23 @@ export class AgentMail {
       this.trace.detail.maybeSent = true;
       throw new ToolError(
         "send_uncertain",
-        `The connection to Gmail failed, so the message may or may not have been ${what}. Check (search_threads with in:sent or in:drafts) before retrying.`,
+        "The connection to Gmail failed, so the message may or may not have been sent. Check (search_threads with in:sent) before retrying.",
       );
     }
   }
 
-  /** Read-only: an overdue pending request is reported as expired (the expiry timer records it). */
-  sendStatus(approvalId: string): Approval {
-    this.trace.target = approvalId;
-    const approval = this.approvals.get(approvalId);
-    if (!approval || approval.agentId !== this.principal.agentId) {
-      throw new ToolError("not_found", `No send request ${approvalId} was found for you.`);
-    }
-    this.trace.accountId = approval.accountId;
-    if (approval.status === "pending" && Date.parse(approval.expiresAt) <= Date.now()) return { ...approval, status: "expired" };
-    return approval;
-  }
-
   // ───────────── Organize / trash ─────────────
 
-  private async resolveLabelIds(a: Access, names: string[], mode: "add" | "remove"): Promise<string[]> {
+  private async resolveLabelIds(a: Access, names: string[]): Promise<string[]> {
     if (!names.length) return [];
-    const scope = a.grant.labelScope;
     // A name we don't know may be a label created in Gmail since the cache was filled: look again once.
     const all = await this.labelsHaving(a, names);
     const find = (list: GmailLabel[], key: string) => list.find((l) => l.id === key) ?? list.find((l) => l.name.toLowerCase() === key.toLowerCase());
-    // Scoped agents only see (and may name) their scope labels and common system labels.
-    const labels = scope === null ? all : all.filter((l) => scope.includes(l.id) || SCOPED_VISIBLE_SYSTEM.has(l.id));
     return names.map((n) => {
       const key = n.trim();
-      const label = find(labels, key);
-      // Scoped agents may add only their own scope labels: any other label (INBOX included) can be another
-      // grant's scope, so adding it would hand the thread to that grant. Read state goes through mark_read.
-      const addable = () => all.filter((l) => scope!.includes(l.id)).map((l) => l.name).join(", ") || "(none)";
-      if (!label && scope !== null) {
-        // Same answer whether or not the label exists outside the scope.
-        throw new PolicyDenied("label_scope", `"${key}" isn't a label you can use. Labels you can add: ${addable()}.`);
-      }
+      const label = find(all, key);
       if (!label) {
-        const sample = labels.filter((l) => l.type === "user").slice(0, 30).map((l) => l.name);
+        const sample = all.filter((l) => l.type === "user").slice(0, 30).map((l) => l.name);
         throw new ToolError("unknown_label", `No label named "${key}". Existing labels include: INBOX, STARRED, IMPORTANT, UNREAD${sample.length ? ", " + sample.join(", ") : ""}.`);
       }
       if (PROTECTED_LABELS.has(label.id)) {
@@ -916,19 +770,16 @@ export class AgentMail {
           label.id === "TRASH" ? "Use the trash tool to move mail to the trash." : `The ${label.id} label can't be changed with modify_labels.`,
         );
       }
-      if (mode === "add" && scope !== null && !scope.includes(label.id)) {
-        throw new PolicyDenied("label_scope", `You can't add the ${label.name} label. Labels you can add: ${addable()}.`);
-      }
       return label.id;
     });
   }
 
   async modifyLabels(account: string | undefined, t: Target, add: string[] = [], remove: string[] = []) {
-    const a = this.resolve(account, "organize");
+    const a = this.resolve(account, "full");
     if (!add.length && !remove.length) throw new ToolError("invalid_arguments", "Pass labels to add and/or remove.");
-    const target = await this.resolveTarget(a, t);
-    const addIds = await this.resolveLabelIds(a, add, "add");
-    const removeIds = await this.resolveLabelIds(a, remove, "remove");
+    const target = this.resolveTarget(t);
+    const addIds = await this.resolveLabelIds(a, add);
+    const removeIds = await this.resolveLabelIds(a, remove);
     this.trace.detail = { kind: target.kind, add: addIds, remove: removeIds };
     const labelIds =
       target.kind === "thread"
@@ -938,15 +789,15 @@ export class AgentMail {
   }
 
   async archive(account: string | undefined, threadId: string) {
-    const a = this.resolve(account, "organize");
-    await this.resolveTarget(a, { threadId });
+    const a = this.resolve(account, "full");
+    this.resolveTarget({ threadId });
     await a.gmail.modifyThread(threadId, [], ["INBOX"]);
     return { account: a.account, threadId };
   }
 
   async markRead(account: string | undefined, t: Target, read = true) {
-    const a = this.resolve(account, "organize");
-    const target = await this.resolveTarget(a, t);
+    const a = this.resolve(account, "full");
+    const target = this.resolveTarget(t);
     const [add, remove] = read ? [[], ["UNREAD"]] : [["UNREAD"], []];
     if (target.kind === "thread") await a.gmail.modifyThread(target.id, add, remove);
     else await a.gmail.modifyMessage(target.id, add, remove);
@@ -955,8 +806,8 @@ export class AgentMail {
   }
 
   async trash(account: string | undefined, t: Target) {
-    const a = this.resolve(account, "trash");
-    const target = await this.resolveTarget(a, t);
+    const a = this.resolve(account, "full");
+    const target = this.resolveTarget(t);
     if (target.kind === "thread") await a.gmail.trashThread(target.id);
     else await a.gmail.trashMessage(target.id);
     this.trace.detail = { kind: target.kind };

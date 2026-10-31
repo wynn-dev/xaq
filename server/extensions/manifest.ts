@@ -22,12 +22,6 @@ export type RiskClass = "read" | "write" | "risky";
 
 export interface RiskEntry {
   class: RiskClass;
-  /**
-   * JSON Pointer (RFC 6901) to the argument naming the call's target, for "always allow … for this target"; or
-   * candidate pointers, of which the first whose top-level argument the tool's live input schema declares wins.
-   * No declared candidate: no target (never a wrong one).
-   */
-  target?: string | string[];
 }
 
 export type RemoteAuth =
@@ -279,19 +273,10 @@ function validateRisk(v: unknown, path: string): NonNullable<Manifest["risk"]> {
   for (const name of names) {
     const p = `${path}.tools["${name.slice(0, 64)}"]`;
     str(name, p, { max: 128, re: TOOL_NAME_RE, what: "a tool name" });
+    // "target" (a JSON Pointer for approval rules, gone) is still accepted and ignored, so older manifests install.
     const e = obj(o.tools[name], p, ["class", "target"], ["class"]);
     if (e.class !== "read" && e.class !== "write" && e.class !== "risky") fail(`${p}.class`, 'must be "read", "write" or "risky"');
     const entry: RiskEntry = { class: e.class };
-    if (e.target !== undefined) {
-      const pointer = (t: unknown, tp: string) => str(t, tp, { max: 512, re: POINTER_RE, what: 'a JSON Pointer such as "/projectId"' });
-      if (Array.isArray(e.target)) {
-        const list = strList(e.target, `${p}.target`, pointer, 16);
-        if (!list.length) fail(`${p}.target`, "must not be empty");
-        entry.target = list;
-      } else {
-        entry.target = pointer(e.target, `${p}.target`);
-      }
-    }
     Object.defineProperty(tools, name, { value: entry, enumerable: true, writable: true, configurable: true });
   }
   const risk: NonNullable<Manifest["risk"]> = { tools };
@@ -715,28 +700,13 @@ export function renderSetup(steps: readonly ManifestSetupStep[], ctx: SetupConte
 
 // ───────────── Risk map ─────────────
 
-/** The first candidate pointer whose top-level argument the live input schema declares. */
-function declaredTarget(tool: ToolDef, target: string | string[] | undefined): string | undefined {
-  if (target === undefined) return undefined;
-  const props = tool.inputSchema.properties;
-  if (!props || typeof props !== "object" || Array.isArray(props)) return undefined;
-  for (const pointer of Array.isArray(target) ? target : [target]) {
-    const top = pointer.slice(1).split("/")[0]!.replace(/~1/g, "/").replace(/~0/g, "~");
-    if (Object.hasOwn(props, top)) return pointer;
-  }
-  return undefined;
-}
-
 /** The risk map as IntegrationPreset.classify: exact names only; null (the generic rules) for anything unlisted. */
 export function classifierFor(risk: Manifest["risk"]): (tool: ToolDef) => ToolClass | null {
   const tools = risk?.tools ?? {};
   return (tool) => {
     const entry = Object.hasOwn(tools, tool.name) ? tools[tool.name] : undefined;
     if (!entry) return null;
-    const cls: ToolClass = { risky: entry.class === "risky", read: entry.class === "read", source: "preset" };
-    const path = declaredTarget(tool, entry.target);
-    if (path) cls.targetPath = path;
-    return cls;
+    return { risky: entry.class === "risky", read: entry.class === "read", source: "preset" };
   };
 }
 

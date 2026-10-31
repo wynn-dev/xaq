@@ -179,7 +179,7 @@ describe("Calendar API turned off in the project", () => {
     expect(w!.hint).toContain("gcloud services enable calendar-json.googleapis.com --project=fake-project");
 
     // With an agent that uses Calendar it is an error.
-    ctx.policy.createAgent({ name: "Hermes", grants: [grantInput(account!.id, { capabilities: ["read", "calendar.read"] })] });
+    ctx.policy.createAgent({ name: "Hermes", grants: [grantInput(account!.id, { level: "read" })] });
     expect(calendarWarnings()[0]!.severity).toBe("error");
 
     const calendars = await withErrors(accountsApi(ctx)).request(`/accounts/${account!.id}/calendars`);
@@ -209,7 +209,7 @@ describe("API state across accounts", () => {
   it("an account left marked api_disabled doesn't keep the install disabled once the API is seen working", async () => {
     const a = (await consent(ctx, fake, OPS)).account!;
     const b = (await consent(ctx, fake, WYNN)).account!;
-    ctx.policy.createAgent({ name: "Hermes", grants: [grantInput(b.id, { capabilities: ["calendar.read"] })] });
+    ctx.policy.createAgent({ name: "Hermes", grants: [grantInput(b.id, { level: "read" })] });
     noteCalendarApi(ctx, "disabled", disabledError(ACTIVATION_URL));
     ctx.db.run("UPDATE accounts SET calendar_status = 'api_disabled', calendar_error = 'off'");
     expect(calendarWarnings().map((w) => [w.code, w.severity])).toEqual([["calendar_api_disabled", "error"]]);

@@ -66,11 +66,10 @@ export function AppSidebar() {
   const pathname = useLocation({ select: (l) => l.pathname });
   const { setOpenMobile } = useSidebar();
   const close = () => setOpenMobile(false);
-  const { data: pending } = useQuery(queries.approvals("pending"));
   const { data: system } = useQuery(queries.system());
   const setup = useSetupProgress();
   const { data: pairings } = useQuery(queries.pairings("pending"));
-  const pendingCount = (pending?.length ?? 0) + (pairings?.length ?? 0);
+  const pendingCount = pairings?.length ?? 0;
 
   const signOut = useSignOut();
 

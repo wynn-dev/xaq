@@ -14,7 +14,7 @@ import type { AppContext } from "../context.ts";
 import { HttpError, notFound } from "../util/errors.ts";
 import { type AgentApiEnv, agentAuth } from "./auth.ts";
 import { agentRequestGuard, isLocalAddress } from "./guard.ts";
-import { ackListener, newestVisibleSeq, parseConsumer } from "./listeners.ts";
+import { ackListener, newestGrantedSeq, parseConsumer } from "./listeners.ts";
 import { createPairingService, type PairingOptions, type PairingService, pairingStartSchema, pollSchema } from "./pairing.ts";
 import { OncePer, RateLimiter, tooManyRequests } from "./ratelimit.ts";
 import { streamEvents } from "./stream.ts";
@@ -183,15 +183,8 @@ export function agentApiRoutes(ctx: AppContext): Hono<AgentApiEnv> {
       grants: agent.grants.map((g) => ({
         accountId: g.accountId,
         accountEmail: ctx.accounts.get(g.accountId)?.email ?? "",
-        capabilities: g.capabilities,
-        labelScope: g.labelScope,
-        sendMode: g.sendMode,
+        level: g.level,
         allowTo: g.allowTo,
-        replyOnly: g.replyOnly,
-        maxSendsPerHour: g.maxSendsPerHour,
-        maxSendsPerDay: g.maxSendsPerDay,
-        calendarScope: g.calendarScope,
-        calendarWriteMode: g.calendarWriteMode,
       })),
       consumers: ctx.db
         .all<{ consumer: string; start_seq: number | null; acked_seq: number; connected: number }>(
@@ -202,7 +195,7 @@ export function agentApiRoutes(ctx: AppContext): Hono<AgentApiEnv> {
       connections: connectionGrantsOf(ctx.db, agent.id).map((g) => ({ name: g.name, slug: g.slug, level: g.level })),
       mcpUrl: `${base}/mcp`,
       skillUrl: `${base}/skill.md`,
-      headSeq: newestVisibleSeq(ctx, agent.id),
+      headSeq: newestGrantedSeq(ctx, agent.id),
     };
     return c.json(self);
   });

@@ -45,7 +45,7 @@ export interface PairingRequest {
 export interface AgentSelf {
   id: string;
   name: string;
-  grants: { accountId: string; accountEmail: string; capabilities: string[]; labelScope: string[] | null; sendMode: string }[];
+  grants: { accountId: string; accountEmail: string; level: string; allowTo: string[] }[];
   mcpUrl: string;
   skillUrl: string;
   headSeq: number;

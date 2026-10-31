@@ -30,20 +30,20 @@ export interface OutgoingAttachment {
   filename: string;
   contentType: string;
   content: Buffer;
-  /** Where it came from (approval card and audit). Absent: in the call (content_base64). */
+  /** Where it came from (audit). Absent: in the call (content_base64). */
   source?: AttachmentSource;
 }
 
-/** Audit and approval view: never the content. */
+/** Audit view: never the content. */
 export interface AttachmentMeta {
   filename: string;
   mimeType: string;
   size: number;
-  sha256?: string;
+  sha256: string;
   source?: AttachmentSource;
 }
 
-/** Files per message. Gmail itself takes far more; this keeps tool calls and approval cards readable. */
+/** Files per message. Gmail itself takes far more; this keeps tool calls and the audit log readable. */
 export const MAX_ATTACHMENTS = 10;
 /**
  * Gmail's sending limit: 25 MB for the message content and attachments together, before encoding
@@ -245,7 +245,7 @@ export function fileType(label: string, rawName: string, given: unknown, fallbac
   const contentType = (type || (inferred && !/^(multipart|message)\//i.test(inferred) ? inferred : "") || "application/octet-stream").toLowerCase();
   const filename = sanitizeFilename(rawName, contentType);
   // Still an encoded-word after the bounded unwrapping: a mail client would decode it once more, into a name
-  // nothing here has checked. Refuse rather than send a name the approval card can't show.
+  // nothing here has checked. Refuse rather than send a name the audit log can't show.
   if (ENCODED_WORD.test(filename)) {
     throw new AttachmentError("invalid_attachment", `${label}: the filename is MIME-encoded (=?…?=); pass the plain file name.`);
   }
@@ -315,13 +315,13 @@ export function prepareAttachments(input: Base64AttachmentInput[] | undefined, b
   });
 }
 
-/** What the audit log and the approval card record about each file: name, type, size, source and sha256, never content. */
-export function attachmentMeta(list: { filename: string; contentType?: string; content: Buffer; source?: AttachmentSource }[], withHash = true): AttachmentMeta[] {
+/** What the audit log records about each file: name, type, size, source and sha256, never content. */
+export function attachmentMeta(list: { filename: string; contentType?: string; content: Buffer; source?: AttachmentSource }[]): AttachmentMeta[] {
   return list.map((x) => ({
     filename: x.filename,
     mimeType: x.contentType ?? "application/octet-stream",
     size: x.content.length,
     ...(x.source ? { source: x.source } : {}),
-    ...(withHash ? { sha256: createHash("sha256").update(x.content).digest("hex") } : {}),
+    sha256: createHash("sha256").update(x.content).digest("hex"),
   }));
 }

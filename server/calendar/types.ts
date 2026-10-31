@@ -5,16 +5,9 @@ import type {
   CalendarInfo,
   CalendarSetupInput,
   CalendarSetupState,
-  GoogleApproval,
   MessageContent,
 } from "../../shared/types.ts";
 import type { Lifecycle } from "../context.ts";
-
-/** Result of applying a calendar approval (B). */
-export interface AppliedChange {
-  /** The created/updated event's id; for delete, the deleted id. */
-  eventId: string;
-}
 
 export interface CalendarService extends Lifecycle {
   // ───── Sync (A: server/calendar/sync.ts) ─────
@@ -43,14 +36,6 @@ export interface CalendarService extends Lifecycle {
    */
   calendars(accountId: string): Promise<CalendarInfo[]>;
 
-  // ───── Approvals (B: server/calendar/approvals.ts) ─────
-  /** FROZEN. Why this calendar approval can no longer be applied under the agent's current grant, or null. */
-  approvalBlockedReason(approval: GoogleApproval): string | null;
-  /**
-   * FROZEN. Applies an approved calendar.* change to Google (called by server/mail/approvals.ts after it
-   * claimed the approval). Throws GoogleApiError/AccountNeedsReauthError like a send would.
-   */
-  applyApproval(approval: GoogleApproval): Promise<AppliedChange>;
 
   // ───── Content (C: server/calendar/content.ts) ─────
   /**

@@ -23,7 +23,6 @@ interface FormValues {
   calendarPollSeconds: string;
   maxBodyChars: string;
   retentionDays: string;
-  approvalTtlHours: string;
   pairingEnabled: boolean;
 }
 
@@ -33,7 +32,6 @@ const toForm = (s: Settings): FormValues => ({
   calendarPollSeconds: String(s.calendarPollSeconds),
   maxBodyChars: String(s.maxBodyChars),
   retentionDays: String(s.retentionDays),
-  approvalTtlHours: String(s.approvalTtlHours),
   pairingEnabled: s.pairingEnabled,
 });
 
@@ -44,7 +42,6 @@ const fromForm = (v: FormValues): Settings => ({
   calendarPollSeconds: Number(v.calendarPollSeconds),
   maxBodyChars: Number(v.maxBodyChars),
   retentionDays: Number(v.retentionDays),
-  approvalTtlHours: Number(v.approvalTtlHours),
   pairingEnabled: v.pairingEnabled,
 });
 
@@ -193,14 +190,9 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
                 />
               )}
             </form.Field>
-            <form.Field name="approvalTtlHours" validators={{ onChange: ({ value }) => intError("Approval expiry", 1, 720)(value) }}>
-              {(field) => (
-                <NumberField field={field} label="Approvals expire after" unit="hours" description="Unanswered requests are rejected and their drafts deleted." />
-              )}
-            </form.Field>
             <form.Field name="retentionDays" validators={{ onChange: ({ value }) => intError("Retention", 1, 3650)(value) }}>
               {(field) => (
-                <NumberField field={field} label="Keep history for" unit="days" description="Events, audit entries and decided approvals older than this are deleted." />
+                <NumberField field={field} label="Keep history for" unit="days" description="Events and audit entries older than this are deleted." />
               )}
             </form.Field>
           </FieldGroup>
@@ -224,7 +216,7 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
                   <FieldLabel htmlFor={field.name}>Accept pairing requests</FieldLabel>
                   <FieldDescription>
                     {field.state.value
-                      ? "Requests wait under Approvals → Agent access. Nothing gets access until you approve the matching code and choose its permissions; the key goes straight to the agent's terminal."
+                      ? "Requests wait under Approvals. Nothing gets access until you approve the matching code and choose its permissions; the key goes straight to the agent's terminal."
                       : "Off: connect is refused. You can still create agents under Agents and paste their key yourself."}
                   </FieldDescription>
                 </div>

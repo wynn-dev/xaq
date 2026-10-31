@@ -2,8 +2,6 @@ import type { MessageContent, EventPayload } from "../../shared/types.ts";
 import type { AppContext } from "../context.ts";
 import { toMailEvent } from "./repo.ts";
 import type { StoredEvent } from "./types.ts";
-import { calendarInScope } from "../policy/calendar.ts";
-import { inScope, threadLabels } from "../policy/enforce.ts";
 import { errorMessage } from "../util/errors.ts";
 
 /** Event payload data; `contentError` explains a missing `content` when the body was requested. */
@@ -13,7 +11,7 @@ const CONTENT_TIMEOUT_MS = 20_000;
 
 export interface PayloadOptions {
   /**
-   * Checked before fetching the body (e.g. the thread's current labels against the label scope).
+   * Checked before fetching the body (e.g. the agent still has a grant on the account).
    * Resolve to an error message to skip the body and report it as `contentError`.
    */
   bodyCheck?: () => Promise<string | null>;
@@ -48,23 +46,9 @@ async function fetchContent(data: PayloadData, what: string, opts: PayloadOption
   }
 }
 
-/**
- * Body access checked against the thread's labels as they are now (like MCP fetch-by-id), not the
- * labels stored with the event: a thread relabelled out of the agent's scope since then gets no body.
- * Calendar events: the grant must still read calendars and include the event's calendar.
- */
+/** Body access checked as it is now, not when the event was recorded: an agent that lost its grant since gets no body. */
 export function scopeBodyCheck(ctx: AppContext, agentId: string, event: StoredEvent): () => Promise<string | null> {
-  return async () => {
-    const grant = ctx.policy.grant(agentId, event.accountId);
-    if (event.calendarEvent) {
-      const ok = !!grant?.capabilities.includes("calendar.read") && calendarInScope(grant, event.calendarEvent.calendarId);
-      return ok ? null : "not accessible";
-    }
-    const scope = grant?.labelScope ?? null;
-    if (scope === null || !event.message) return null;
-    const thread = await ctx.google.gmail(event.accountId).getThread(event.message.threadId, "minimal");
-    return inScope(scope, threadLabels(thread)) ? null : "not accessible";
-  };
+  return async () => (ctx.policy.grant(agentId, event.accountId) ? null : "not accessible");
 }
 
 export function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {

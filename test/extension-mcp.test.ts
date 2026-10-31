@@ -61,7 +61,7 @@ const echoPreset = (ext: () => InstalledExtension): IntegrationPreset => ({
   createSource: (deps) => codeExtensionSource(ext(), deps, { verify: () => true }),
 });
 
-async function world(opts: { level?: "read" | "ask" | "full" } = {}) {
+async function world(opts: { level?: "read" | "full" } = {}) {
   const up: FakeMcpUpstream = await startFakeMcpUpstream({
     tools: [{ name: "get_page", description: "Read a page.", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } }],
     prompts: [{ name: "summarize", description: "Summarize a page.", arguments: [{ name: "page", required: true }], get: (a) => ({ messages: [{ role: "user", content: { type: "text", text: `Summarize ${a.page}` } }] }) }],

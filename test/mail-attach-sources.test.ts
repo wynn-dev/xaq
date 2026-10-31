@@ -1,6 +1,6 @@
 // Attachment sources over MCP, against the fake Google: bytes in the call and another message's attachment, mixed
 // in one message, on send_message, create_draft, reply and forward; Gmail's 25 MB of attachments and the API's 35 MB
-// for the encoded message; and what approval cards and the audit log say about each file's source.
+// for the encoded message; and what the audit log says about each file's source.
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { Account, AttachmentSource, GrantInput } from "../shared/types.ts";
@@ -29,7 +29,7 @@ const pdf = (size: number, seed = 1) => {
 
 /** An MCP agent with a mail grant on `accountId`. */
 async function agent(name: string, accountId: string, g: Partial<GrantInput> = {}) {
-  const { agent: a } = ctx.policy.createAgent({ name, grants: [grantInput(accountId, { capabilities: ["read", "draft", "send"], sendMode: "direct", ...g })] });
+  const { agent: a } = ctx.policy.createAgent({ name, grants: [grantInput(accountId, { level: "full", ...g })] });
   const c = await connectAgent(ctx, a.id, name);
   closers.push(c.close);
   const json = async (tool: string, args: Record<string, unknown>) => {
@@ -100,28 +100,6 @@ describe("attachment sources", () => {
     ]);
     expect(detail.attachments.every((x) => /^[0-9a-f]{64}$/.test(x.sha256))).toBe(true);
     expect(JSON.stringify(detail)).not.toContain(invoice.toString("base64").slice(0, 40));
-  });
-
-  it("approval cards show where each file came from", async () => {
-    const a = await agent("approver", me.id, { sendMode: "approval" });
-    const src = fake.deliver(ME, { from: "hr@example.org", subject: "Form", text: "Form attached", attachments: [{ filename: "form.pdf", mimeType: "application/pdf", content: pdf(800) }] });
-    const r = await a.json("reply", {
-      message_id: src.id,
-      body: "Filled in, plus my notes.",
-      reason: "user asked",
-      attachments: [
-        { content_base64: Buffer.from("target").toString("base64"), filename: "notes.txt" },
-        { message_id: src.id, attachment_id: partId(src, "form.pdf") },
-      ],
-    });
-    expect(r.status).toBe("pending_approval");
-    const approval = ctx.mail.getApproval(r.approvalId!)!;
-    expect(approval.attachments).toEqual([
-      { filename: "notes.txt", mimeType: "text/plain", size: 6, source: { kind: "upload" } },
-      { filename: "form.pdf", mimeType: "application/pdf", size: 800, source: { kind: "message", messageId: src.id, attachmentId: partId(src, "form.pdf"), filename: "form.pdf" } },
-    ]);
-    // Approval follows the grant's policy, unchanged: nothing went out yet.
-    expect(fake.sent(ME).some((m) => ctx.google.mime.parse(m).summary.subject === "Re: Form")).toBe(false);
   });
 
   it("create_draft and forward take new attachments too; forward keeps include_attachments", async () => {
@@ -202,18 +180,10 @@ describe("attachment sources", () => {
     expect(a.audit("send_message")[0]).toMatchObject({ outcome: "error", reason: "too_large" });
   });
 
-  it("another message's attachment needs read access, the message in scope, and an id it lists", async () => {
+  it("another message's attachment needs an id it lists", async () => {
     const src = fake.deliver(ME, { from: "a@example.org", subject: "Private", text: "x", attachments: [{ filename: "private.pdf", mimeType: "application/pdf", content: pdf(300) }] });
-    const sendOnly = await agent("send-only", me.id, { capabilities: ["send"] });
-    const att = { message_id: src.id, attachment_id: partId(src, "private.pdf") };
-    expect((await sendOnly.call("send_message", { to: "x@example.org", subject: "s", body: "b", attachments: [att] })).text).toMatch(
-      /Attaching another message's file needs permission to read and search mail/,
-    );
-    const label = fake.addLabel(ME, "Shared");
-    const scoped = await agent("scoped", me.id, { labelScope: [label] });
-    expect((await scoped.call("send_message", { to: "x@example.org", subject: "s", body: "b", attachments: [att] })).isError).toBe(true);
-    const reader = await agent("reader", me.id);
-    expect((await reader.call("send_message", { to: "x@example.org", subject: "s", body: "b", attachments: [{ message_id: src.id, attachment_id: "nope" }] })).text).toMatch(
+    const sender = await agent("sender", me.id);
+    expect((await sender.call("send_message", { to: "x@example.org", subject: "s", body: "b", attachments: [{ message_id: src.id, attachment_id: "nope" }] })).text).toMatch(
       new RegExp(`Message ${src.id} has no attachment nope\\. Its attachments: .*private\\.pdf`),
     );
   });

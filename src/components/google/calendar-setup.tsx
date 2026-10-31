@@ -387,8 +387,7 @@ function AccountsPage({
           <AlertTitle>Google Calendar is added</AlertTitle>
           <AlertDescription>
             <p>
-              Next, choose which agents may use it: open an agent, then <Path items={["Access", "Calendar"]} />. Reading and writing are separate,
-              and writes can wait for your approval.
+              Agents with access to an account use its calendars too: read only, or full access to change them.
             </p>
             <div className="pt-1">
               <Button size="sm" variant="outline" asChild onClick={onDone}>

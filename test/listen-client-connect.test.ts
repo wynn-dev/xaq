@@ -39,7 +39,7 @@ const approved = () => ({
 describe("connect (device flow)", () => {
   it("writes the key to a 0600 profile in a 0700 dir and never prints it", async () => {
     api.pollScript = [{ status: "pending" }, approved()];
-    const code = await runConnect(api.url, { tool: "claude-code", name: "Claude Code on testhost", capabilities: "read,draft", account: ["me@example.com"] }, { pollIntervalMs: 10 });
+    const code = await runConnect(api.url, { tool: "claude-code", name: "Claude Code on testhost", account: ["me@example.com"] }, { pollIntervalMs: 10 });
     expect(code).toBe(CONNECT_EXIT.approved);
 
     const path = profilePath();
@@ -57,7 +57,7 @@ describe("connect (device flow)", () => {
 
     expect(api.pairingStarts[0]).toMatchObject({
       name: "Claude Code on testhost",
-      requested: { accounts: ["me@example.com"], capabilities: ["read", "draft"] },
+      requested: { accounts: ["me@example.com"] },
       client: { tool: "claude-code", platform: process.platform },
     });
   });
@@ -105,9 +105,8 @@ describe("connect (device flow)", () => {
     expect(await runConnect(api.url, {}, { pollIntervalMs: 20, signal: ac.signal })).toBe(CONNECT_EXIT.cancelled);
   });
 
-  it("validates --tool and --capabilities before contacting the daemon", async () => {
+  it("validates --tool before contacting the daemon", async () => {
     await expect(runConnect(api.url, { tool: "vim" })).rejects.toThrow(/Unknown --tool/);
-    await expect(runConnect(api.url, { capabilities: "read,fly" })).rejects.toThrow(/Unknown capability fly/);
     expect(api.pairingStarts).toHaveLength(0);
   });
 });

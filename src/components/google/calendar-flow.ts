@@ -203,7 +203,7 @@ export function calendarNotice(warnings: readonly SetupWarning[]): CalendarNotic
       code: notAdded.code,
       severity: "info",
       title: "New: Google Calendar for your agents",
-      body: "Agents can read your calendars, find free time, schedule events and answer invitations, with the same per-agent access rules and approvals as mail. Adding it takes a few minutes and never interrupts mail.",
+      body: "Agents can read your calendars, find free time, schedule events and answer invitations, with the same per-agent access as mail. Adding it takes a few minutes and never interrupts mail.",
       action: { label: "Add Google Calendar" },
       dismissible: true,
     };

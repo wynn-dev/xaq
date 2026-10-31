@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { Account, Agent, Approval, AuditEntry, MailEvent, PairingRequest, Settings } from "../shared/types.ts";
+import type { Account, Agent, AuditEntry, MailEvent, PairingRequest, Settings } from "../shared/types.ts";
 
 /**
  * In-process notifications. Fired *after* the change is committed to the database, so listeners
@@ -9,8 +9,6 @@ import type { Account, Agent, Approval, AuditEntry, MailEvent, PairingRequest, S
 export interface BusEvents {
   /** A new event row was committed. */
   event: [MailEvent];
-  /** An approval was created or decided. */
-  approval: [Approval];
   audit: [AuditEntry];
   /** An account was connected or its status/sync state changed. */
   account: [Account];
