@@ -180,24 +180,12 @@ xaq connect <url> … / setup-mcp / listen …   # on agent machines, see listen
 | `--data` | `XAQ_DATA` | `~/.xaq` | Data directory, for any command |
 | | `XAQ_MASTER_KEY` | | Base64 32-byte key for encrypting secrets, instead of `<data>/master.key` |
 | | `TRUST_PROXY` | | `1` behind a reverse proxy: client IPs from `X-Forwarded-For`, https from `X-Forwarded-Proto` |
-| | `TRUST_PROXY_HOPS` | `1` | Number of proxies in front of xaq (which `X-Forwarded-For` entry, from the right, is the client) |
-| | `TRUST_PROXY_FROM` | loopback | Other proxy addresses whose forwarding headers are believed: comma-separated IPs or CIDRs (IPv4 or IPv6) |
 | | `XAQ_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `--url` | `XAQ_URL` | the xaq running on this machine, else `http://localhost:8425` | `skill` commands only: the server URL written into SKILL.md |
 
 Everything else (public URL, ingest mode, poll interval, body size limit, retention, approval expiry, webhook allowlist,
 agent pairing) is set in the console
 under **Settings**.
-
-<!-- rename-xaq: keep-start -->
-Installs from before the rename to xaq keep working unchanged: every `XAQ_*` variable is also read under its old
-name (`AGENTINBOX_DATA`, `AGENTINBOX_MASTER_KEY`, …) when the new one isn't set, and while `~/.xaq` doesn't exist an
-existing `~/.agentinbox` stays the default data directory (xaq says so once at startup; nothing is moved). A `~/.xaq`
-counts as xaq's only when it holds its files (`xaq.db`, `agentinbox.db`, `master.key` or the lock); one that belongs
-to another program called xaq is skipped when `~/.agentinbox` exists, and otherwise only gets xaq's files added
-beside its own (nothing of it is changed, renamed or deleted, not even its permissions). See
-[Upgrading from agentinbox](../README.md#upgrading-from-agentinbox).
-<!-- rename-xaq: keep-end -->
 
 **Forgot the admin password?** Run `npx xaq-cli reset-password` on the server, as the user xaq runs as
 (`sudo` for a system service) and with the same `--data`. It signs out all sessions and prints a new setup link (for the
@@ -323,87 +311,42 @@ enabled, or a system service when run as root) and launchd on macOS (`sh.xaq.dae
 installed in the data directory, so it never depends on the npx cache; if that install fails, the running service is
 left as it was. Re-run `service install` to update; `service status` and `service uninstall` do what you'd expect, and
 uninstalling keeps your data. `--port`, `--host` and `--data` aren't remembered: pass the same ones each time (the
-startup banner prints the command with the flags you used). `XAQ_MASTER_KEY`, `TRUST_PROXY`, `TRUST_PROXY_HOPS`,
-`TRUST_PROXY_FROM` and `XAQ_LOG_LEVEL` are taken from your shell and remembered in `<data>/service.env` (set one
-to an empty value to remove it).
+startup banner prints the command with the flags you used). `XAQ_MASTER_KEY`, `TRUST_PROXY` and `XAQ_LOG_LEVEL` are
+taken from your shell and remembered in `<data>/service.env` (set one to an empty value to remove it).
 
 When a newer version is published, the console shows **Update available** with the exact command to run.
 
 **Update now (service mode).** A service running from its own install in the data directory gets an **Update now**
-button in that dialog. It asks for the admin password again, then starts a separate one-shot job: the transient
-systemd unit `xaq-update`, or the launchd job `sh.xaq.update`. The job:
+button in that dialog. It asks for the admin password again, then starts a separate one-shot job (the transient
+systemd unit `xaq-update`, or the launchd job `sh.xaq.update`) that runs `service install` with the npm `latest`
+version, on the service's data directory, port, host and Node. That install uses `--ignore-scripts` and refuses
+unless the release's `npm-shrinkwrap.json` pins exactly what was installed and `npm audit signatures` passes (nothing
+changes on a refusal). The console polls until the new version answers, reloads, and shows the result. There is no
+automatic rollback: if the new version doesn't come up, the dialog says why; fix it and run `service install` again.
+One job runs at a time. Updates are never automatic and only ever go to npm `latest`. Extensions and listeners aren't
+updated. Foreground and source runs keep the command to run.
 
-1. installs the npm `latest` version into `<data>/app.new` with `--ignore-scripts`, and refuses unless the release's
-   `npm-shrinkwrap.json` pins exactly what was installed and `npm audit signatures` passes (nothing changes on a refusal);
-2. stops the service and copies the database to a folder of its own under `<data>/update/snapshots/` (named by
-   when it started and the versions; the newest 3 are kept, so the one from before an update survives a go-back);
-3. swaps the new install in (the current one becomes `<data>/app.old`) and starts the service;
-4. waits for `/api/health` to answer with the new version.
-
-If the new version doesn't come up, the job puts the previous install and the database snapshot back and starts the
-previous version again. The console polls until the new version answers, reloads, and shows the result, including any
-rollback. While an older install is kept, the dialog also offers **Go back to `<version>`**, which runs the same job
-with that install and keeps the current database. One job runs at a time: a second request while one runs is refused
-with "already running". Updates are never automatic and only ever go to npm `latest`.
-Extensions and listeners aren't updated. Foreground and source runs keep the command to run.
-
-- Progress: `<data>/update/status.json`; `<data>/update/lock` while a job runs. Logs: `journalctl --user -u xaq-update` (without `--user` for a system
+- Progress: `<data>/update/status.json`. Logs: `journalctl --user -u xaq-update` (without `--user` for a system
   service), or `<data>/update/update.log` on macOS.
 - Audit log: every request as `system.update` (wrong or empty passwords, malformed requests and a job already
-  running as `denied`), and every outcome as
-  `system.update.result`.
+  running as `denied`).
 - The restart drops pending Google consents (start them again), in-flight MCP calls (agents retry), and the
   in-memory list of handed-out tokens to scrub. Listener streams resume where they were.
-- The unit file isn't rewritten. Run `service install` when a release says it changed the unit.
 
 | Endpoint | What |
 |---|---|
-| `GET /api/system/update` | `{supported, reason, previous, status}`: whether this instance can update itself, the version in `app.old`, and the last job's status |
-| `POST /api/system/update` `{password, action: "update"\|"rollback", version?}` | Starts the job (202 with its status). `version` must be the current npm `latest`; 400 on a wrong password, 409 when refused |
+| `GET /api/system/update` | `{supported, reason, status}`: whether this instance can update itself, and the last job's status |
+| `POST /api/system/update` `{password, version}` | Starts the job (202 with its status). `version` must be the current npm `latest`; 400 on a wrong password, 409 when refused |
 
-**Which Node.js the service runs.** `service install` records one Node.js binary in the unit or plist, and checks
-its version by running it (`<node> -p process.versions.node`, with only `PATH`, `HOME` and `LANG` in its
-environment: no `NODE_OPTIONS`, no `XAQ_MASTER_KEY`). While any code extension is installed in the data
-directory, it must meet the code-extension floor (22.23.2+, 24.18.1+ or 26.5.1+, or a newer line); otherwise xaq's own
-minimum (22.13) applies, though a Node that meets the floor is still preferred. Before either, a Node with Node's
-October 2026 security release (22.23.4+, 24.22.1+ or 26.12.1+) is preferred when there is one. For each of those
-bars in turn, it takes:
+**Which Node.js the service runs.** `service install` records the Node.js running it in the unit or plist, or the
+one `--node <path>` names (which must be 22.13 or newer: it is asked with `<node> -p process.versions.node`, without
+your environment). If you remove or replace that Node, run `service install` again. Code extensions need a patched
+Node too (≥ 22.23.2, 24.18.1 or 26.5.1); on a Node older than Node's October 2026 security release
+(22.23.4, 24.22.1 or 26.12.1) the daemon logs a warning at start.
 
-1. the Node running `service install`, if it is new enough;
-2. else the Node the existing service (or the agentinbox one it replaces) runs, if it is still there and new enough;
-3. else the newest new-enough Node in the usual places: fnm (`$FNM_DIR`, `~/.local/share/fnm`,
-   `~/Library/Application Support/fnm`), nvm (`$NVM_DIR`, `~/.nvm`), Volta (`~/.volta`), Homebrew
-   (`/opt/homebrew` and `/usr/local`: `bin/node` and `opt/node@*`), asdf and mise installs, and `/usr/bin/node`.
-
-A found Node is used only when it and every directory above it are owned by you or root and can't be written by
-anyone else: never world-writable, and group-writable only when the group is your own private group (your primary
-group, with no other member in `/etc/group` and no other user's primary group in `/etc/passwd`; Linux only), as
-fnm and nvm leave their directories under umask 002. The existing service's Node may be group-writable (the service
-already runs it at every start), but not world-writable. Skipped ones are listed as "group- or world-writable, or
-owned by another user".
-
-fnm's per-shell links (`…/fnm_multishells/…`, deleted with the shell) are never recorded: they are resolved to the
-install they point to. `--node <path>` names the binary instead; it is still checked. When no Node qualifies,
-nothing is changed: the install stops and lists what it found (path → version), what is needed, and how to fix it
-(install a newer Node, e.g. `fnm install 24 && fnm default 24`, `nvm install 24`, `brew install node@24`, or pass
-`--node`). The success message names the Node, its version and why it was chosen. If you remove or replace that
-Node, run `service install` again. `service status` checks it too: it reports a problem (and exits non-zero) when
-the service's Node no longer runs, or is below the code-extension floor while code extensions are installed. On a
-Node that runs fine but is older than the October 2026 security release, `service status` prints a warning instead
-(the exit code is unchanged), the daemon logs the same once at start, and the install's success message says so:
-update Node (`fnm install 24 && fnm default 24`, `nvm install 24 && nvm alias default 24`, `brew upgrade node@24`),
-then run `service install` again.
-
-If the service doesn't come up, `service install` rolls back and prints where to look (`systemctl --user status
-xaq`, `journalctl --user -u xaq`). Over `su` or `sudo -u` there is often no systemd user session: log in
-as that user directly, or enable lingering and set `XDG_RUNTIME_DIR=/run/user/$(id -u)` first.
-
-<!-- rename-xaq: keep-start -->
-A service installed by agentinbox (launchd `com.unlaboredlabs.agentinbox`, systemd `agentinbox.service`) is replaced
-by `service install`: it is stopped, and waited for until it is gone, before the xaq one starts on the same data
-directory (the one the old service used, unless you pass `--data`); if the new one doesn't come up, the old one is
-put back exactly as it was. `service status` and `service uninstall` find either name.
-<!-- rename-xaq: keep-end -->
+If the service doesn't come up, `service install` says so and prints where to look (`systemctl --user status
+xaq`, `journalctl --user -u xaq`); fix it and run it again. Over `su` or `sudo -u` there is often no systemd user
+session: log in as that user directly, or enable lingering and set `XDG_RUNTIME_DIR=/run/user/$(id -u)` first.
 
 A service that hasn't been claimed yet doesn't print its setup token to the journal. Get the link with
 `npx xaq-cli reset-password --data <dir>`.
@@ -435,11 +378,9 @@ Tailscale Funnel) and:
 
 - bind it to localhost: `--host 127.0.0.1`
 - set `TRUST_PROXY=1`, so lockouts apply per client and cookies are marked `Secure` on https. The client address is
-  taken from the right end of `X-Forwarded-For`; with more than one proxy in front, set `TRUST_PROXY_HOPS` to their
-  number. Forwarding headers are believed only from a proxy on the same host (loopback); if the proxy runs on another
-  machine, list its address in `TRUST_PROXY_FROM` (for example `10.0.0.5` or `10.0.0.0/24`; `/0` is refused). The
-  proxy must append to (or overwrite) `X-Forwarded-For`; one that passes the header through unchanged lets clients
-  choose their own address
+  the last entry of `X-Forwarded-For`, believed only from a proxy on the same host (loopback). The proxy must append
+  to (or overwrite) `X-Forwarded-For`; one that passes the header through unchanged lets clients choose their own
+  address
 - set **Settings → Public URL** to the https address, so MCP snippets, the skill and the OAuth redirect use it
 
 `GET /health` (or `/api/health`) needs no auth and suits uptime monitors: `200` when healthy, `503` when degraded (for
@@ -612,11 +553,6 @@ Everything lives in the data directory (`~/.xaq` by default):
 | `app/` | The service's own install (`service install` only) |
 | `extensions/` | Installed extensions, one read-only directory per pinned version |
 | `extension-state/<extension>/<connection>/` | A code extension's own files for one connection (mode 0700), deleted with the connection |
-
-<!-- rename-xaq: keep-start -->
-A data directory created before the rename keeps its file names: `agentinbox.db`, `agentinbox.lock` and
-`agentinbox.log` (and usually lives in `~/.agentinbox`).
-<!-- rename-xaq: keep-end -->
 
 Back up `xaq.db` and `master.key` together: without the key, stored secrets can't be decrypted, and xaq
 refuses to start rather than create a new one. Keep the key somewhere safer than the database backup, or supply it via

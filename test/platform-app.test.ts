@@ -209,10 +209,7 @@ describe("system API", () => {
     expect(compareVersions("0.2.0-nightly.2", "0.2.0-nightly.2")).toBe(0);
     expect(compareVersions("0.2.0-alpha", "0.2.0-alpha.1")).toBe(-1);
     expect(compareVersions("0.2.0-1", "0.2.0-alpha")).toBe(-1);
-    expect(upgradeCommand({ ...base, trustProxy: true }, {})).toBe("TRUST_PROXY=1 npx -y xaq-cli");
-    expect(upgradeCommand({ ...base, trustProxy: true }, { TRUST_PROXY_FROM: "10.0.0.0/8, fd00::/8", TRUST_PROXY_HOPS: "2" })).toBe(
-      "TRUST_PROXY=1 TRUST_PROXY_HOPS=2 TRUST_PROXY_FROM='10.0.0.0/8, fd00::/8' npx -y xaq-cli",
-    );
+    expect(upgradeCommand({ ...base, trustProxy: true })).toBe("TRUST_PROXY=1 npx -y xaq-cli");
   });
 });
 

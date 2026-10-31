@@ -62,11 +62,7 @@ describe("built attachment parser", () => {
       env: {
         PATH: process.env.PATH ?? "",
         HOME: home,
-        XAQ_GOOGLE_OAUTH_BASE: g.oauthBase,
-        XAQ_GOOGLE_AUTH_BASE: g.authBase,
-        XAQ_GOOGLE_GMAIL_BASE: g.gmailBase,
-        XAQ_GOOGLE_PUBSUB_BASE: g.pubsubBase,
-        XAQ_GOOGLE_CALENDAR_BASE: g.calendarBase,
+        XAQ_GOOGLE_BASE: g.oauthBase,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });

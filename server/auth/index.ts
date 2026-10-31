@@ -1,4 +1,4 @@
-import { isIP } from "node:net";
+import { BlockList, isIP } from "node:net";
 import { getConnInfo } from "@hono/node-server/conninfo";
 import type { Context, MiddlewareHandler } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
@@ -6,13 +6,11 @@ import type { AppEnv } from "../api/util.ts";
 import type { CoreContext } from "../context.ts";
 import { HttpError } from "../util/errors.ts";
 import { clientKey, GLOBAL_SLOWDOWN_MS, LoginLimiter } from "./lockout.ts";
-import { isTrustedProxy } from "./proxy.ts";
 import { SESSION_TTL_MS, SessionStore } from "./sessions.ts";
 import { ensureSetupToken, regenerateSetupToken } from "./setup-token.ts";
 
 export const SESSION_COOKIE = "aib_session";
-// Header names keep the pre-rename spelling: a console tab or script from before the rename still sends it.
-export const CSRF_HEADER = "x-agentinbox-csrf";
+export const CSRF_HEADER = "x-xaq-csrf";
 export const MIN_PASSWORD_LENGTH = 10;
 export const MAX_PASSWORD_LENGTH = 1024;
 
@@ -98,12 +96,6 @@ function socketAddress(c: Context): string | null {
   }
 }
 
-/**
- * The client address. X-Forwarded-For is honored only with TRUST_PROXY and only when the
- * connection comes from a trusted proxy (loopback, or TRUST_PROXY_FROM); it is read from the
- * right, since proxies append the address they saw and entries further left are client-controlled.
- * TRUST_PROXY_HOPS (default 1) is the number of proxies in front of xaq.
- */
 /** Some proxies (Azure, IIS) append ":port" to X-Forwarded-For entries. */
 function stripPort(entry: string): string {
   const v6 = /^\[([^\]]+)\](?::\d+)?$/.exec(entry);
@@ -112,27 +104,41 @@ function stripPort(entry: string): string {
   return v4 ? v4[1]! : entry;
 }
 
+const LOOPBACK = new BlockList();
+LOOPBACK.addSubnet("127.0.0.0", 8, "ipv4");
+LOOPBACK.addAddress("::1", "ipv6");
+
+/**
+ * Forwarding headers are believed only from a loopback peer (a proxy on the same host): the daemon usually
+ * binds 0.0.0.0, so trusting other peers would let any LAN or tailnet peer forge its address.
+ */
+export function isTrustedProxy(peer: string): boolean {
+  const ip = peer.replace(/%.*$/, "").replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/i, "");
+  const v = isIP(ip);
+  return v !== 0 && LOOPBACK.check(ip, v === 4 ? "ipv4" : "ipv6");
+}
+
 let warnedUntrustedProxy = false;
 
-/** Upgrades from the old private-range rule silently lost proxy trust; say so once. */
 function warnUntrustedProxy(peer: string): void {
   if (warnedUntrustedProxy) return;
   warnedUntrustedProxy = true;
-  process.stderr.write(
-    `xaq: ignoring X-Forwarded-For from ${peer}: TRUST_PROXY only trusts loopback proxies unless TRUST_PROXY_FROM lists them (e.g. TRUST_PROXY_FROM=${peer}).\n`,
-  );
+  process.stderr.write(`xaq: ignoring X-Forwarded-For from ${peer}: TRUST_PROXY only trusts a proxy on this machine (loopback).\n`);
 }
 
+/**
+ * The client address. X-Forwarded-For is honored only with TRUST_PROXY and only from a loopback proxy; its
+ * last entry is the client (the one proxy in front of xaq appended it; entries further left are client-controlled).
+ */
 export function clientIp(c: Context, trustProxy: boolean): string {
   const peer = socketAddress(c);
   if (trustProxy && peer && !isTrustedProxy(peer) && c.req.header("x-forwarded-for")) warnUntrustedProxy(peer);
   if (trustProxy && peer && isTrustedProxy(peer)) {
-    const hops = Math.max(1, Number.parseInt(process.env.TRUST_PROXY_HOPS ?? "1", 10) || 1);
     const chain = (c.req.header("x-forwarded-for") ?? "")
       .split(",")
       .map((s) => stripPort(s.trim()))
       .filter(Boolean);
-    const forwarded = chain[chain.length - hops];
+    const forwarded = chain.at(-1);
     if (forwarded && isIP(forwarded)) return forwarded;
   }
   return peer ?? "unknown";

@@ -44,7 +44,7 @@ export async function api<T = void>(path: string, opts: RequestOptions = {}): Pr
   }
   const method = opts.method ?? (opts.body === undefined ? "GET" : "POST");
   const headers: Record<string, string> = { accept: "application/json" };
-  if (method !== "GET") headers["x-agentinbox-csrf"] = "1";
+  if (method !== "GET") headers["x-xaq-csrf"] = "1";
   let body: string | undefined;
   if (opts.body !== undefined) {
     body = JSON.stringify(opts.body);

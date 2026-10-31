@@ -1,6 +1,6 @@
 import type { HealthResponse, SelfUpdateInfo, SelfUpdateStatus } from "@shared/types";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowUpCircleIcon, InboxIcon, Undo2Icon } from "lucide-react";
+import { ArrowUpCircleIcon, InboxIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { CodeBlock, ErrorAlert } from "@/components/common";
@@ -12,19 +12,18 @@ import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Spinner } from "@/components/ui/spinner";
 import { api, apiGet } from "@/lib/api";
 import { queries } from "@/lib/queries";
-import { loadPending, outcomeText, type PendingUpdate, savePending, STEP_TEXT, updateVerdict } from "@/lib/self-update";
+import { loadPending, outcomeText, type PendingUpdate, savePending, updateVerdict } from "@/lib/self-update";
 
 const POLL_MS = 2000;
 
-/** Version in the sidebar footer; turns into an update notice (or "go back", after an update from here) when there is one. */
+/** Version in the sidebar footer; turns into an update notice when there is one. */
 export function ConsoleVersion({ version, service }: { version?: string; service?: boolean }) {
   const { data } = useQuery(queries.systemLatest());
   const { data: self } = useQuery({ ...queries.systemUpdate(), enabled: !!service });
   const update = useUpdateJob();
-  const previous = self?.supported ? self.previous : null;
   const offerUpdate = !!data?.updateAvailable && !!data.latest;
 
-  if (!offerUpdate && !previous && !update.pending) {
+  if (!offerUpdate && !update.pending) {
     return (
       <span className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
         <InboxIcon className="size-3.5" />
@@ -37,9 +36,9 @@ export function ConsoleVersion({ version, service }: { version?: string; service
     <Dialog>
       <DialogTrigger asChild>
         <button className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-chart-1 hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none group-data-[collapsible=icon]:hidden">
-          {update.pending ? <Spinner className="size-3.5" /> : offerUpdate ? <ArrowUpCircleIcon className="size-3.5" /> : <InboxIcon className="size-3.5" />}
-          <span className="flex-1">{update.pending ? "Updating…" : offerUpdate ? "Update available" : `xaq ${version ?? data?.current ?? ""}`}</span>
-          <span className="text-muted-foreground">{update.pending ? update.pending.to : offerUpdate ? data!.latest : null}</span>
+          {update.pending ? <Spinner className="size-3.5" /> : <ArrowUpCircleIcon className="size-3.5" />}
+          <span className="flex-1">{update.pending ? "Updating…" : "Update available"}</span>
+          <span className="text-muted-foreground">{update.pending ? update.pending.to : data!.latest}</span>
         </button>
       </DialogTrigger>
       <UpdateDialogContent
@@ -62,7 +61,6 @@ type UpdateJob = ReturnType<typeof useUpdateJob>;
  */
 function useUpdateJob() {
   const [pending, setPending] = useState<PendingUpdate | null>(loadPending);
-  const [step, setStep] = useState<SelfUpdateStatus["step"] | null>(null);
   const [failure, setFailure] = useState<SelfUpdateStatus | null>(null);
 
   useEffect(() => {
@@ -79,7 +77,6 @@ function useUpdateJob() {
       ]);
       if (stopped) return;
       const status = info?.status?.id === pending.id ? info.status : null;
-      if (status) setStep(status.step);
       const verdict = updateVerdict(pending, status, health);
       if (verdict === "wait") {
         timer = setTimeout(tick, POLL_MS);
@@ -90,7 +87,7 @@ function useUpdateJob() {
         window.location.reload();
         return;
       }
-      const outcome = outcomeText(status ?? { ...pending, state: "succeeded", step: "done", message: null, startedAt: "", finishedAt: null });
+      const outcome = outcomeText(status ?? { ...pending, state: "succeeded", message: null, startedAt: "", finishedAt: null });
       if (outcome.ok) toast.success(outcome.title);
       else toast.error(outcome.title, { description: outcome.description });
       setFailure(outcome.ok ? null : status);
@@ -107,12 +104,10 @@ function useUpdateJob() {
   return {
     pending,
     failure,
-    step: pending ? step : null,
     start(started: SelfUpdateStatus) {
-      const next = { id: started.id, kind: started.kind, from: started.from, to: started.to };
+      const next = { id: started.id, from: started.from, to: started.to };
       savePending(next);
       setFailure(null);
-      setStep(started.step);
       setPending(next);
     },
   };
@@ -134,7 +129,6 @@ export function UpdateDialogContent({
   update?: UpdateJob;
 }) {
   const oneClick = !!self?.supported && !!update;
-  const previous = oneClick ? self!.previous : null;
   return (
     <DialogContent>
       <DialogHeader>
@@ -142,18 +136,18 @@ export function UpdateDialogContent({
         <DialogDescription>
           {latest ? `You're on ${current}; the latest release is ${latest}. ` : `You're on ${current}, the latest release. `}
           {oneClick
-            ? "Update now installs it beside this one, restarts xaq and goes back by itself if the new version doesn't come up. Your data, accounts and agents are kept."
+            ? "Update now reinstalls the service with it and restarts xaq. Your data, accounts and agents are kept."
             : service
               ? "Run this on the server. It reinstalls the service with the latest version and keeps your data, accounts and agents."
               : "Stop xaq, then run this on the server to start the latest version. Your data is kept."}
         </DialogDescription>
       </DialogHeader>
       {oneClick && update!.pending ? (
-        <Progress pending={update!.pending} step={update!.step} />
+        <Progress pending={update!.pending} />
       ) : oneClick ? (
         <>
           {update!.failure && <Outcome status={update!.failure} />}
-          <OneClick latest={latest} previous={previous} onStarted={update!.start} />
+          {latest && <OneClick latest={latest} onStarted={update!.start} />}
           {latest && (
             <div className="space-y-2">
               <p className="text-xs text-muted-foreground">Or run this on the server:</p>
@@ -168,13 +162,12 @@ export function UpdateDialogContent({
   );
 }
 
-function Progress({ pending, step }: { pending: PendingUpdate; step: SelfUpdateStatus["step"] | null }) {
+function Progress({ pending }: { pending: PendingUpdate }) {
   return (
     <div className="flex items-start gap-3 rounded-md border p-3 text-sm">
       <Spinner className="mt-0.5" />
       <div className="space-y-1">
-        <p className="font-medium">{pending.kind === "rollback" ? `Going back to ${pending.to}` : `Updating to ${pending.to}`}</p>
-        <p className="text-muted-foreground">{STEP_TEXT[step ?? "starting"]}</p>
+        <p className="font-medium">Updating to {pending.to}</p>
         <p className="text-xs text-muted-foreground">
           This takes a minute or two. The console is unavailable while xaq restarts; this page reloads when the new version answers.
         </p>
@@ -193,28 +186,20 @@ function Outcome({ status }: { status: SelfUpdateStatus }) {
   );
 }
 
-/** "Update now" / "Go back", each confirmed with the admin password. */
-function OneClick({ latest, previous, onStarted }: { latest: string | null; previous: string | null; onStarted: (status: SelfUpdateStatus) => void }) {
-  const [action, setAction] = useState<"update" | "rollback" | null>(null);
+/** "Update now", confirmed with the admin password. */
+function OneClick({ latest, onStarted }: { latest: string; onStarted: (status: SelfUpdateStatus) => void }) {
+  const [asking, setAsking] = useState(false);
   const [password, setPassword] = useState("");
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
 
-  if (!action) {
+  if (!asking) {
     return (
       <div className="flex flex-wrap gap-2">
-        {latest && (
-          <Button onClick={() => setAction("update")}>
-            <ArrowUpCircleIcon />
-            Update now
-          </Button>
-        )}
-        {previous && (
-          <Button variant="outline" onClick={() => setAction("rollback")}>
-            <Undo2Icon />
-            Go back to {previous}
-          </Button>
-        )}
+        <Button onClick={() => setAsking(true)}>
+          <ArrowUpCircleIcon />
+          Update now
+        </Button>
       </div>
     );
   }
@@ -223,8 +208,7 @@ function OneClick({ latest, previous, onStarted }: { latest: string | null; prev
     setBusy(true);
     setError(null);
     try {
-      const body = action === "update" ? { password, action, version: latest! } : { password, action };
-      onStarted(await api<SelfUpdateStatus>("/api/system/update", { body }));
+      onStarted(await api<SelfUpdateStatus>("/api/system/update", { body: { password, version: latest } }));
     } catch (err) {
       setError(err);
     } finally {
@@ -242,16 +226,16 @@ function OneClick({ latest, previous, onStarted }: { latest: string | null; prev
     >
       <FieldGroup>
         <Field>
-          <FieldLabel htmlFor="update-password">{action === "update" ? `Admin password, to update to ${latest}` : `Admin password, to go back to ${previous}`}</FieldLabel>
+          <FieldLabel htmlFor="update-password">Admin password, to update to {latest}</FieldLabel>
           <PasswordInput id="update-password" autoComplete="current-password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} />
         </Field>
         {!!error && <ErrorAlert error={error} />}
         <div className="flex gap-2">
           <Button type="submit" disabled={!password || busy}>
             {busy && <Spinner />}
-            {action === "update" ? "Update now" : `Go back to ${previous}`}
+            Update now
           </Button>
-          <Button type="button" variant="ghost" onClick={() => setAction(null)}>
+          <Button type="button" variant="ghost" onClick={() => setAsking(false)}>
             Cancel
           </Button>
         </div>

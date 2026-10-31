@@ -1,39 +1,21 @@
 import { execFileSync } from "node:child_process";
 import { createServer } from "node:net";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { CLI_NAME, NPM_PACKAGE as PACKAGE } from "../shared/types.ts";
 import { readSetupToken } from "./auth/setup-token.ts";
-import { assertOurs } from "./listen/fsutil.ts";
-import { envVar, LEGACY_PRODUCT } from "./brand.ts";
-import { type Config, type ConfigInput, dataFiles, DEFAULT_PORT, hasForeignFiles } from "./config.ts";
+import { type Config, dataFiles } from "./config.ts";
 import { Crypto } from "./crypto.ts";
 import { assertMasterKeyUsable, cliCommand, type InstanceInfo, runningInstance, serviceInstallCommand } from "./instance.ts";
-import {
-  chooseServiceNode,
-  codeFloorText,
-  defaultNodeSearch,
-  installedCodeExtensions,
-  type NodeSearchDeps,
-  nodeVersionOf,
-  recommendedNodeWarning,
-  serviceNodeProblem,
-  unitNodePath,
-} from "./service-node.ts";
+import { nodeVersionError } from "./node-check.ts";
 import { consoleUrls, loopbackUrl } from "./urls.ts";
 
 /** Installs xaq as a background service: systemd on Linux, launchd on macOS. */
 
 export const SERVICE_NAME = "xaq";
 export const LAUNCHD_LABEL = "sh.xaq.daemon";
-/**
- * The service's names before the rename (agentinbox). `service install` stops and replaces a service
- * installed under them (rolling back to it on failure); `status` and `uninstall` find it too.
- */
-export const LEGACY_SERVICE_NAME = "agentinbox";
-export const LEGACY_LAUNCHD_LABEL = "com.unlaboredlabs.agentinbox";
-/** The package a pre-rename service install put into `<data>/app`. */
+/** The package a pre-rename listener install put into its app directory (server/listen/service.ts). */
 export const LEGACY_PACKAGE = "agentinbox-cli";
 
 /** A service's names: the launchd label and the systemd unit (without `.service`). */
@@ -42,7 +24,6 @@ export interface UnitId {
   systemd: string;
 }
 export const DAEMON_UNIT: UnitId = { launchd: LAUNCHD_LABEL, systemd: SERVICE_NAME };
-export const LEGACY_DAEMON_UNIT: UnitId = { launchd: LEGACY_LAUNCHD_LABEL, systemd: LEGACY_SERVICE_NAME };
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 /** Package root: one level above the running module (dist/cli.js or server/service.ts). */
 export const ROOT = resolve(import.meta.dirname, "..");
@@ -52,16 +33,15 @@ export const ROOT = resolve(import.meta.dirname, "..");
  * (mode 0600) so re-running `service install` from a shell without them (the documented update
  * path) keeps them. Set one to an empty value to drop it.
  */
-export const SERVICE_ENV_KEYS = ["XAQ_MASTER_KEY", "TRUST_PROXY", "TRUST_PROXY_HOPS", "TRUST_PROXY_FROM", "XAQ_LOG_LEVEL"] as const;
-/** Their names before the rename: still read from the shell and from a service.env an older install wrote. */
-const LEGACY_ENV_KEYS: Partial<Record<(typeof SERVICE_ENV_KEYS)[number], string>> = { XAQ_MASTER_KEY: "AGENTINBOX_MASTER_KEY", XAQ_LOG_LEVEL: "AGENTINBOX_LOG_LEVEL" };
+export const SERVICE_ENV_KEYS = ["XAQ_MASTER_KEY", "TRUST_PROXY", "XAQ_LOG_LEVEL"] as const;
 
 type ServiceConfig = Pick<Config, "dataDir" | "port" | "host" | "dbPath" | "masterKeyPath">;
 
-/** `service install` options: `node` is --node. */
+/** `service install` options: `node` is --node; `version` a release to install (the console's update job). */
 export interface InstallOptions {
   launchdPollMs?: number;
   node?: string;
+  version?: string;
 }
 
 export const serviceEnvPath = (dataDir: string) => join(dataDir, "service.env");
@@ -166,16 +146,13 @@ export function parseEnvFile(text: string): Record<string, string> {
 
 /**
  * The service's env-derived settings: the current shell wins, previous install fills the gaps,
- * an explicitly empty value removes the setting. The pre-rename names (AGENTINBOX_MASTER_KEY…) count
- * where the new one isn't given, and are written back under the new name.
+ * an explicitly empty value removes the setting.
  */
 export function mergeServiceEnv(previous: Record<string, string>, current: NodeJS.ProcessEnv): Record<string, string> {
   const out: Record<string, string> = {};
   for (const key of SERVICE_ENV_KEYS) {
-    const old = LEGACY_ENV_KEYS[key];
-    const value = key in current ? current[key] : old && old in current ? current[old] : (previous[key] ?? (old ? previous[old] : undefined));
-    // A single comma-separated token, so systemd's EnvironmentFile parsing can't split it.
-    if (value) out[key] = key === "TRUST_PROXY_FROM" ? value.split(/[\s,]+/).filter(Boolean).join(",") : value;
+    const value = key in current ? current[key] : previous[key];
+    if (value) out[key] = value;
   }
   return out;
 }
@@ -201,19 +178,8 @@ function readPreviousEnv(dataDir: string): Record<string, string> {
   }
 }
 
-/** A service.env we wrote: only KEY=value lines for our own settings. */
-function isOurServiceEnv(file: string): boolean {
-  const known = new Set<string>([...SERVICE_ENV_KEYS, ...Object.values(LEGACY_ENV_KEYS)]);
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .filter((l) => l.trim())
-    .every((l) => known.has(/^([A-Z_][A-Z0-9_]*)=/.exec(l)?.[1] ?? ""));
-}
-
 function writeServiceEnv(dataDir: string, env: Record<string, string>): void {
   const file = serviceEnvPath(dataDir);
-  // The data directory may be a ~/.xaq another program called xaq owns: never replace its files.
-  assertOurs(file, isOurServiceEnv, "service settings (service.env)");
   if (!Object.keys(env).length) {
     rmSync(file, { force: true });
     return;
@@ -221,21 +187,7 @@ function writeServiceEnv(dataDir: string, env: Record<string, string>): void {
   for (const [k, v] of Object.entries(env)) {
     if (/[\r\n]/.test(v)) throw new Error(`${k} must be a single line.`);
   }
-  writeFileSync(file, serviceEnvText(env), { mode: 0o600 });
-}
-
-/**
- * service.env's content. For one release, XAQ_MASTER_KEY and XAQ_LOG_LEVEL are also written under their
- * pre-rename names, so going back to agentinbox-cli by hand (its `service install` reads only those)
- * still finds the key and starts.
- */
-export function serviceEnvText(env: Record<string, string>): string {
-  const lines = Object.entries(env).map(([k, v]) => `${k}=${v}\n`);
-  for (const [key, old] of Object.entries(LEGACY_ENV_KEYS)) {
-    const value = env[key];
-    if (value && old) lines.push(`${old}=${value}\n`);
-  }
-  return lines.join("");
+  writeFileSync(file, Object.entries(env).map(([k, v]) => `${k}=${v}\n`).join(""), { mode: 0o600 });
 }
 
 /** A plain release version (no ranges, tags, URLs or paths): what may be passed as stagePackage's `version`. */
@@ -287,7 +239,7 @@ export function stagePackage(staging: string, opts: StageOptions): string {
 
   const what = fromSource ? "this build" : opts.version ? `xaq ${opts.version}` : "the latest release";
   console.log(`  Installing ${what} into ${opts.where}…`);
-  clearOwnInstall(staging);
+  rmSync(staging, { recursive: true, force: true });
   mkdirSync(staging, { recursive: true });
   writeFileSync(join(staging, "package.json"), '{ "private": true }\n');
   try {
@@ -356,8 +308,9 @@ function installedPackageVersion(dir: string): string | null {
 /** The CLI entry inside an install made by stagePackage. */
 export const installedEntry = (app: string) => join(app, "node_modules", PACKAGE, "dist/cli.js");
 
-/** Installs into `<dir>/app.new` (see stagePackage). Returns the staging directory. */
-export const stageApp = (dir: string): string => stagePackage(join(dir, "app.new"), { where: "the data directory", requireWeb: true });
+/** Installs into `<dir>/app.new` (see stagePackage). A given `version` (the console's update) gets the supply-chain checks. */
+export const stageApp = (dir: string, version?: string): string =>
+  stagePackage(join(dir, "app.new"), { where: "the data directory", requireWeb: true, version, harden: version !== undefined });
 
 /**
  * Moves a staged install into place as `app` (the current one becomes `app.old`). `restore()` puts
@@ -365,11 +318,7 @@ export const stageApp = (dir: string): string => stagePackage(join(dir, "app.new
  */
 export function swapIn(staging: string, app: string): { restore(): void; commit(): void } {
   const old = `${app}.old`;
-  clearOwnInstall(old);
-  // In a directory that also holds another program's files (it is called xaq too), only our own install is moved aside.
-  if (existsSync(app) && hasForeignFiles(dirname(app)) && !isOwnInstall(app)) {
-    throw new Error(`${app} already exists and isn't a xaq install, so it was left alone. Move it away, then run this again.`);
-  }
+  rmSync(old, { recursive: true, force: true });
   if (existsSync(app)) renameSync(app, old);
   try {
     renameSync(staging, app);
@@ -388,10 +337,10 @@ export function swapIn(staging: string, app: string): { restore(): void; commit(
   };
 }
 
-/** Whether `path` is one of our installs (xaq-cli, or agentinbox-cli from before the rename). */
+/** Whether `path` is one of our installs (xaq-cli, or the listener's agentinbox-cli from before the rename). */
 export const isOwnInstall = (path: string) => [PACKAGE, LEGACY_PACKAGE].some((p) => existsSync(join(path, "node_modules", p)));
 
-/** Deletes `<dir>/app`, `app.new` and `app.old`, but only where they really are our own installs (xaq-cli, or agentinbox-cli from before the rename). */
+/** Deletes `<dir>/app`, `app.new` and `app.old`, but only where they really are our own installs. */
 export function removeOwnInstall(dir: string): void {
   for (const name of ["app", "app.new", "app.old"]) {
     const path = join(dir, name);
@@ -399,29 +348,6 @@ export function removeOwnInstall(dir: string): void {
   }
 }
 
-/**
- * Makes room for a staging or backup install. In a directory that also holds another program's files (it is
- * called xaq too), only our own install (or an empty leftover) is removed; anything else there is refused.
- */
-function clearOwnInstall(path: string): void {
-  let there = true;
-  try {
-    lstatSync(path);
-  } catch {
-    there = false;
-  }
-  if (!there) return;
-  // An empty leftover (an install that failed before npm wrote anything) is ours too.
-  const empty = (() => {
-    try {
-      return readdirSync(path).filter((n) => n !== "package.json" && n !== "package-lock.json").length === 0;
-    } catch {
-      return false;
-    }
-  })();
-  if (hasForeignFiles(dirname(path)) && !isOwnInstall(path) && !empty) throw new Error(`${path} already exists and isn't a xaq install, so it was left alone. Move it away, then run this again.`);
-  rmSync(path, { recursive: true, force: true });
-}
 
 // ───────────── System integration (injectable for tests) ─────────────
 
@@ -433,8 +359,8 @@ export interface ServiceOps {
   exec(cmd: string, args: string[], opts?: { quiet?: boolean }): void;
   /** Runs a command and returns its stdout, throwing on a non-zero exit. */
   capture(cmd: string, args: string[]): string;
-  /** Installs the package into a staging directory and returns it (see stageApp). */
-  stage(dataDir: string): string;
+  /** Installs the package (or that `version`) into a staging directory and returns it (see stageApp). */
+  stage(dataDir: string, version?: string): string;
   /** Directory for the systemd unit or the launchd plist. */
   unitDir(): string;
   /** Resolves true once /api/health returns a real HealthResponse, false if it never does. */
@@ -445,8 +371,6 @@ export interface ServiceOps {
   portInUse(host: string, port: number): Promise<boolean>;
   uid: number;
   user: string;
-  /** Where to look for a Node for the service (service-node.ts); tests point it at fake installs. */
-  nodeSearch?: Partial<NodeSearchDeps>;
 }
 
 export const systemOps = (): ServiceOps => {
@@ -489,7 +413,7 @@ export function userManagerConfigHome(ops: Pick<ServiceOps, "capture">): string 
 /** The unit file (systemd) or plist (launchd) for a service's names. */
 export const unitPath = (ops: Pick<ServiceOps, "platform" | "unitDir">, id: UnitId) =>
   join(ops.unitDir(), ops.platform === "darwin" ? `${id.launchd}.plist` : `${id.systemd}.service`);
-const unitFile = (ops: ServiceOps) => unitPath(ops, DAEMON_UNIT);
+export const unitFile = (ops: Pick<ServiceOps, "platform" | "unitDir">) => unitPath(ops, DAEMON_UNIT);
 const unitLabel = (ops: Pick<ServiceOps, "platform">, id: UnitId) => (ops.platform === "darwin" ? id.launchd : id.systemd);
 export const systemctl = (ops: ServiceOps, ...args: string[]) => ops.exec("systemctl", ops.root ? args : ["--user", ...args]);
 export const launchdTarget = (ops: Pick<ServiceOps, "uid">) => `gui/${ops.uid}`;
@@ -513,7 +437,7 @@ export const readText = (file: string) => {
 /** Where to look when the service doesn't start. */
 export function serviceHints(ops: ServiceOps, env: NodeJS.ProcessEnv = process.env, id: UnitId = DAEMON_UNIT): string[] {
   if (ops.platform === "darwin") {
-    return [`launchctl print ${launchdTarget(ops)}/${id.launchd}`, "and the log file xaq.log (agentinbox.log from before the rename) in the data directory"];
+    return [`launchctl print ${launchdTarget(ops)}/${id.launchd}`, "and the log file xaq.log in the data directory"];
   }
   const scope = ops.root ? "" : " --user";
   const hints = [`systemctl${scope} status ${id.systemd}`, `journalctl${scope} -u ${id.systemd} -e`];
@@ -689,27 +613,21 @@ export function serviceMainPid(ops: ServiceOps, id: UnitId = DAEMON_UNIT): numbe
  * terminal on this data directory (its instance lock), or anything on the port while the service
  * isn't running. The service could only fail to start, and the health check would hear the other one.
  * A lock holder is the service when its lock says so, or (early nightlies didn't write that flag)
- * when, with a unit installed, it is the service manager's main process. `units` are the installed
- * services (the new one and/or one from before the rename).
+ * when, with a unit installed, it is the service manager's main process.
  */
-export async function assertNothingElseRunning(
-  config: Pick<ServiceConfig, "dataDir" | "host" | "port">,
-  ops: ServiceOps,
-  unitInstalled: boolean,
-  units: UnitId[] = [DAEMON_UNIT],
-): Promise<void> {
+export async function assertNothingElseRunning(config: Pick<ServiceConfig, "dataDir" | "host" | "port">, ops: ServiceOps, unitInstalled: boolean): Promise<void> {
   const other = ops.instance(config.dataDir);
-  const pids = unitInstalled ? units.map((id) => serviceMainPid(ops, id)).filter((p): p is number => p !== null) : [];
-  if (other && !other.service && !pids.includes(other.pid)) {
+  const pid = unitInstalled ? serviceMainPid(ops) : null;
+  if (other && !other.service && other.pid !== pid) {
     throw new Error(
       `xaq is already running in a terminal (pid ${other.pid}${other.port ? `, port ${other.port}` : ""}): stop it with Ctrl-C, then run this again. ` +
         `The service uses the same data directory (${config.dataDir}), and only one xaq can use it at a time. Nothing was changed.`,
     );
   }
   // A running service (on whatever data directory) may hold the port; reinstalling stops it first.
-  if (!other && !pids.length && (await ops.portInUse(config.host, config.port))) {
+  if (!other && pid === null && (await ops.portInUse(config.host, config.port))) {
     throw new Error(
-      `Port ${config.port} is already in use: by xaq (or agentinbox) running in a terminal with another --data directory, or by another program. ` +
+      `Port ${config.port} is already in use: by xaq running in a terminal with another --data directory, or by another program. ` +
         `Stop it (Ctrl-C in its terminal), or choose another port with --port. Nothing was changed.`,
     );
   }
@@ -730,50 +648,31 @@ export function notTheService(owner: InstanceInfo | null, before: InstanceInfo |
   return null;
 }
 
-/**
- * A daemon service installed under the names from before the rename (agentinbox), if any: its unit file,
- * the file's content, and the data directory it runs on.
- */
-export function legacyDaemonUnit(
-  ops: Pick<ServiceOps, "platform" | "unitDir">,
-): { file: string; text: string; dataDir: string | null; port: number | null; host: string | null } | null {
-  if (ops.platform !== "linux" && ops.platform !== "darwin") return null;
-  const file = unitPath(ops, LEGACY_DAEMON_UNIT);
-  const text = readText(file);
-  if (text === null) return null;
-  const rawPort = unitEnv(text, "PORT");
-  const port = rawPort && /^\d+$/.test(rawPort) && Number(rawPort) <= 65535 ? Number(rawPort) : null;
-  return { file, text, dataDir: unitDataDir(text), port, host: unitEnv(text, "HOST") || null };
+/** The Node the service runs: --node, else the one running `service install`. Either must be MIN_NODE or newer. */
+export function serviceNode(flag?: string): { path: string; version: string } {
+  if (flag === undefined) return { path: process.execPath, version: process.versions.node };
+  const path = resolve(flag);
+  const version = nodeVersionOf(path);
+  const problem = version ? nodeVersionError(version) : `--node ${path} doesn't run as Node.js.`;
+  if (problem) throw new Error(`${problem} Nothing was changed.`);
+  return { path, version: version! };
+}
+
+/** `<node> -p process.versions.node`, or null. Run without the caller's environment (no XAQ_MASTER_KEY, no NODE_OPTIONS). */
+export function nodeVersionOf(path: string): string | null {
+  try {
+    const v = execFileSync(path, ["-p", "process.versions.node"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000, killSignal: "SIGKILL", env: { PATH: process.env.PATH } }).trim();
+    return /^\d+\.\d+\.\d+$/.test(v) ? v : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Where `service install` puts the service when the command line and environment don't say: replacing a
- * service from before the rename keeps its data directory, port and host (a bind to 127.0.0.1 must not
- * widen to 0.0.0.0 on upgrade). An installed xaq service keeps the data directory its unit names (say
- * ~/.agentinbox, or the ~/.xaq nightly.71/72 used), even if the default has changed since. `given` is what
- * the flags (and PORT / HOST / XAQ_DATA) said.
+ * Installs (or reinstalls) and starts the service: stages the package, stops the old service, moves the new
+ * install into place, writes the unit and waits for /api/health. A failure before the old service is stopped
+ * changes nothing; after it, the error says where to look and running this again retries.
  */
-export function serviceInstallInput(
-  given: { dataDir?: string; port?: number; host?: string },
-  ops: Pick<ServiceOps, "platform" | "unitDir">,
-  env: NodeJS.ProcessEnv = process.env,
-): Pick<ConfigInput, "dataDir" | "port" | "host"> {
-  const legacy = legacyDaemonUnit(ops);
-  const installed = installedDaemonDataDir(ops);
-  return {
-    dataDir: given.dataDir ?? (envVar("DATA", env) || undefined) ?? legacy?.dataDir ?? installed ?? undefined,
-    port: given.port ?? (env.PORT?.trim() ? undefined : (legacy?.port ?? undefined)),
-    host: given.host ?? (env.HOST ? undefined : (legacy?.host ?? undefined)),
-  };
-}
-
-/** The data directory the installed (xaq) daemon service runs on, if one is installed and says. */
-export function installedDaemonDataDir(ops: Pick<ServiceOps, "platform" | "unitDir">): string | null {
-  if (ops.platform !== "linux" && ops.platform !== "darwin") return null;
-  const text = readText(unitPath(ops, DAEMON_UNIT));
-  return text === null ? null : unitDataDir(text);
-}
-
 export async function installService(config: ServiceConfig, ops: ServiceOps = systemOps(), opts: InstallOptions = {}): Promise<void> {
   assertSupported(ops);
   if (ops.platform === "linux" && /\s/.test(config.dataDir)) {
@@ -785,42 +684,17 @@ export async function installService(config: ServiceConfig, ops: ServiceOps = sy
   assertMasterKeyUsable(config, extraEnv.XAQ_MASTER_KEY ?? "");
   preflight(ops);
   const file = unitFile(ops);
-  const previousUnit = readText(file);
-  // A service from before the rename is replaced: stopped (and waited for) before the new one starts,
-  // so the two never run at once, and put back exactly as it was if the new one fails.
-  const legacy = legacyDaemonUnit(ops);
-  // The Node it will run: checked before anything is touched (a too-old one would install "fine" and then fail every code-extension call).
-  const codeExtensions = installedCodeExtensions(config.dbPath);
-  const node = chooseServiceNode(
-    {
-      previous: [previousUnit && unitNodePath(previousUnit), legacy && unitNodePath(legacy.text)],
-      flag: opts.node,
-      codeExtensions,
-      rerun: serviceInstallCommand(config),
-    },
-    { ...defaultNodeSearch(), ...ops.nodeSearch },
-  );
-  const legacyState = legacy ? unitState(ops, LEGACY_DAEMON_UNIT) : null;
-  await assertNothingElseRunning(config, ops, previousUnit !== null || legacy !== null, [DAEMON_UNIT, ...(legacy ? [LEGACY_DAEMON_UNIT] : [])]);
+  const node = serviceNode(opts.node);
+  await assertNothingElseRunning(config, ops, existsSync(file));
   const before = ops.instance(config.dataDir);
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
 
-  const staging = ops.stage(config.dataDir);
-  const previousEnv = readText(serviceEnvPath(config.dataDir));
+  const staging = ops.stage(config.dataDir, opts.version);
   const app = join(config.dataDir, "app");
-  const entry = installedEntry(app);
-  const spec: ServiceSpec = { execPath: node.path, entry, dataDir: config.dataDir, port: config.port, host: config.host, extraEnv, system: ops.root };
-  let swap: ReturnType<typeof swapIn> | null = null;
-
+  const spec: ServiceSpec = { execPath: node.path, entry: installedEntry(app), dataDir: config.dataDir, port: config.port, host: config.host, extraEnv, system: ops.root };
   try {
-    if (legacy) {
-      console.log(`  Replacing the ${LEGACY_PRODUCT} service (${unitLabel(ops, LEGACY_DAEMON_UNIT)}) with ${unitLabel(ops, DAEMON_UNIT)}…`);
-      await stopAndWait(ops, LEGACY_DAEMON_UNIT, { pollMs: opts.launchdPollMs });
-      rmSync(legacy.file, { force: true });
-      if (ops.platform === "linux") systemctl(ops, "daemon-reload");
-    }
     uninstallService(config, ops, { quiet: true, keepApp: true });
-    swap = swapIn(staging, app);
+    swapIn(staging, app).commit();
     writeServiceEnv(config.dataDir, extraEnv);
     mkdirSync(ops.unitDir(), { recursive: true });
     if (ops.platform === "linux") {
@@ -837,58 +711,16 @@ export async function installService(config: ServiceConfig, ops: ServiceOps = sy
     const wrong = notTheService(ops.instance(config.dataDir), before, serviceMainPid(ops));
     if (wrong) throw new Error(wrong);
   } catch (err) {
-    await rollback();
-    const hints = serviceHints(ops, process.env, legacy && previousUnit === null ? LEGACY_DAEMON_UNIT : DAEMON_UNIT)
-      .map((h) => `    ${h}`)
-      .join("\n");
-    const restored = legacy ? `the ${LEGACY_PRODUCT} service as it was` : previousUnit ? "the previous install" : "no service";
-    throw new Error(`Starting the service failed (${firstLine(err)}). Rolled back to ${restored}.\n  To find out why:\n${hints}`);
-  }
-  swap!.commit();
-
-  async function rollback(): Promise<void> {
-    const quietly = async (fn: () => void | Promise<void>) => {
-      try {
-        await fn();
-      } catch {
-        // Best effort: report the original failure.
-      }
-    };
-    // Before the old service comes back, the new one must be gone (launchd tears it down asynchronously).
-    if (legacy) await quietly(() => stopAndWait(ops, DAEMON_UNIT, { pollMs: opts.launchdPollMs }));
-    await quietly(() => uninstallService(config, ops, { quiet: true, keepApp: true }));
-    await quietly(() => rmSync(file, { force: true }));
-    if (ops.platform === "linux") await quietly(() => systemctl(ops, "daemon-reload"));
-    await quietly(() => rmSync(staging, { recursive: true, force: true }));
-    if (swap) await quietly(() => swap!.restore());
-    await quietly(() => (previousEnv === null ? rmSync(serviceEnvPath(config.dataDir), { force: true }) : writeFileSync(serviceEnvPath(config.dataDir), previousEnv, { mode: 0o600 })));
-    if (previousUnit !== null) {
-      await quietly(async () => {
-        writeFileSync(file, previousUnit, { mode: ops.platform === "darwin" ? 0o600 : 0o644 });
-        if (ops.platform === "linux") {
-          systemctl(ops, "daemon-reload");
-          systemctl(ops, "enable", "--now", SERVICE_NAME);
-        } else {
-          await bootstrapLaunchd(ops, LAUNCHD_LABEL, file, { pollMs: opts.launchdPollMs });
-        }
-      });
-    }
-    // The pre-rename service comes back under its own name (even when stopping it is what failed),
-    // running and enabled only if it was before.
-    if (legacy) await quietly(() => restoreUnit(ops, LEGACY_DAEMON_UNIT, legacy.file, legacy.text, legacyState!, opts.launchdPollMs));
+    rmSync(staging, { recursive: true, force: true });
+    const hints = serviceHints(ops).map((h) => `    ${h}`).join("\n");
+    throw new Error(`Starting the service failed (${firstLine(err)}).\n  To find out why:\n${hints}`);
   }
 
   enableLinger(ops);
 
-  const fromShell = (k: string) => k in process.env || (LEGACY_ENV_KEYS[k as keyof typeof LEGACY_ENV_KEYS] ?? k) in process.env;
-  const kept = Object.keys(extraEnv).filter((k) => !fromShell(k));
+  const kept = Object.keys(extraEnv).filter((k) => !(k in process.env));
   console.log(`\n  Installed ${SERVICE_NAME} as a ${ops.platform === "linux" ? "systemd" : "launchd"} service (${unitLabel(ops, DAEMON_UNIT)}).`);
-  if (legacy) console.log(`  It replaces the ${LEGACY_PRODUCT} service (${unitLabel(ops, LEGACY_DAEMON_UNIT)}), which was removed. Your data stays in ${config.dataDir}.`);
-  console.log(
-    `  It runs Node.js ${node.version} at ${node.path}: ${node.why}. If you remove or replace that Node, run \`${serviceInstallCommand(config)}\` again.`,
-  );
-  if (!node.codeReady) console.log(`  Code extensions need a newer Node.js (${codeFloorText()}): to install one later, run this again with such a Node (or --node).`);
-  else if (!node.recommended) console.log(`  Warning: ${recommendedNodeWarning(node.version, serviceInstallCommand(config))}`);
+  console.log(`  It runs Node.js ${node.version} at ${node.path}. If you remove or replace that Node, run \`${serviceInstallCommand(config)}\` again.`);
   if (kept.length) console.log(`  Kept ${kept.join(", ")} from the previous install.`);
   printLinks(config);
 }
@@ -903,10 +735,8 @@ export function enableLinger(ops: ServiceOps): void {
   }
 }
 
-/** XAQ_DATA (AGENTINBOX_DATA in a unit from before the rename) from an installed unit or plist. */
-export function unitDataDir(text: string): string | null {
-  return unitEnv(text, "XAQ_DATA") ?? unitEnv(text, "AGENTINBOX_DATA");
-}
+/** XAQ_DATA from an installed unit or plist. */
+export const unitDataDir = (text: string): string | null => unitEnv(text, "XAQ_DATA");
 
 /** An environment variable a unit (`Environment="K=v"`) or plist (`<key>K</key><string>v</string>`) sets. */
 export function unitEnv(text: string, name: string): string | null {
@@ -918,9 +748,8 @@ export function unitEnv(text: string, name: string): string | null {
 }
 
 /**
- * Stops and removes the service, under its own name or the one from before the rename. The data
- * directory is the one the installed unit uses (falling back to `config.dataDir`), and only directories
- * that really are the service's own install are deleted; nothing is created.
+ * Stops and removes the service. The data directory is the one the installed unit uses (falling back to
+ * `config.dataDir`), and only directories that really are the service's own install are deleted; nothing is created.
  */
 export function uninstallService(
   config: Pick<ServiceConfig, "dataDir">,
@@ -928,29 +757,29 @@ export function uninstallService(
   opts: { quiet?: boolean; keepApp?: boolean } = {},
 ): void {
   assertSupported(ops);
-  const units = [DAEMON_UNIT, LEGACY_DAEMON_UNIT]
-    .map((id) => ({ id, file: unitPath(ops, id), text: readText(unitPath(ops, id)) }))
-    .filter((u): u is { id: UnitId; file: string; text: string } => u.text !== null);
-  const dataDir = units.map((u) => unitDataDir(u.text)).find(Boolean) || config.dataDir;
-  if (!units.length && !opts.quiet) console.log("The xaq service is not installed.");
-  for (const u of units) {
+  const file = unitFile(ops);
+  const text = readText(file);
+  const dataDir = (text && unitDataDir(text)) || config.dataDir;
+  if (text === null) {
+    if (!opts.quiet) console.log("The xaq service is not installed.");
+  } else {
     if (ops.platform === "linux") {
       try {
-        systemctl(ops, "disable", "--now", u.id.systemd);
+        systemctl(ops, "disable", "--now", SERVICE_NAME);
       } catch {
         // Already stopped.
       }
-      rmSync(u.file);
+      rmSync(file);
       systemctl(ops, "daemon-reload");
     } else {
       try {
-        ops.exec("launchctl", ["bootout", `${launchdTarget(ops)}/${u.id.launchd}`], { quiet: true });
+        ops.exec("launchctl", ["bootout", `${launchdTarget(ops)}/${LAUNCHD_LABEL}`], { quiet: true });
       } catch {
         // Not loaded.
       }
-      rmSync(u.file);
+      rmSync(file);
     }
-    if (!opts.quiet) console.log(`Removed the ${unitLabel(ops, u.id)} service. Your data in ${dataDir} was kept.`);
+    if (!opts.quiet) console.log(`Removed the ${unitLabel(ops, DAEMON_UNIT)} service. Your data in ${dataDir} was kept.`);
   }
   // The service's own install; the data (database, keys) stays.
   if (!opts.keepApp) removeOwnInstall(dataDir);
@@ -958,49 +787,19 @@ export function uninstallService(
 
 export function serviceStatus(ops: ServiceOps = systemOps()): void {
   assertSupported(ops);
-  const id = existsSync(unitFile(ops)) ? DAEMON_UNIT : existsSync(unitPath(ops, LEGACY_DAEMON_UNIT)) ? LEGACY_DAEMON_UNIT : null;
-  if (!id) {
+  if (!existsSync(unitFile(ops))) {
     console.log(`The xaq service is not installed. Install it with \`${cliCommand("service install")}\`.`);
     process.exitCode = 1;
     return;
   }
-  if (id === LEGACY_DAEMON_UNIT) {
-    console.log(`This is the service from before the rename to xaq (${unitLabel(ops, id)}). \`${cliCommand("service install")}\` moves it to ${unitLabel(ops, DAEMON_UNIT)}, keeping your data.\n`);
-  }
   try {
-    if (ops.platform === "linux") systemctl(ops, "status", id.systemd, "--no-pager");
-    else ops.exec("launchctl", ["print", `${launchdTarget(ops)}/${id.launchd}`]);
+    if (ops.platform === "linux") systemctl(ops, "status", SERVICE_NAME, "--no-pager");
+    else ops.exec("launchctl", ["print", `${launchdTarget(ops)}/${LAUNCHD_LABEL}`]);
   } catch {
     process.exitCode = 1;
   }
-  const { problem, warning } = serviceNodeCheck(readText(unitPath(ops, id)) ?? "", ops.nodeSearch?.versionOf);
-  if (problem) {
-    console.log(`\n  Problem: ${problem}`);
-    process.exitCode = 1;
-  } else if (warning) {
-    // Not a problem: the exit code stays as it was.
-    console.log(`\n  Warning: ${warning}`);
-  }
 }
 
-/**
- * `service status`'s check of the Node the installed unit or plist runs. `problem`: what's wrong and the fix, or
- * null when it is fine; below the code-extension floor counts only while code extensions are installed in the
- * service's data directory. `warning`: when there is no problem but the Node is below RECOMMENDED_NODE.
- */
-export function serviceNodeCheck(unitText: string, versionOf: (path: string) => string | null = nodeVersionOf): { problem: string | null; warning: string | null } {
-  const path = unitNodePath(unitText);
-  if (!path) return { problem: null, warning: null };
-  const dataDir = unitDataDir(unitText);
-  const codeExtensions = dataDir ? installedCodeExtensions(dataFiles(dataDir).db) : [];
-  const port = Number(unitEnv(unitText, "PORT"));
-  const rerun = dataDir
-    ? serviceInstallCommand({ dataDir, host: unitEnv(unitText, "HOST") || "0.0.0.0", port: Number.isInteger(port) && port > 0 ? port : DEFAULT_PORT })
-    : cliCommand("service install");
-  const version = versionOf(path);
-  const problem = serviceNodeProblem(path, version, codeExtensions, rerun);
-  return { problem, warning: problem || !version ? null : recommendedNodeWarning(version, rerun) };
-}
 /** A real HealthResponse (not the "starting" placeholder or something else on the port). */
 export function isHealthResponse(body: unknown): boolean {
   const b = body as { status?: unknown; version?: unknown } | null;

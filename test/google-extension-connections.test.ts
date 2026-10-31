@@ -63,7 +63,7 @@ beforeEach(async () => {
   request = (path, init = {}) => {
     const { json, ...rest } = init;
     const headers = new Headers(rest.headers);
-    headers.set("x-agentinbox-csrf", CSRF["x-agentinbox-csrf"]);
+    headers.set("x-xaq-csrf", CSRF["x-xaq-csrf"]);
     if (cookie) headers.set("cookie", cookie);
     if (json !== undefined) headers.set("content-type", "application/json");
     return Promise.resolve(app.request(path, { ...rest, headers, body: json !== undefined ? JSON.stringify(json) : rest.body }, { incoming: { socket: { remoteAddress: "127.0.0.1" } } }));

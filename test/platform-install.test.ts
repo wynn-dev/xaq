@@ -148,36 +148,16 @@ describe("3: service install", () => {
     expect(ops.calls).toContain("loginctl enable-linger me");
   });
 
-  it("rolls a fresh install back completely when the service can't start", async () => {
+  it("reports a service that can't start, with where to look", async () => {
     const config = setup();
     const ops = fakeOps(config.dataDir, enableFails);
     const err = await installService(config, ops).then(
       () => null,
       (e: Error) => e,
     );
-    expect(err?.message).toMatch(/Starting the service failed .*Rolled back to no service/s);
+    expect(err?.message).toMatch(/Starting the service failed \(Command failed: systemctl --user enable --now xaq\)/);
     expect(err?.message).toContain("journalctl --user -u xaq -e");
-    expect(existsSync(join(config.dataDir, "units/xaq.service"))).toBe(false);
-    expect(existsSync(join(config.dataDir, "app"))).toBe(false);
-    expect(ops.calls.filter((c) => c === "systemctl --user daemon-reload").length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("restores the previous install when an update can't start", async () => {
-    const config = setup();
-    mkdirSync(join(config.dataDir, "units"), { recursive: true });
-    writeFileSync(join(config.dataDir, "units/xaq.service"), "previous unit\n");
-    mkdirSync(join(config.dataDir, "app"), { recursive: true });
-    writeFileSync(join(config.dataDir, "app/marker"), "old app");
-    writeFileSync(join(config.dataDir, "service.env"), "TRUST_PROXY=1\n");
-    let attempts = 0;
-    // The new unit fails to start; re-enabling the restored one works.
-    const ops = fakeOps(config.dataDir, (cmd, args) => enableFails(cmd, args) && ++attempts === 1);
-    await expect(installService(config, ops)).rejects.toThrow(/Rolled back to the previous install/);
-    expect(readFileSync(join(config.dataDir, "units/xaq.service"), "utf8")).toBe("previous unit\n");
     expect(existsSync(join(config.dataDir, "app.new"))).toBe(false);
-    expect(readFileSync(join(config.dataDir, "app/marker"), "utf8")).toBe("old app");
-    expect(readFileSync(join(config.dataDir, "service.env"), "utf8")).toBe("TRUST_PROXY=1\n");
-    expect(attempts).toBe(2);
   });
 
   it("changes nothing when systemd can't be reached (no user bus)", async () => {
@@ -198,13 +178,10 @@ describe("3: service install", () => {
     expect(ops.calls).toEqual(["systemctl --user daemon-reload"]);
   });
 
-  it("rolls back when the service starts but never answers health checks", async () => {
+  it("fails when the service starts but never answers health checks", async () => {
     const config = setup();
     const ops = fakeOps(config.dataDir, undefined, false);
-    await expect(installService(config, ops)).rejects.toThrow(/did not answer on port .*Rolled back to no service/s);
-    expect(existsSync(join(config.dataDir, "units/xaq.service"))).toBe(false);
-    expect(existsSync(join(config.dataDir, "app"))).toBe(false);
-    expect(ops.calls).toContain("systemctl --user disable --now xaq");
+    await expect(installService(config, ops)).rejects.toThrow(/did not answer on port /);
   });
 
   it("refuses while xaq runs in a terminal on the same data directory, and changes nothing", async () => {
@@ -241,7 +218,7 @@ describe("3: service install", () => {
     expect(ops.owner).toMatchObject({ service: true, startedAt: "start-2" });
   });
 
-  it("rolls back when a foreground xaq answers instead of the service", async () => {
+  it("fails when a foreground xaq answers instead of the service", async () => {
     const config = setup();
     const ops = fakeOps(config.dataDir);
     const log = vi.spyOn(console, "log");
@@ -250,8 +227,7 @@ describe("3: service install", () => {
       ops.calls.push(`${cmd} ${args.join(" ")}`);
       if (cmd === "systemctl" && args.includes("enable")) ops.owner = { pid: 999, host: "127.0.0.1", port: 0, startedAt: "fg", service: false };
     };
-    await expect(installService(config, ops)).rejects.toThrow(/data directory \(pid 999\) is not the service.*Rolled back to no service/s);
-    expect(existsSync(join(config.dataDir, "units/xaq.service"))).toBe(false);
+    await expect(installService(config, ops)).rejects.toThrow(/data directory \(pid 999\) is not the service/);
     expect(log.mock.calls.flat().join("\n")).not.toMatch(/Installed|Running at/);
   });
 
@@ -296,33 +272,6 @@ describe("3: service install", () => {
       cmd === "systemctl" && args.includes("MainPID") ? `${running.owner ? SERVICE_PID : running.calls.some((c) => c.includes("disable")) ? 0 : 31337}\n` : "";
     await installService(config, running);
     expect(running.owner).toMatchObject({ pid: SERVICE_PID, service: true });
-  });
-
-  it("rolls a reinstall back to the previous unit, re-enabled, when someone else holds the data directory", async () => {
-    const config = setup();
-    mkdirSync(join(config.dataDir, "units"), { recursive: true });
-    writeFileSync(join(config.dataDir, "units/xaq.service"), "previous unit\n");
-    mkdirSync(join(config.dataDir, "app"), { recursive: true });
-    writeFileSync(join(config.dataDir, "app/marker"), "old app");
-    const ops = fakeOps(config.dataDir);
-    ops.owner = { pid: SERVICE_PID, host: "127.0.0.1", port: 0, startedAt: "old", service: true };
-    let enables = 0;
-    ops.exec = (cmd, args) => {
-      ops.calls.push(`${cmd} ${args.join(" ")}`);
-      if (cmd !== "systemctl") return;
-      if (args.includes("disable")) ops.owner = null;
-      if (args.includes("enable") && args.includes("--now")) {
-        // First the new service starts, but a terminal instance got the data directory; then the previous one comes back.
-        ops.owner = ++enables === 1 ? { pid: 999, host: "127.0.0.1", port: 0, startedAt: "fg", service: false } : { pid: SERVICE_PID, host: "127.0.0.1", port: 0, startedAt: "again", service: true };
-      }
-    };
-    const log = vi.spyOn(console, "log");
-    await expect(installService(config, ops)).rejects.toThrow(/\(pid 999\) is not the service.*Rolled back to the previous install/s);
-    expect(readFileSync(join(config.dataDir, "units/xaq.service"), "utf8")).toBe("previous unit\n");
-    expect(readFileSync(join(config.dataDir, "app/marker"), "utf8")).toBe("old app");
-    expect(enables).toBe(2);
-    expect(ops.calls.filter((c) => c === "systemctl --user enable --now xaq")).toHaveLength(2);
-    expect(log.mock.calls.flat().join("\n")).not.toMatch(/Installed|Running at/);
   });
 
   it("reads the service's main pid from systemd and launchd", () => {
@@ -608,28 +557,13 @@ describe("3b: service install on launchd", () => {
     expect(ops.loaded).toBe(true);
   });
 
-  it("a bootstrap that keeps failing is reported with launchd's reason and rolled back to the previous install", async () => {
+  it("a bootstrap that keeps failing is reported with launchd's reason", async () => {
     const config = setup();
-    // All five attempts for the new plist fail; the restored plist's bootstrap works.
     const ops = fakeLaunchdOps(config.dataDir, { loaded: true, bootstrapFailures: 5 });
     running(ops);
     await expect(installService(config, ops, { launchdPollMs: 1 })).rejects.toThrow(
-      /Starting the service failed \(launchctl bootstrap failed: Bootstrap failed: 5: Input\/output error\)\. Rolled back to the previous install/,
+      /Starting the service failed \(launchctl bootstrap failed: Bootstrap failed: 5: Input\/output error\)\./,
     );
-    expect(bootstraps(ops)).toHaveLength(6);
-    expect(ops.loaded).toBe(true);
-    expect(readFileSync(join(config.dataDir, PLIST), "utf8")).toBe("previous plist\n");
-    expect(readFileSync(join(config.dataDir, "app/marker"), "utf8")).toBe("old app");
-  });
-
-  it("the restore after a failed update also waits for the failed job to unload", async () => {
-    const config = setup();
-    const ops = fakeLaunchdOps(config.dataDir, { loaded: true, lingers: 2 });
-    running(ops);
-    ops.waitReady = async () => false;
-    await expect(installService(config, ops, { launchdPollMs: 1 })).rejects.toThrow(/did not answer on port .*Rolled back to the previous install/s);
-    expect(bootstraps(ops)).toHaveLength(2);
-    expect(ops.loaded).toBe(true);
-    expect(readFileSync(join(config.dataDir, PLIST), "utf8")).toBe("previous plist\n");
+    expect(bootstraps(ops)).toHaveLength(5);
   });
 });
