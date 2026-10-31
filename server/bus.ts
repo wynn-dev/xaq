@@ -1,18 +1,14 @@
 import { EventEmitter } from "node:events";
-import type { Account, Agent, Approval, AuditEntry, Delivery, MailEvent, PairingRequest, Settings } from "../shared/types.ts";
+import type { Account, Agent, AuditEntry, MailEvent, PairingRequest, Settings } from "../shared/types.ts";
 
 /**
  * In-process notifications. Fired *after* the change is committed to the database, so listeners
- * can read it back. Used by the console SSE stream, `wait_for_events`, the webhook worker and the
+ * can read it back. Used by the console SSE stream, `wait_for_events` and the
  * ingest loop (settings changes). Listeners must not throw.
  */
 export interface BusEvents {
-  /** A new event row was committed (and its webhook deliveries enqueued). */
+  /** A new event row was committed. */
   event: [MailEvent];
-  /** A delivery was created or changed state. */
-  delivery: [Delivery];
-  /** An approval was created or decided. */
-  approval: [Approval];
   audit: [AuditEntry];
   /** An account was connected or its status/sync state changed. */
   account: [Account];

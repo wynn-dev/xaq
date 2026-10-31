@@ -1,4 +1,4 @@
-// The official registry: index.json at the root of wynn-dev/xaq-extensions (docs/EXTENSIONS.md). The index is only a
+// The official registry: index.json at the root of wynn-dev/xaq-extensions. The index is only a
 // catalog; what gets installed is pinned by each entry's `commit` and `integrity`.
 
 import { envVar } from "../brand.ts";
@@ -7,13 +7,13 @@ import { INTEGRITY_RE } from "./integrity.ts";
 export const OFFICIAL_OWNER = "wynn-dev";
 export const OFFICIAL_REPO = "xaq-extensions";
 /**
- * The official extensions core knows of (the bootstrap pins, docs/EXTENSIONS.md "Migration"): a third-party extension
+ * The official extensions core knows of (the bootstrap pins): a third-party extension
  * can't take these names even when the registry can't be read. The registry index's names are refused too.
  * google-workspace has no bootstrap pin; it's reserved because it uses connected Google accounts.
  */
 export const OFFICIAL_NAMES: readonly string[] = ["notion", "t3code", "whoop", "brightspace", "google-workspace"];
 
-/** Where sources are fetched from. Overridable (tests point them at a fake GitHub). */
+/** Where sources are fetched from. XAQ_EXT_GITHUB_BASE (tests only) points all three at a fake GitHub. */
 export interface ExtensionUrls {
   /** index.json. */
   registry: string;
@@ -24,10 +24,12 @@ export interface ExtensionUrls {
 }
 
 export function defaultExtensionUrls(): ExtensionUrls {
+  const base = envVar("EXT_GITHUB_BASE");
+  if (base) return { registry: `${base}/raw/index.json`, githubApi: `${base}/api`, codeload: `${base}/codeload` };
   return {
-    registry: envVar("EXT_REGISTRY_URL") ?? `https://raw.githubusercontent.com/${OFFICIAL_OWNER}/${OFFICIAL_REPO}/main/index.json`,
-    githubApi: envVar("EXT_GITHUB_API") ?? "https://api.github.com",
-    codeload: envVar("EXT_CODELOAD") ?? "https://codeload.github.com",
+    registry: `https://raw.githubusercontent.com/${OFFICIAL_OWNER}/${OFFICIAL_REPO}/main/index.json`,
+    githubApi: "https://api.github.com",
+    codeload: "https://codeload.github.com",
   };
 }
 

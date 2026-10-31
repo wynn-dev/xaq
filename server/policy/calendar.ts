@@ -1,16 +1,14 @@
-// Calendar guardrails as pure functions over a Grant (workstream B; docs/calendar.md "Grants and policy").
-// Callers (server/calendar/agent.ts, server/calendar/approvals.ts) throw these as PolicyDenied.
+// Calendar guardrails as pure functions over a Grant. Callers (server/calendar/agent.ts) throw these as
+// PolicyDenied.
 
 import { randomBytes } from "node:crypto";
 import type { Grant } from "../../shared/types.ts";
 import { PolicyDenied } from "../util/errors.ts";
 import { disallowedRecipients } from "./enforce.ts";
 
-export { CALENDAR_WRITE_ACTIONS } from "./enforce.ts";
-
 /**
  * Canonical form of a calendar id: trimmed, and lower-cased when email-shaped (the primary calendar's id
- * is the account email; group calendars are "…@group.calendar.google.com"). Grants store this form.
+ * is the account email; group calendars are "…@group.calendar.google.com").
  */
 export const normalizeCalendarId = (calendarId: string): string => {
   const id = calendarId.trim();
@@ -21,26 +19,14 @@ export const normalizeCalendarId = (calendarId: string): string => {
 export const resolveCalendarId = (calendarId: string, accountEmail: string): string =>
   calendarId.trim().toLowerCase() === "primary" ? accountEmail.toLowerCase() : normalizeCalendarId(calendarId);
 
-/**
- * Whether the grant's calendar scope lists this calendar id. A null scope means "every calendar in the
- * account's list": callers must still check the id against that list (AgentCalendar.calendarFor).
- */
-export function calendarInScope(grant: Pick<Grant, "calendarScope">, calendarId: string): boolean {
-  return grant.calendarScope === null || grant.calendarScope.includes(normalizeCalendarId(calendarId));
-}
-
-/** Like notAccessible for mail: never reveals whether an out-of-scope calendar exists. */
+/** Never reveals whether a calendar that isn't in the account's list exists. */
 export const calendarNotAccessible = (calendarId: string) =>
   `Calendar ${calendarId} was not found or is not accessible to you. Use list_calendars to see the calendars you can use.`;
-
-export function assertCalendarInScope(grant: Grant, calendarId: string): void {
-  if (!calendarInScope(grant, calendarId)) throw new PolicyDenied("calendar_scope", calendarNotAccessible(calendarId));
-}
 
 const isResource = (email: string) => /@resource\.calendar\.google\.com$/i.test(email);
 
 /**
- * Who a write puts in touch with whom (docs/calendar.md "Attendees and allowTo"). Emails are compared
+ * Who a write puts in touch with whom. Emails are compared
  * lower-cased; the account itself and rooms never count.
  * - `emailed`: addresses Google emails when notifying (sendUpdates "all"). Create/update: every attendee
  *   after the change plus removed ones (they get a cancellation) and the organizer when it's someone else.
@@ -92,19 +78,6 @@ export function assertAttendeesAllowed(grant: Grant, checked: string[]): void {
       "allow_to",
       `Not allowed to involve ${bad.join(", ")} in this event. This account only lets you contact: ${grant.allowTo.join(", ")}. ` +
         "Remove those attendees, leave events organized by others alone, or ask the operator to extend the allowlist.",
-    );
-  }
-}
-
-/**
- * replyOnly grants may answer and edit, but not reach new people: adding attendees (on create or update) is
- * denied, whatever notify says. `added` is attendees not on the event before (self and rooms excluded).
- */
-export function assertNoNewAttendees(grant: Grant, added: string[]): void {
-  if (grant.replyOnly && added.length) {
-    throw new PolicyDenied(
-      "reply_only",
-      `This account only lets you reply, so you can't invite new people (${added.join(", ")}). Leave attendees unchanged, or ask the operator to lift the reply-only rule.`,
     );
   }
 }

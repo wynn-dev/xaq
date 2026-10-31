@@ -2,13 +2,11 @@
 
 import {
   type Account,
-  type Approval,
   type CalendarAttendee,
   type CalendarEventSummary,
   type CalendarInfo,
   type GmailLabel,
   type Grant,
-  isCalendarApprovalKind,
   isCalendarEventType,
   type MailEvent,
   type MessageContent,
@@ -17,19 +15,7 @@ import type { CalendarWriteOutcome } from "../calendar/agent.ts";
 import { eventSummarySignals } from "../calendar/content.ts";
 import type { FeedResult } from "../events/types.ts";
 import type { RenderedMessage, SendOutcome, ThreadSummary } from "../mail/agent.ts";
-import { CANCELLED_PREFIX } from "../mail/approvals.ts";
 import { cleanLine, formatAddress, formatAddresses, labelNames, renderMessage, signalLine, wrapUntrusted } from "../mail/content.ts";
-
-const SEND_MODE_HELP: Record<Grant["sendMode"], string> = {
-  direct: "sent immediately",
-  draft_only: "saved as Gmail drafts for a human to send",
-  approval: "queued for human approval before sending",
-};
-
-const CALENDAR_WRITE_HELP: Record<Grant["calendarWriteMode"], string> = {
-  direct: "applied immediately",
-  approval: "queued for human approval before they reach Google Calendar",
-};
 
 const CALENDAR_STATUS_HELP: Record<NonNullable<Account["calendar"]>["status"], string | null> = {
   active: null,
@@ -41,45 +27,27 @@ const CALENDAR_STATUS_HELP: Record<NonNullable<Account["calendar"]>["status"], s
 /** Untrusted one-liners (subjects, snippets) go through the same cleaning as bodies. */
 const clip = (s: string, n: number) => cleanLine(s, n);
 
-export function formatAccounts(items: { grant: Grant; account: Account; scopeNames: string[] | null }[]): string {
+export function formatAccounts(items: { grant: Grant; account: Account }[]): string {
   if (!items.length) return "You don't have access to any account yet. Ask the operator to grant this agent access in the xaq console.";
   const lines = [`You can access ${items.length} account${items.length === 1 ? "" : "s"}:`];
-  for (const { grant: g, account: a, scopeNames } of items) {
+  for (const { grant: g, account: a } of items) {
     lines.push(`- ${a.email} (account id ${a.id})${a.status === "active" ? "" : ` · status: ${a.status}`}`);
-    lines.push(`  can: ${g.capabilities.join(", ")}`);
-    if (g.capabilities.includes("send")) {
-      const rules = [`messages are ${SEND_MODE_HELP[g.sendMode]}`];
-      if (g.replyOnly) rules.push("replies only (no new messages or forwards)");
-      if (g.allowTo.length) rules.push(`recipients limited to ${g.allowTo.join(", ")}`);
-      const caps = [g.maxSendsPerHour && `${g.maxSendsPerHour}/hour`, g.maxSendsPerDay && `${g.maxSendsPerDay}/day`].filter(Boolean);
-      if (caps.length) rules.push(`limit ${caps.join(", ")}`);
-      lines.push(`  sending: ${rules.join("; ")}`);
-    }
-    if (scopeNames) lines.push(`  limited to threads labeled: ${scopeNames.join(", ")}`);
-    const calendar = calendarAccessLine(g, a);
-    if (calendar) lines.push(`  calendar: ${calendar}`);
+    lines.push(
+      g.level === "full"
+        ? "  access: full (read, organize, trash, draft and send mail; read and change calendars). Sends and calendar changes apply at once"
+        : "  access: read only (mail and calendars)",
+    );
+    if (g.level === "full" && g.allowTo.length) lines.push(`  recipients and attendees limited to ${g.allowTo.join(", ")}`);
+    const problem = a.calendar ? CALENDAR_STATUS_HELP[a.calendar.status] : CALENDAR_STATUS_HELP.not_granted;
+    if (problem) lines.push(`  calendar: ${problem}`);
   }
   return lines.join("\n");
 }
 
-function calendarAccessLine(g: Grant, a: Account): string | null {
-  const read = g.capabilities.includes("calendar.read");
-  const write = g.capabilities.includes("calendar.write");
-  if (!read && !write) return null;
-  const parts = [g.calendarScope ? `calendars ${g.calendarScope.map((c) => clip(c, 200)).join(", ")} only` : "every calendar of the account"];
-  if (write) {
-    parts.push(`changes are ${CALENDAR_WRITE_HELP[g.calendarWriteMode]}`);
-    if (g.allowTo.length) parts.push(`attendees limited to ${g.allowTo.join(", ")}`);
-  }
-  const problem = a.calendar ? CALENDAR_STATUS_HELP[a.calendar.status] : CALENDAR_STATUS_HELP.not_granted;
-  if (problem) parts.push(problem);
-  return parts.join("; ");
-}
-
-export function formatLabels(account: Account, labels: GmailLabel[], scope: string[] | null): string {
+export function formatLabels(account: Account, labels: GmailLabel[]): string {
   const sorted = [...labels].sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === "system" ? -1 : 1));
-  const lines = [`Labels in ${account.email}${scope ? " (* = in your label scope)" : ""}:`];
-  for (const l of sorted) lines.push(`- ${clip(l.name, 200)}${l.name !== l.id ? ` (id ${l.id})` : ""}${scope?.includes(l.id) ? " *" : ""}`);
+  const lines = [`Labels in ${account.email}:`];
+  for (const l of sorted) lines.push(`- ${clip(l.name, 200)}${l.name !== l.id ? ` (id ${l.id})` : ""}`);
   return lines.join("\n");
 }
 
@@ -123,72 +91,7 @@ export const formatMessage = (m: RenderedMessage, labels: GmailLabel[] | null, m
   renderMessage(m.summary, m.content, labels, maxChars);
 
 export function formatSendOutcome(o: SendOutcome): string {
-  return JSON.stringify(o, null, 2);
-}
-
-export function formatApprovalStatus(a: Approval): string {
-  // Automatic cancellations keep the "rejected" status (console contract) with a "cancelled: …" note.
-  const cancelled = a.status === "rejected" && !!a.decisionNote?.startsWith(CANCELLED_PREFIX);
-  if (isCalendarApprovalKind(a.kind)) return formatCalendarApprovalStatus(a, cancelled);
-  const next: Record<Approval["status"], string> = {
-    pending: "Still waiting for a human decision. Check again later.",
-    approved: "Approved; sending now. Check again shortly.",
-    sent: "Sent.",
-    rejected: "A human rejected this; it was not sent and the draft was deleted.",
-    expired: "Nobody decided in time; it expired and was not sent.",
-    failed: "Approved, but sending failed.",
-  };
-  return JSON.stringify(
-    {
-      approvalId: a.id,
-      status: cancelled ? "cancelled" : a.status,
-      kind: a.kind,
-      to: a.to.map((x) => x.email),
-      subject: a.subject,
-      sentMessageId: a.sentMessageId,
-      decisionNote: a.decisionNote,
-      error: a.error,
-      expiresAt: a.expiresAt,
-      message: cancelled
-        ? `Cancelled automatically (${a.decisionNote!.slice(CANCELLED_PREFIX.length)}); it was not sent and the draft was deleted.`
-        : next[a.status],
-    },
-    null,
-    2,
-  );
-}
-
-/** Calendar approvals: status "sent" means applied, sentMessageId holds the event id (shared/types.ts Approval). */
-function formatCalendarApprovalStatus(a: Approval, cancelled: boolean): string {
-  const next: Record<Approval["status"], string> = {
-    pending: "Still waiting for a human decision. Check again later.",
-    approved: "Approved; applying it to Google Calendar now. Check again shortly.",
-    sent: "Applied in Google Calendar.",
-    rejected: "A human rejected this; nothing was changed in Google Calendar.",
-    expired: "Nobody decided in time; it expired and nothing was changed in Google Calendar.",
-    failed: "Approved, but applying it to Google Calendar failed.",
-  };
-  const c = a.calendar;
-  return JSON.stringify(
-    {
-      approvalId: a.id,
-      status: cancelled ? "cancelled" : a.status === "sent" ? "applied" : a.status,
-      kind: a.kind,
-      calendarId: c?.calendarId ?? null,
-      eventId: a.sentMessageId ?? c?.eventId ?? null,
-      summary: a.subject,
-      response: c?.response ?? undefined,
-      notified: c?.notified ?? a.to.map((x) => x.email),
-      decisionNote: a.decisionNote,
-      error: a.error,
-      expiresAt: a.expiresAt,
-      message: cancelled
-        ? `Cancelled automatically (${a.decisionNote!.slice(CANCELLED_PREFIX.length)}); nothing was changed in Google Calendar.`
-        : next[a.status],
-    },
-    null,
-    2,
-  );
+  return JSON.stringify({ status: "sent", ...o }, null, 2);
 }
 
 // ───────────── Calendar ─────────────
@@ -394,10 +297,7 @@ export function formatCalendarWrite(o: CalendarWriteOutcome): string {
       2,
     );
   }
-  if (o.status === "deleted") {
-    return JSON.stringify({ ...o, message: `Deleted from Google Calendar. ${emailed(o.notified)}` }, null, 2);
-  }
-  return JSON.stringify({ ...o, message: `${o.message} Check it with get_send_status (approval_id "${o.approvalId}"); don't make the change again.` }, null, 2);
+  return JSON.stringify({ ...o, message: `Deleted from Google Calendar. ${emailed(o.notified)}` }, null, 2);
 }
 
 function formatCalendarFeedEvent(e: MailEvent, c: CalendarEventSummary): string {

@@ -1,5 +1,4 @@
-// Upstream prompts and resources on /mcp, for every connection, remote and code (docs/EXTENSIONS.md "Prompts and
-// resources"):
+// Upstream prompts and resources on /mcp, for every connection, remote and code:
 // - prompts are `<slug>__<name>`;
 // - resources are `xaq://<slug>/<encodeURIComponent(original uri)>`, their names `<slug>__<name>`;
 // - resource templates the same way: the literal parts of the template are encoded, the `{…}` expressions kept, so
@@ -19,7 +18,8 @@ import type { Logger } from "../util/log.ts";
 import { connectionGrantsOf } from "./access.ts";
 import { scrubText } from "./credentials/scrub.ts";
 import { connectionSecrets, makeScrubber, MAX_BINARY_BYTES, newNonce, type Scrubber, stripAnsi } from "./policy/output.ts";
-import { type CredentialStore, type PromptDef, type PromptResult, type ResourceDef, type ResourceReadResult, type ResourceTemplateDef, SourceError, type ToolSource } from "./types.ts";
+import type { CredentialStore } from "./credentials/store.ts";
+import { type PromptDef, type PromptResult, type ResourceDef, type ResourceReadResult, type ResourceTemplateDef, SourceError, type ToolSource } from "./types.ts";
 
 export const XAQ_RESOURCE_SCHEME = "xaq:";
 /** Per connection, for the list fan-out: a slow upstream doesn't hold up everyone else's prompts. */

@@ -1,7 +1,6 @@
-// The catalog: fetches each connection's tool list, cleans, classifies, hashes and stores it (docs/MCP-BROKER.md
-// "Catalog" and "Tool changes"). A changed or new tool is simply used: the only trace is one audit entry with the old
-// and new definition hash (the owner removed the hold on 2026-10-16). Behind the `brokerUpstreams` setting: pass
-// `enabled` and attach() is a no-op while it's off.
+// The catalog: fetches each connection's tool list, cleans, classifies, hashes and stores it. A changed
+// or new tool is simply used: the only trace is one audit entry with the old
+// and new definition hash (the owner removed the hold on 2026-10-16).
 
 import type { AuditInput } from "../../audit.ts";
 import type { IntegrationPreset, ToolClass, ToolDef, ToolListing, ToolSource } from "../types.ts";
@@ -18,7 +17,7 @@ export function pinHash(def: ToolDef): string {
   return sha256Hex(canonicalize({ name, title, description, inputSchema, outputSchema, annotations }));
 }
 
-/** A tool that disappeared from the upstream: policy fails its pending approvals closed and drops its allow rules. */
+/** A tool that disappeared from the upstream (audited as connection.tool_removed). */
 export interface ToolRemovedEvent {
   connectionId: string;
   name: string;
@@ -48,8 +47,6 @@ export interface CatalogDeps {
   debounceMs?: number;
   /** Abort a listing after this long (default 60 s). */
   timeoutMs?: number;
-  /** The `brokerUpstreams` setting (default off). Absent: on. */
-  enabled?: () => boolean;
 }
 
 export interface RefreshOutcome {
@@ -85,7 +82,6 @@ const DEF_FIELDS: (keyof ToolDef)[] = ["name", "title", "description", "inputSch
 export class Catalog {
   private readonly entries = new Map<string, Entry>();
   private readonly signalsByTool = new Map<string, ToolSignal[]>();
-  private readonly removedListeners: ((e: ToolRemovedEvent) => void)[] = [];
   private readonly changeListeners: ((connectionId: string) => void)[] = [];
   private readonly defaultTtl: number;
   private readonly minTtl: number;
@@ -99,15 +95,6 @@ export class Catalog {
     this.timeoutMs = deps.timeoutMs ?? 60_000;
   }
 
-  /**
-   * Policy hook: a tool left the upstream (or the connection's pins were forgotten). Policy fails the tool's pending
-   * approvals closed and deletes its approval_rules, so a tool that comes back inherits nothing.
-   * Called after the commit, once per tool.
-   */
-  onToolRemoved(fn: (e: ToolRemovedEvent) => void): void {
-    this.removedListeners.push(fn);
-  }
-
   /** Any change to a connection's pinned tools (the registry invalidates its cache). */
   onChange(fn: (connectionId: string) => void): void {
     this.changeListeners.push(fn);
@@ -116,7 +103,6 @@ export class Catalog {
   /** Starts tracking a source: refreshes now, then on TTL expiry / timer. Replaces an earlier source. */
   attach(source: ToolSource): Promise<RefreshOutcome> {
     this.detach(source.connectionId);
-    if (this.deps.enabled && !this.deps.enabled()) return Promise.resolve(failed("disabled"));
     const e: Entry = { source, timer: null, debounce: null, inflight: null, again: false, abort: null, closed: false };
     this.entries.set(source.connectionId, e);
     return this.refresh(source.connectionId);
@@ -350,8 +336,8 @@ export class Catalog {
           continue;
         }
 
-        // Changed (or a row without a definition, left by a version that held new tools): the new definition is
-        // used under the same name, re-classified, so the normal risky and read rules apply to what it is now.
+        // Changed: the new definition is used under the same name, re-classified, so the normal risky and read
+        // rules apply to what it is now.
         changed = true;
         store.upsert({ ...row, exposedName: exposed, def, pinHash: hash, cls: storedClass(def, conn.preset), updatedAt: now });
         out.changed.push(name);
@@ -386,7 +372,6 @@ export class Catalog {
     for (const a of audits) this.audit(a.action, connectionId, a.target, a.detail);
     for (const r of removed) {
       this.audit("connection.tool_removed", connectionId, r.exposedName, { connectionId, tool: r.name });
-      for (const fn of this.removedListeners) this.safe(() => fn(r));
     }
     const prefix = `${connectionId}\u0000`;
     for (const k of [...this.signalsByTool.keys()]) if (k.startsWith(prefix)) this.signalsByTool.delete(k);
@@ -408,46 +393,10 @@ export class Catalog {
     return this.deps.store.state(connectionId)?.instructions ?? null;
   }
 
-  /**
-   * Upgrade from a version with the tool-change hold: every tool still held is released, its waiting definition
-   * (if any) becomes the one used, re-classified, with one audit entry per tool. Idempotent; returns how many.
-   */
-  releaseLegacyHolds(): number {
-    const held = this.deps.store.legacyHeld();
-    if (!held.length) return 0;
-    const released: { tool: PinnedTool; previousHash: string | null; fields: string[] }[] = [];
-    const now = (this.deps.now?.() ?? new Date()).toISOString();
-    this.deps.store.tx(() => {
-      for (const h of held) {
-        const def = h.candidateDef ?? h.tool.def;
-        const hash = h.candidateDef ? h.candidateHash : h.tool.pinHash;
-        if (!def || !hash) {
-          // Nothing usable stored: drop the row; the next listing adds the tool again.
-          this.deps.store.remove(h.tool.connectionId, h.tool.name);
-          continue;
-        }
-        const conn = this.deps.connection(h.tool.connectionId);
-        const tool: PinnedTool = { ...h.tool, def, pinHash: hash, cls: storedClass(def, conn?.preset ?? null), updatedAt: now };
-        this.deps.store.upsert(tool);
-        released.push({ tool, previousHash: h.tool.pinHash, fields: changedFields(h.tool.def, def) });
-      }
-    });
-    for (const { tool, previousHash, fields } of released) {
-      this.audit("connection.tool_changed", tool.connectionId, tool.exposedName, { tool: tool.name, previousHash, hash: tool.pinHash, fields, releasedHold: true });
-    }
-    for (const id of new Set(held.map((h) => h.tool.connectionId))) this.changed(id);
-    return held.length;
-  }
-
   /** Drops a connection's pins and state (its URL changed or it was deleted): the next listing is a first connect. */
   forget(connectionId: string): void {
     this.detach(connectionId);
-    const tools = this.deps.store.tools(connectionId);
     this.deps.store.forget(connectionId);
-    for (const t of tools) {
-      const r = { connectionId, name: t.name, exposedName: t.exposedName, pinHash: t.pinHash };
-      for (const fn of this.removedListeners) this.safe(() => fn(r));
-    }
     this.changed(connectionId);
   }
 

@@ -9,7 +9,7 @@
     <script>
       // Apply the saved theme before first paint to avoid a light flash in dark mode.
       try {
-        var t = localStorage.getItem("xaq.theme") || localStorage.getItem("agentinbox.theme") || "system";
+        var t = localStorage.getItem("xaq.theme") || "system";
         if (t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches))
           document.documentElement.classList.add("dark");
       } catch (e) {}

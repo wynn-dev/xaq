@@ -1,4 +1,4 @@
-// The code-extension host (docs/EXTENSIONS.md "The code-extension host"). See source.ts for the protocol and the
+// The code-extension host. See source.ts for the protocol and the
 // lifecycle, spawn.ts for the argv, environment and state directory, transport.ts for the stdio pipe.
 
 import { type NativeSourceDeps, SourceError, type ToolSource } from "../../broker/types.ts";
@@ -27,7 +27,7 @@ export { codeManifestOf, DEFAULT_LIMITS } from "./types.ts";
 
 /**
  * A code extension's ToolSource from the broker's native-source deps (what IntegrationPreset.createSource gets):
- * the state directory under deps.dataDir, the outbox through deps.emit, and the store's integrity re-check. For B2's
+ * the state directory under deps.dataDir, the outbox through deps.emit, and the store's integrity re-check. For
  * presetFromManifest: `createSource: (deps) => codeExtensionSource(ext, deps, store)`.
  */
 export function codeExtensionSource(ext: InstalledExtension, deps: NativeSourceDeps, store: ExtensionVerifier): ToolSource {

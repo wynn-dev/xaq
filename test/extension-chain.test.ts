@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { codeExtensionNodeProblem, extensionStateDir } from "../server/extensions/host/index.ts";
 import { extensionStore } from "../server/extensions/store.ts";
 import { presets } from "../server/integrations/index.ts";
-import { CSRF, harness, json } from "./platform-helpers.ts";
+import { CSRF, harness, json } from "./helpers.ts";
 
 const FIXTURE = resolve(import.meta.dirname, "fixtures/extensions/echo");
 const cleanup: (() => Promise<unknown>)[] = [];
@@ -32,7 +32,6 @@ describe.skipIf(codeExtensionNodeProblem() !== null)("a code extension, store â†
         throw new Error("no network in tests");
       }) as typeof fetch,
     });
-    ctx.settings.update({ brokerUpstreams: true });
     ctx.broker.start?.(); // registers the store with presets() and subscribes to its changes
     const cookie = await h.claim();
     const api = (path: string, init: RequestInit & { json?: unknown } = {}) => h.request(`/api${path}`, { cookie, ...init, headers: { ...CSRF, ...(init.headers as object) } });

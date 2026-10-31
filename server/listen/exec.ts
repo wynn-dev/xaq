@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { WebhookPayload } from "../../shared/types.ts";
-import { batchEnv, commandInput, eventEnv, UNTRUSTED_NOTICE } from "./event.ts";
+import type { EventPayload } from "../../shared/types.ts";
+import { commandInput, eventEnv } from "./event.ts";
 
 export interface CommandResult {
   ok: boolean;
@@ -30,23 +30,17 @@ class Tail {
 }
 
 /**
- * The child's environment: ours minus anything xaq-specific (XAQ_* and the pre-rename AGENTINBOX_*:
- * service flags, a master key that happened to be exported…), plus the safe event ids and the event file
- * path. Each of those is set as XAQ_<name> and, for commands written before the rename, AGENTINBOX_<name>.
+ * The child's environment: ours minus anything xaq-specific (XAQ_*: service flags, a master key that happened
+ * to be exported…), plus the safe event ids and the event file path.
  */
-export function childEnv(input: WebhookPayload | WebhookPayload[], eventFile: string): NodeJS.ProcessEnv {
+export function childEnv(payload: EventPayload, eventFile: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("XAQ_") && !k.startsWith("AGENTINBOX_")) env[k] = v;
-  const ids: Record<string, string> = { ...(Array.isArray(input) ? batchEnv(input) : { ...eventEnv(input), XAQ_EVENT_COUNT: "1" }), XAQ_EVENT_FILE: eventFile };
-  const legacy = Object.fromEntries(Object.entries(ids).map(([k, v]) => [k.replace(/^XAQ_/, "AGENTINBOX_"), v]));
-  return { ...env, ...ids, ...legacy };
+  for (const [k, v] of Object.entries(process.env)) if (!k.startsWith("XAQ_")) env[k] = v;
+  return { ...env, ...eventEnv(payload), XAQ_EVENT_FILE: eventFile };
 }
 
-/** stdin for one event ({ notice, event }) or a --batch ({ notice, events: […] }, even for a batch of one). */
-export function commandStdin(input: WebhookPayload | WebhookPayload[]): string {
-  const body = Array.isArray(input) ? { notice: UNTRUSTED_NOTICE, events: input.map((p) => commandInput(p).event) } : commandInput(input);
-  return JSON.stringify(body, null, 2) + "\n";
-}
+/** stdin for one event: { notice, event }. */
+export const commandStdin = (payload: EventPayload): string => JSON.stringify(commandInput(payload), null, 2) + "\n";
 
 /** Running commands, so a forced exit (second Ctrl-C) can still kill their process groups and remove temp files. */
 const active = new Map<number, string>();
@@ -81,12 +75,12 @@ function killGroup(pid: number | undefined, signal: NodeJS.Signals): void {
 }
 
 /**
- * Runs the configured command for one event, or for a batch (an array). The command string is fixed
- * configuration and goes to `/bin/sh -c` verbatim; it is never built from event data. The events reach
+ * Runs the configured command for one event. The command string is fixed configuration and goes to
+ * `/bin/sh -c` verbatim; it is never built from event data. The event reaches
  * the command only as JSON on stdin, as a 0600 file named by XAQ_EVENT_FILE, and as a few
  * validated ids in env. On timeout the whole process group gets SIGTERM, then SIGKILL after a grace period.
  */
-export function runCommand(command: string, payload: WebhookPayload | WebhookPayload[], opts: { timeoutMs: number; cwd?: string; signal?: AbortSignal }): Promise<CommandResult> {
+export function runCommand(command: string, payload: EventPayload, opts: { timeoutMs: number; cwd?: string; signal?: AbortSignal }): Promise<CommandResult> {
   const started = performance.now();
   const input = commandStdin(payload);
   // mkdtemp creates the directory 0700; the file inside is 0600 on top.

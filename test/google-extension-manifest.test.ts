@@ -1,5 +1,4 @@
-// `"code.auth": { "type": "google" }` in the extension manifest (docs/EXTENSIONS.md "Google accounts for code
-// extensions"): accepted for official extensions only, never with a Gmail, Calendar, Pub/Sub or Cloud scope, checked
+// `"code.auth": { "type": "google" }` in the extension manifest: accepted for official extensions only, never with a Gmail, Calendar, Pub/Sub or Cloud scope, checked
 // the same by the validator and the JSON Schema the extensions repo copies; refused at install for a third-party
 // source; and core's four Google setup steps, with {{projectId}} kept to google manifests.
 
@@ -12,8 +11,9 @@ import type { SetupContext } from "../server/broker/types.ts";
 import { Db } from "../server/db/index.ts";
 import { MANIFEST_JSON_SCHEMA, presetFromManifest, presetFromValidManifest, renderSetup, validateManifest } from "../server/extensions/manifest.ts";
 import { OFFICIAL_NAMES } from "../server/extensions/registry.ts";
-import { ExtensionError, SqliteExtensionStore } from "../server/extensions/store.ts";
-import { CALENDAR_EVENTS_SCOPE, GMAIL_SCOPE, PUBSUB_SCOPE, WORKSPACE_SCOPES } from "../server/google/scopes.ts";
+import { ExtensionError } from "../server/extensions/sources.ts";
+import { ExtensionStore } from "../server/extensions/store.ts";
+import { CALENDAR_EVENTS_SCOPE, GMAIL_SCOPE, WORKSPACE_SCOPES } from "../shared/google-scopes.ts";
 import { fixtureExtension } from "./extension-fixtures.ts";
 import { googleManifest, WORKSPACE_APIS } from "./google-extension-fixtures.ts";
 
@@ -35,7 +35,6 @@ const withAuth = (auth: unknown) => {
 const CTX: SetupContext = {
   publicUrl: "https://xaq.example",
   redirectUri: "https://xaq.example/oauth/connections/callback",
-  webhookUrl: null,
   google: {
     projectId: "my-project-123",
     appType: "external",
@@ -76,7 +75,7 @@ describe("manifest validation: code.auth google", () => {
       `${G}calendar`,
       `${G}calendar.readonly`,
       `${G}calendar.events.freebusy`,
-      PUBSUB_SCOPE,
+      `${G}pubsub`,
       `${G}cloud-platform`,
       `${G}cloud-platform.read-only`,
       "openid",
@@ -178,7 +177,7 @@ describe("the setup view: core's Google steps", () => {
 
 describe("install: a third-party google extension is refused", () => {
   const dirs: string[] = [];
-  const stores: SqliteExtensionStore[] = [];
+  const stores: ExtensionStore[] = [];
   afterEach(() => {
     for (const s of stores.splice(0)) s.cleanTemp();
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
@@ -192,7 +191,7 @@ describe("install: a third-party google extension is refused", () => {
     writeFileSync(join(src, "xaq-extension.json"), JSON.stringify(googleManifest({ name: "my-docs", slug: "my-docs" })));
     writeFileSync(join(src, "dist", "server.mjs"), "export {};\n");
     const db = new Db(join(work, "x.db"));
-    const store = new SqliteExtensionStore({
+    const store = new ExtensionStore({
       db,
       dataDir: work,
       fetch: (async () => {

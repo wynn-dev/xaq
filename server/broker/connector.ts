@@ -1,4 +1,4 @@
-// The broker service's Connector over the upstream runtime (server/broker/upstream, M1 PR 3/4): probe, connect
+// The broker service's Connector over the upstream runtime (server/broker/upstream): probe, connect
 // (static header, MCP OAuth, a native preset's own OAuth), the remote ToolSource and paste-mode finish.
 // Also gives the runtime native presets' OAuth flows (generic `user_app`, from the preset's auth): done at
 // construction, before start().
@@ -100,7 +100,7 @@ export function upstreamConnector(ctx: AppContext, up: UpstreamRuntime, presetFo
         if (conn.preset && !preset) {
           return {
             status: "error",
-            message: `The ${conn.preset} extension isn't installed yet, so ${conn.name} can't be reconnected. xaq installs it in the background; try again shortly, or run \`xaq ext add ${conn.preset}\`.`,
+            message: `The ${conn.preset} extension isn't installed yet, so ${conn.name} can't be reconnected. xaq installs it in the background; try again shortly, or install it from Extensions in the console.`,
           };
         }
         // A Google extension (official only): bind one of xaq's connected Google accounts, then its incremental consent

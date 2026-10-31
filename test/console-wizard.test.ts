@@ -1,16 +1,14 @@
 // Console-side logic of the setup wizard's last mile: the Verify checks, the commands the console
-// prints (they must match what `connect` prints), and grants in plain words.
+// prints (they must match what `connect` prints).
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentTool } from "../shared/agent-api.ts";
 import { type AuditEntry, isMcpToolAction, type ListenerInfo, type MailEvent, type PairingRequest, type SetupState } from "../shared/types.ts";
 import { printNextSteps } from "../server/listen/connect.ts";
 import type { Profile } from "../server/listen/profile.ts";
-import { recipe } from "../server/listen/recipes.ts";
-import { grantInWords } from "../src/components/agents/grant-words.ts";
 import { deniedDescription, linkedPairing } from "../src/components/approvals/pairing-link.ts";
 import { listenerHandled } from "../src/components/agents/listener-handled.ts";
-import { allStepsDone, type SetupDraft, showsSetupLink, skippedPatch, STEP_META, STEP_IDS, startsVerify, type StepId, type StepStatus, stepStatuses, verifiedPatch, verifyDoneHeading, wizardStep } from "../src/components/setup/steps.ts";
+import { allStepsDone, type SetupDraft, showsSetupLink, skippedPatch, STEP_IDS, startsVerify, type StepId, type StepStatus, stepStatuses, verifiedPatch, verifyDoneHeading, wizardStep } from "../src/components/setup/steps.ts";
 import { lastCallShown } from "../src/components/agents/last-call.ts";
 import { activeTest, checksComplete, doneSummary, TEST_SUBJECT, TEST_TTL_MS, type VerifyTest, verifyChecks, verifyFooter, verifyMode } from "../src/components/setup/verify-checks.ts";
 import { connectCommands, NPX } from "../src/lib/cli.ts";
@@ -247,7 +245,7 @@ function nextSteps(tool: AgentTool, url: string): string[] {
   });
   try {
     const profile = { url, apiKey: "aib_test", agentId: "agt_1", agentName: "a", consumer: "host-default", mcpUrl: `${url}/mcp` } as unknown as Profile;
-    printNextSteps("default", profile, tool, null);
+    printNextSteps(profile, tool, null);
   } finally {
     spy.mockRestore();
   }
@@ -264,37 +262,41 @@ describe("connectCommands matches what `connect` prints", () => {
     expect(nextSteps(tool, URL_)).toContain(connectCommands(URL_, tool).skillInstall);
   });
 
-  it.each(known)("setup-mcp, listen try and service for %s", (tool) => {
-    const c = connectCommands(URL_, tool);
-    const cli = nextSteps(tool, URL_);
+  it("setup-mcp, listen try and service for claude-code", () => {
+    const c = connectCommands(URL_, "claude-code");
+    const cli = nextSteps("claude-code", URL_);
     // connect prints the command followed by a dry-run hint on the same line.
     expect(cli.some((l) => l === c.setupMcp || l.startsWith(`${c.setupMcp}  `))).toBe(true);
-    // Both name the CLI's built-in recipe: exactly the command connect prints, and connect shows what it runs.
-    expect(c.listenTry).toBe(`${NPX} listen --save --recipe ${tool}`);
+    // Both name the CLI's built-in recipe: exactly the commands connect prints.
+    expect(c.listenTry).toBe(`${NPX} listen --recipe claude-code`);
     expect(cli).toContain(c.listenTry);
-    expect(cli).toContain(`It runs: ${recipe(tool).runs}`);
-    // Hermes forwards to its gateway: both show the same route command first.
-    if (tool === "hermes") expect(cli).toContain(c.hermesRoute);
-    else expect(c.hermesRoute).toBeNull();
-    // connect prints the bare service install (after --save); the console repeats --recipe so it also works alone.
-    expect(cli).toContain(`${NPX} listen service install`);
-    expect(c.listenService).toBe(`${NPX} listen service install --recipe ${tool}`);
+    expect(c.listenService).toBe(`${NPX} listen service install --recipe claude-code`);
+    expect(cli).toContain(c.listenService);
     // Neither passes --types: listen's default (new mail only) applies, and connect says so.
     expect(c.listenTry).not.toContain("--types");
     expect(c.listenService).not.toContain("--types");
     expect(cli.some((l) => l.includes("Only new mail wakes it (message.received), not mail you send"))).toBe(true);
   });
 
+  it.each(known.filter((t) => t !== "claude-code"))("%s: no MCP setup command; listen runs the user's own script", (tool) => {
+    const c = connectCommands(URL_, tool);
+    expect(c.setupMcp).toBeNull();
+    expect(c.connect).toBe(`${NPX} connect ${URL_} --tool ${tool}`);
+    expect(c.listenService).toBe(`${NPX} listen service install --exec /path/to/handle-email.sh`);
+    expect(nextSteps(tool, URL_)).toContain(c.listenService);
+  });
+
   it.each([...known, "other" as const])("no %s command runs npx inside $(…), a pipe or a redirect (npx's install prompt would be swallowed)", (tool) => {
     const c = connectCommands("http://127.0.0.1:8425", tool);
-    const commands = [c.connect, c.setupMcp, c.skillInstall, c.listenTry, c.listenService, ...nextSteps(tool, URL_).filter((l) => l.startsWith(NPX))];
+    const commands = [c.connect, ...(c.setupMcp ? [c.setupMcp] : []), c.skillInstall, c.listenTry, c.listenService, ...nextSteps(tool, URL_).filter((l) => l.startsWith(NPX))];
     // Quoted arguments (e.g. --exec 'cat > /dev/null') are data for the CLI, not shell syntax around npx.
     for (const cmd of commands) expect(cmd.replace(/'[^']*'/g, "''"), cmd).not.toMatch(/\$\(|\||>/);
   });
 
   it("other: the service runs the same script connect suggests; the try command is a harmless test", () => {
     const c = connectCommands(URL_, "other");
-    expect(nextSteps("other", URL_)).toContain(c.listenService.replace("listen service install", "listen --save"));
+    expect(nextSteps("other", URL_)).toContain(c.listenService);
+    expect(nextSteps("other", URL_)).toContain(c.listenService.replace("listen service install", "listen"));
     expect(c.listenTry).toBe(`${NPX} listen --exec 'cat > /dev/null'`);
     expect(c.connect).toBe(`${NPX} connect ${URL_} --tool other`);
   });
@@ -308,29 +310,13 @@ describe("connectCommands matches what `connect` prints", () => {
   it("adds --insecure only after the explicit opt-in, and only for plain http off loopback/Tailscale", () => {
     expect(connectCommands("http://192.168.1.20:8425", "codex").connect).not.toContain("--insecure");
     expect(connectCommands("http://192.168.1.20:8425", "codex", true).connect).toContain("--insecure");
-    expect(connectCommands("http://192.168.1.20:8425", "codex", true).listenTry).toContain("--insecure");
+    // listen takes the transport choice from the pairing.
+    expect(connectCommands("http://192.168.1.20:8425", "codex", true).listenTry).not.toContain("--insecure");
     expect(connectCommands("http://127.0.0.1:8425", "codex", true).connect).not.toContain("--insecure");
   });
 });
 
 // ───────────── Grants in plain words ─────────────
-
-describe("grantInWords", () => {
-  it("never reads as sending for draft_only", () => {
-    expect(grantInWords({ capabilities: ["read", "draft", "send"], sendMode: "draft_only" })).toBe("Can read and save drafts; can't send");
-    expect(grantInWords({ capabilities: ["read", "send"], sendMode: "draft_only" })).toBe("Can read and save drafts; can't send");
-  });
-  it("read only", () => {
-    expect(grantInWords({ capabilities: ["read"], sendMode: "draft_only" })).toBe("Can read; can't change or send anything");
-  });
-  it("approval and direct sending", () => {
-    expect(grantInWords({ capabilities: ["read", "draft", "send", "organize"], sendMode: "approval" })).toBe("Can read, save drafts, organize and send once you approve");
-    expect(grantInWords({ capabilities: ["read", "draft", "send", "organize", "trash"], sendMode: "direct" })).toBe("Can read, save drafts, organize, trash and send");
-  });
-  it("nothing granted", () => {
-    expect(grantInWords({ capabilities: [], sendMode: "direct" })).toBe("No access");
-  });
-});
 
 // ───────────── Stepper: when "Check that it works" is done ─────────────
 
@@ -340,7 +326,6 @@ describe("stepStatuses: the verify step", () => {
     googleClientConfigured: true,
     gcpProjectId: "p-123456",
     googleAppType: "external",
-    pubsub: { mode: "poll", topic: null, subscription: null, lastError: null, lastMessageAt: null, principalAccountId: null, principalEmail: null, pendingPrincipalAccountId: null, pendingPrincipalEmail: null },
     accountsConnected: 1,
     agentsCreated: 1,
     verified,
@@ -357,7 +342,7 @@ describe("stepStatuses: the verify step", () => {
   it("stays todo once this browser started the step, until Finish", () => {
     // The server has evidence (a tool call) long before the listener and the test email.
     expect(verify(true, { verifyStarted: true })).toBe("todo");
-    expect(allStepsDone(stepStatuses(state(true), { verifyStarted: true, pubsubSkipped: true }))).toBe(false);
+    expect(allStepsDone(stepStatuses(state(true), { verifyStarted: true }))).toBe(false);
     // "Finish setup" or "Finish without checking".
     expect(verify(true, { verifyStarted: true, verified: true })).toBe("done");
     expect(verify(false, { verifyStarted: true, verified: true })).toBe("done");
@@ -373,7 +358,7 @@ describe("stepStatuses: the verify step", () => {
     // MCP only: no listener, no delivery.
     expect(checksComplete({ ...green, listenDone: false, delivered: false, skipListen: true })).toBe(true);
 
-    const draft: SetupDraft = { verifyStarted: true, pubsubSkipped: true };
+    const draft: SetupDraft = { verifyStarted: true };
     expect(verifiedPatch(false, draft)).toBeNull();
     const patched = { ...draft, ...verifiedPatch(checksComplete(green), draft) };
     expect(patched.verified).toBe(true);
@@ -404,7 +389,7 @@ describe("stepStatuses: the verify step", () => {
     expect(verifyFooter(false, true).nextDisabled).toBe(false);
   });
 
-  it("records how step 8 was finished", () => {
+  it("records how step 7 was finished", () => {
     expect(skippedPatch({ verifyStarted: true })).toEqual({ verified: true, verifiedBy: "skip" });
     // Skipping after the checks passed doesn't forget that they did.
     expect(skippedPatch({ verified: true, verifiedBy: "checks" })).toEqual({ verified: true, verifiedBy: "checks" });
@@ -415,13 +400,13 @@ describe("stepStatuses: the verify step", () => {
   });
 
   it("says 'Setup complete' only when every required step is done", () => {
-    const all = stepStatuses(state(true), { verified: true, pubsubSkipped: true });
+    const all = stepStatuses(state(true), { verified: true });
     expect(verifyDoneHeading(all)).toEqual({ title: "Setup complete", nextStep: null });
-    // Optional real-time delivery left to do doesn't matter; step 8 itself (about to be marked) neither.
-    expect(verifyDoneHeading({ ...all, pubsub: "todo", verify: "todo" })).toEqual({ title: "Setup complete", nextStep: null });
+    // Step 7 itself (about to be marked) doesn't matter.
+    expect(verifyDoneHeading({ ...all, verify: "todo" })).toEqual({ title: "Setup complete", nextStep: null });
     // A required step is still to do: the first one is linked.
     expect(verifyDoneHeading({ ...all, consent: "todo", accounts: "todo" })).toEqual({ title: "This check is done", nextStep: "consent" });
-    expect(verifyDoneHeading({ ...all, url: "todo", pubsub: "todo" })).toEqual({ title: "This check is done", nextStep: "url" });
+    expect(verifyDoneHeading({ ...all, url: "todo", agent: "todo" })).toEqual({ title: "This check is done", nextStep: "url" });
   });
 
   it("shows the last successful tool call, or marks a failed one", () => {
@@ -482,9 +467,8 @@ describe("stepStatuses: the verify step", () => {
     expect(showsSetupLink(true, true, "/events")).toBe(false);
   });
 
-  it("calls setup done without the optional real-time delivery step", () => {
+  it("calls setup done once every step is", () => {
     expect(allStepsDone(stepStatuses(state(true), {}))).toBe(true);
-    expect(STEP_META.pubsub.short).toBe("Real-time delivery");
   });
 });
 
@@ -583,7 +567,7 @@ describe("Approvals: the CLI's ?pairing= link after a decision", () => {
 
 describe("wizardStep: which step /get-started shows", () => {
   it("shows ?step= as given and never pins it", () => {
-    expect(wizardStep("pubsub", { loaded: true, firstTodo: "consent" })).toEqual({ shown: "pubsub", pin: null });
+    expect(wizardStep("agent", { loaded: true, firstTodo: "consent" })).toEqual({ shown: "agent", pin: null });
   });
 
   it("without ?step=, shows the first unfinished step and pins it once progress has loaded", () => {
@@ -606,20 +590,19 @@ describe("startsVerify: which steps start the end-to-end check in this browser",
     consent: "done",
     client: "done",
     accounts: "done",
-    pubsub: "skipped",
     agent: "todo",
     verify: "todo",
     ...over,
   });
 
-  it("starts on step 7 while no agent exists, so an early tool call can't complete step 8", () => {
+  it("starts on step 6 while no agent exists, so an early tool call can't complete step 7", () => {
     expect(startsVerify("agent", statuses(), {})).toBe(true);
-    // Then the server's evidence arrives (a tool call before step 8 is opened): step 8 stays todo.
+    // Then the server's evidence arrives (a tool call before step 7 is opened): step 7 stays todo.
     const s = { claimed: true, googleClientConfigured: true, gcpProjectId: "p-123456", googleAppType: "external", accountsConnected: 1, agentsCreated: 1, verified: true } as SetupState;
-    expect(stepStatuses({ ...s, pubsub: { mode: "poll" } } as SetupState, { verifyStarted: true }).verify).toBe("todo");
+    expect(stepStatuses(s, { verifyStarted: true }).verify).toBe("todo");
   });
 
-  it("starts on step 8 while it is todo", () => {
+  it("starts on step 7 while it is todo", () => {
     expect(startsVerify("verify", statuses({ agent: "done" }), {})).toBe(true);
   });
 
@@ -628,7 +611,7 @@ describe("startsVerify: which steps start the end-to-end check in this browser",
     expect(startsVerify("agent", statuses({ agent: "done", verify: "done" }), {})).toBe(false);
     expect(startsVerify("verify", statuses({ agent: "done" }), { verifyStarted: true })).toBe(false);
     expect(startsVerify("verify", statuses({ agent: "done" }), { verified: true })).toBe(false);
-    // Revisiting step 7 to add a second agent changes nothing.
+    // Revisiting step 6 to add a second agent changes nothing.
     expect(startsVerify("agent", statuses({ agent: "done" }), {})).toBe(false);
     expect(startsVerify("accounts", statuses(), {})).toBe(false);
   });

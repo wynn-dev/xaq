@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuditInput } from "../server/audit.ts";
+import { Db } from "../server/db/index.ts";
 import {
   Catalog,
   CatalogRegistry,
+  CatalogStore,
   CLASSIFICATION_WORDS,
   canonicalize,
   checkCollisions,
@@ -10,11 +12,9 @@ import {
   cleanText,
   cleanToolDef,
   exposedName,
-  MemoryCatalogStore,
   pinHash,
   slugProblem,
   splitWords,
-  type ToolRemovedEvent,
   ToolRefused,
   toolSignals,
 } from "../server/broker/catalog/index.ts";
@@ -51,25 +51,34 @@ class FakeSource implements ToolSource {
 }
 
 interface Harness {
-  store: MemoryCatalogStore;
+  store: CatalogStore;
   catalog: Catalog;
   registry: CatalogRegistry;
   audits: AuditInput[];
-  removed: ToolRemovedEvent[];
   conns: Map<string, { slug: string; status: string; preset: Pick<IntegrationPreset, "classify"> | null }>;
   grants: Map<string, Map<string, AccessLevel>>;
   grant(agentId: string, connectionId: string, level: AccessLevel): void;
 }
 
+const dbs: Db[] = [];
+afterEach(() => {
+  for (const db of dbs.splice(0)) db.close();
+});
+
 function harness(opts: { defaultTtlMs?: number; minTtlMs?: number; debounceMs?: number } = {}): Harness {
-  const store = new MemoryCatalogStore();
+  const db = new Db(":memory:");
+  dbs.push(db);
+  const at = "2026-10-16T00:00:00.000Z";
+  for (const [id, slug] of [["con_a", "alpha"], ["con_b", "beta"], ["con_c", "alpha2"]] as const) {
+    db.run("INSERT INTO connections (id, kind, slug, name, url, created_at, updated_at) VALUES (?, 'remote_http', ?, ?, 'https://mcp.example.com/mcp', ?, ?)", id, slug, slug, at, at);
+  }
+  const store = new CatalogStore(db);
   const conns: Harness["conns"] = new Map([
     ["con_a", { slug: "alpha", status: "active", preset: null }],
     ["con_b", { slug: "beta", status: "active", preset: null }],
   ]);
   const grants: Harness["grants"] = new Map();
   const audits: AuditInput[] = [];
-  const removed: ToolRemovedEvent[] = [];
   const catalog = new Catalog({
     store,
     connection: (id) => conns.get(id) ?? null,
@@ -82,16 +91,13 @@ function harness(opts: { defaultTtlMs?: number; minTtlMs?: number; debounceMs?: 
     store,
     connections: () => [...conns].map(([id, c]) => ({ id, slug: c.slug, status: c.status })),
     grants: (agentId) => [...(grants.get(agentId) ?? new Map())].map(([connectionId, level]) => ({ connectionId, level })),
-    preset: (id) => conns.get(id)?.preset ?? null,
   });
   catalog.onChange(() => registry.invalidate());
-  catalog.onToolRemoved((e) => removed.push(e));
   return {
     store,
     catalog,
     registry,
     audits,
-    removed,
     conns,
     grants,
     grant(agentId, connectionId, level) {
@@ -198,7 +204,7 @@ describe("cleaning", () => {
 });
 
 describe("classification", () => {
-  const preset = (map: Record<string, { risky: boolean; read: boolean; targetPath?: string }>): Pick<IntegrationPreset, "classify"> => ({
+  const preset = (map: Record<string, { risky: boolean; read: boolean }>): Pick<IntegrationPreset, "classify"> => ({
     classify: (t) => (map[t.name] ? { ...map[t.name]!, source: "preset" } : null),
   });
 
@@ -211,7 +217,7 @@ describe("classification", () => {
   it.each([
     // [name, def extras, preset, expected {risky, read, source}]
     ["notion-delete-pages", {}, preset({ "notion-delete-pages": { risky: true, read: false } }), { risky: true, read: false, source: "preset" }],
-    ["notion-search", {}, preset({ "notion-search": { risky: false, read: true, targetPath: "/query" } }), { risky: false, read: true, source: "preset", targetPath: "/query" }],
+    ["notion-search", {}, preset({ "notion-search": { risky: false, read: true } }), { risky: false, read: true, source: "preset" }],
     // A preset can't make a tool named "delete" safe or read.
     ["notion-delete-everything", {}, preset({ "notion-delete-everything": { risky: false, read: true } }), { risky: true, read: false, source: "preset" }],
     // Not in the preset's list: falls through to the generic rules.
@@ -385,7 +391,7 @@ describe("catalog pinning", () => {
   it("a tool whose input schema changes keeps working; it's re-classified, so a now-risky tool follows the risky rules", async () => {
     const src = new FakeSource("con_a", [tool("get_page")]);
     await h.catalog.attach(src);
-    h.grant("agt_1", "con_a", "ask");
+    h.grant("agt_1", "con_a", "full");
     h.grant("agt_ro", "con_a", "read");
     expect(h.registry.resolve("agt_1", "alpha__get_page")!.cls).toMatchObject({ risky: false, read: true });
 
@@ -416,14 +422,14 @@ describe("catalog pinning", () => {
     h.catalog.close();
   });
 
-  it("removes a tool that disappears and calls the policy hook", async () => {
+  it("removes a tool that disappears and audits it", async () => {
     const src = new FakeSource("con_a", [tool("a"), tool("b")]);
     await h.catalog.attach(src);
     h.grant("agt_1", "con_a", "full");
     src.listing = { tools: [tool("a")] };
     const out = await h.catalog.refresh("con_a");
     expect(out.removed).toEqual(["b"]);
-    expect(h.removed).toEqual([{ connectionId: "con_a", name: "b", exposedName: "alpha__b", pinHash: expect.any(String) }]);
+    expect(h.audits.find((a) => a.action === "connection.tool_removed")).toMatchObject({ target: "alpha__b", detail: { connectionId: "con_a", tool: "b" } });
     expect(h.registry.resolve("agt_1", "alpha__b")).toBeNull();
     // It comes back: added again, nothing inherited.
     src.listing = { tools: [tool("a"), tool("b")] };
@@ -485,7 +491,7 @@ describe("catalog robustness", () => {
     src.listing = { tools: "nope" as never };
     expect(await h.catalog.refresh("con_a")).toMatchObject({ ok: false, error: "invalid_listing" });
     expect(h.store.tools("con_a").map((t) => t.name).sort()).toEqual(["a", "b"]);
-    expect(h.removed).toEqual([]);
+    expect(h.audits.filter((a) => a.action === "connection.tool_removed")).toEqual([]);
     expect(h.store.state("con_a")!.lastError).toMatch(/kept/);
     // Removing some (not all) still works.
     src.listing = { tools: [tool("a")] };
@@ -623,20 +629,6 @@ describe("refresh scheduling", () => {
   });
 });
 
-describe("brokerUpstreams gate", () => {
-  it("attach is a no-op while the setting is off", async () => {
-    const store = new MemoryCatalogStore();
-    let on = false;
-    const catalog = new Catalog({ store, connection: () => ({ slug: "alpha", preset: null }), connections: () => [], audit: () => {}, enabled: () => on });
-    const src = new FakeSource("con_a", [tool("a")]);
-    expect(await catalog.attach(src)).toMatchObject({ ok: false, error: "disabled" });
-    expect(src.calls).toBe(0);
-    on = true;
-    expect(await catalog.attach(src)).toMatchObject({ ok: true, pinned: ["a"] });
-    catalog.close();
-  });
-});
-
 describe("registry levels", () => {
   it("applies connection_grants.level: read lists read tools only; no grant lists nothing", async () => {
     const h = harness();
@@ -649,15 +641,13 @@ describe("registry levels", () => {
       ]),
     );
     h.grant("agt_full", "con_a", "full");
-    h.grant("agt_ask", "con_a", "ask");
     h.grant("agt_read", "con_a", "read");
     const names = (a: string) => h.registry.forAgent(a).map((t) => t.exposedName);
     expect(names("agt_full")).toEqual(["alpha__create_page", "alpha__delete_page", "alpha__fetch", "alpha__get_page"]);
-    expect(names("agt_ask")).toEqual(names("agt_full"));
     expect(names("agt_read")).toEqual(["alpha__fetch", "alpha__get_page"]);
     expect(names("agt_none")).toEqual([]);
     expect(h.registry.resolve("agt_read", "alpha__delete_page")).toBeNull();
-    expect(h.registry.resolve("agt_ask", "alpha__delete_page")).toMatchObject({ level: "ask", slug: "alpha", connectionId: "con_a", cls: { risky: true } });
+    expect(h.registry.resolve("agt_full", "alpha__delete_page")).toMatchObject({ level: "full", slug: "alpha", connectionId: "con_a", cls: { risky: true } });
 
     // Disabled / needs_reauth connections keep their tools listed (calls fail with the reconnect message).
     h.conns.get("con_a")!.status = "needs_reauth";
@@ -667,15 +657,6 @@ describe("registry levels", () => {
     // Grant changes take effect after invalidation.
     h.grant("agt_full", "con_a", "read");
     expect(names("agt_full")).toEqual(["alpha__fetch", "alpha__get_page"]);
-    h.catalog.close();
-  });
-
-  it("passes the preset's targetPath (a JSON Pointer) through unchanged", async () => {
-    const h = harness();
-    h.conns.get("con_a")!.preset = { classify: (t) => (t.name === "notion-update-page" ? { risky: false, read: false, source: "preset", targetPath: "/page_id" } : null) };
-    await h.catalog.attach(new FakeSource("con_a", [tool("notion-update-page")]));
-    h.grant("agt_1", "con_a", "ask");
-    expect(h.registry.resolve("agt_1", "alpha__notion-update-page")!.cls).toEqual({ risky: false, read: false, source: "preset", targetPath: "/page_id" });
     h.catalog.close();
   });
 });

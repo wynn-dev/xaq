@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { ArrowRightIcon, CheckIcon, MinusIcon } from "lucide-react";
+import { ArrowRightIcon, CheckIcon } from "lucide-react";
 import { BROKER_STEP_IDS, BROKER_STEP_META } from "@/components/setup/first-run";
 import { STEP_IDS, STEP_META, useSetupProgress } from "@/components/setup/progress";
 import { Button } from "@/components/ui/button";
@@ -80,12 +80,11 @@ export function SetupChecklist() {
                   className={cn(
                     "flex size-5 shrink-0 items-center justify-center rounded-full border text-[10px] tabular",
                     statuses[id] === "done" && "border-success bg-success text-white",
-                    statuses[id] === "skipped" && "bg-muted text-muted-foreground",
                     id === firstTodo && "border-primary",
                   )}
                   aria-hidden
                 >
-                  {statuses[id] === "done" ? <CheckIcon className="size-3" /> : statuses[id] === "skipped" ? <MinusIcon className="size-3" /> : i + 1}
+                  {statuses[id] === "done" ? <CheckIcon className="size-3" /> : i + 1}
                 </span>
                 <span className={cn(statuses[id] === "todo" ? "text-foreground" : "text-muted-foreground line-through decoration-muted-foreground/40")}>
                   {STEP_META[id].short}

@@ -1,5 +1,4 @@
-// Core's side of code extensions with `"code.auth": { "type": "google" }` (docs/EXTENSIONS.md "Google accounts for
-// code extensions"). Official extensions only (validateManifest refuses the rest).
+// Core's side of code extensions with `"code.auth": { "type": "google" }`. Official extensions only (validateManifest refuses the rest).
 //
 // - Binding: a connection works as ONE of xaq's connected Google accounts, picked in setup and kept in
 //   connections.google_account_id. Nothing per connection is stored besides that id: the refresh token stays the
@@ -23,7 +22,7 @@ import { googleProjectId, probeGoogleApis, type GoogleApiCheck } from "../google
 import { callbackMode } from "../google/client.ts";
 import { startConnect as startGoogleConsent } from "../google/oauth.ts";
 import { googleAccessToken } from "../google/scoped.ts";
-import { IDENTITY_TOKEN_SCOPES, isExtensionScope, scopeGrants, scopeWithout } from "../google/scopes.ts";
+import { IDENTITY_TOKEN_SCOPES, isExtensionScope, scopeGrants, scopeWithout } from "../../shared/google-scopes.ts";
 import { AccountNeedsReauthError, DownscopeError, ScopesNotGrantedError } from "../google/types.ts";
 import { errorMessage, HttpError } from "../util/errors.ts";
 import { GOOGLE_ACCOUNT_INPUT, type GoogleAuth } from "./google-setup.ts";

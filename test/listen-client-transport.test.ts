@@ -68,15 +68,17 @@ describe("transport rule in the commands", () => {
     await expect(runConnect("http://192.0.2.10:8425", {})).rejects.toThrow(/Refusing plain http to 192\.0\.2\.10:8425/);
   });
 
-  it("listen refuses it too, and prints the warning on every start with --insecure", async () => {
-    saveProfile("default", { url: "http://192.0.2.10:9", apiKey: FAKE_KEY, agentId: "agt_1", agentName: "x", consumer: "c", exec: "true" });
+  it("listen refuses it too, and prints the warning on every start when connect was --insecure", async () => {
+    const profile = { url: "http://192.0.2.10:9", apiKey: FAKE_KEY, agentId: "agt_1", agentName: "x", consumer: "c", exec: "true" };
+    saveProfile(profile);
     await expect(runListener({ flags: {} })).rejects.toThrow(/Refusing plain http/);
 
-    // With --insecure it starts (and keeps retrying the unreachable host until stopped).
+    // Paired with --insecure, it starts (and keeps retrying the unreachable host until stopped).
+    saveProfile({ ...profile, insecure: true });
     const api = await new FakeAgentApi().start();
     try {
       const ac = new AbortController();
-      const run = runListener({ flags: { insecure: true }, signal: ac.signal, minBackoffMs: 50, maxBackoffMs: 100 });
+      const run = runListener({ flags: {}, signal: ac.signal, minBackoffMs: 50, maxBackoffMs: 100 });
       await new Promise((r) => setTimeout(r, 300));
       ac.abort();
       expect(await run).toBe(0);

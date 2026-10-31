@@ -6,11 +6,10 @@ import { CheckCircle2Icon, CircleIcon, InfoIcon, MailIcon, PartyPopperIcon, Rota
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { useAgentOrigin, useMcpActivity } from "@/components/agents/agent-status";
 import { Command } from "@/components/agents/command";
-import { ProfileHint, toolName, usePublicUrl } from "@/components/agents/connect-agent-guide";
-import { grantInWords } from "@/components/agents/grant-words";
+import { toolName, usePublicUrl } from "@/components/agents/connect-agent-guide";
+import { grantInWords } from "@/lib/grants";
 import { CopyButton, ErrorAlert, TimeAgo } from "@/components/common";
 import { Visible } from "@/components/hidden-chars";
-import { ArrivalSpeed } from "@/hooks/use-delivery-speed";
 import { useNow } from "@/hooks/use-now";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -38,10 +37,10 @@ import type { StepProps } from "./step-url";
 import { StepCard, StepFooter } from "./wizard-shell";
 import { explainReason } from "@/lib/labels";
 
-// ───────────── State shared with step 7 (per browser and instance) ─────────────
+// ───────────── State shared with step 6 (per browser and instance) ─────────────
 
 interface VerifyState {
-  /** The agent being checked (set when step 7 approves or creates one). */
+  /** The agent being checked (set when step 6 approves or creates one). */
   agentId?: string;
   /** "I'll use MCP only": no listener expected. */
   skipListen?: boolean;
@@ -72,7 +71,7 @@ function writeState(patch: Partial<VerifyState>) {
   for (const s of subs) s();
 }
 
-/** Step 7 calls this when an agent is approved (or created with a key), so this step checks that one. */
+/** Step 6 calls this when an agent is approved (or created with a key), so this step checks that one. */
 export function setVerifyAgent(agentId: string) {
   writeState({ agentId, skipListen: undefined, test: undefined });
 }
@@ -176,7 +175,7 @@ export function StepVerify({ index, onBack, onNext }: StepProps) {
               This step stays done whatever these checks show.
             </p>
           )}
-          <Checklist key={agent.id} agent={agent} state={state} severalAgents={list.length > 1} />
+          <Checklist key={agent.id} agent={agent} state={state} />
         </>
       )}
     </StepCard>
@@ -275,7 +274,7 @@ function Prompt({ text, label }: { text: string; label: string }) {
   );
 }
 
-function Checklist({ agent, state, severalAgents }: { agent: Agent; state: VerifyState; severalAgents: boolean }) {
+function Checklist({ agent, state }: { agent: Agent; state: VerifyState }) {
   const origin = useAgentOrigin(agent);
   const { publicUrl } = usePublicUrl();
   const tool: AgentTool = origin.tool ?? "other";
@@ -316,7 +315,7 @@ function Checklist({ agent, state, severalAgents }: { agent: Agent; state: Verif
     setComplete(complete ? agent.id : null);
     return () => setComplete(null);
   }, [complete, agent.id]);
-  // Every check green means step 8 is done now (verifiedBy "checks"); "Finish setup" just leaves the page.
+  // Every check green means step 7 is done now (verifiedBy "checks"); "Finish setup" just leaves the page.
   useEffect(() => {
     const patch = verifiedPatch(complete, readDraft());
     if (patch) updateDraft(patch);
@@ -363,7 +362,7 @@ function Checklist({ agent, state, severalAgents }: { agent: Agent; state: Verif
         {announcement}
       </p>
 
-      {complete && <SuccessPanel agent={agent} label={label} tool={tool} listening={!skipListen} readIt={readIt} headingRef={doneRef} serviceCmd={c.listenService} accountId={test?.accountId} />}
+      {complete && <SuccessPanel agent={agent} label={label} tool={tool} listening={!skipListen} readIt={readIt} headingRef={doneRef} serviceCmd={c.listenService} />}
 
       <ol aria-label="Setup checks">
         <Item
@@ -376,11 +375,6 @@ function Checklist({ agent, state, severalAgents }: { agent: Agent; state: Verif
           detail={
             <>
               {agent.grants.length ? agent.grants.map((g) => grantInWords(g)).join(" · ") : "It has no mailbox access yet: add some on its page."}
-              {severalAgents && origin.paired && (
-                <span className="mt-1 block">
-                  <ProfileHint /> The commands below act on the default profile.
-                </span>
-              )}
             </>
           }
         />
@@ -403,7 +397,7 @@ function Checklist({ agent, state, severalAgents }: { agent: Agent; state: Verif
             ) : undefined
           }
         >
-          {!mcpDone && <McpHelp tool={tool} label={label} paired={origin.paired} c={c} agentId={agent.id} publicUrl={publicUrl} />}
+          {!mcpDone && <McpHelp label={label} paired={origin.paired} c={c} agentId={agent.id} publicUrl={publicUrl} />}
         </Item>
 
         <Item
@@ -435,7 +429,7 @@ function Checklist({ agent, state, severalAgents }: { agent: Agent; state: Verif
                   </button>
                 </>
               ) : (
-                "Agents created with a copied key can't run a listener. Use a webhook from the agent's page instead."
+                "Agents created with a copied key can't run a listener."
               )
             ) : listenDone ? (
               "It keeps a connection open and runs your command for each new email you receive."
@@ -444,22 +438,14 @@ function Checklist({ agent, state, severalAgents }: { agent: Agent; state: Verif
         >
           {!listenDone && !skipListen && (
             <>
-              {c.hermesRoute && (
-                <>
-                  <p className="text-sm text-muted-foreground">On the machine where you ran connect, create the Hermes route once (use the platform Hermes should tell you on):</p>
-                  <Command code={c.hermesRoute} label="hermes route command" />
-                </>
-              )}
               <p className="text-sm text-muted-foreground">On the machine where you ran connect (Ctrl-C stops it):</p>
               <Command code={c.listenTry} label="listen command" />
               <p className="text-xs text-muted-foreground">
-                {tool === "other"
+                {tool !== "claude-code"
                   ? "This test command only confirms each email (a ✓ line per email); it starts nothing."
                   : (
                     <>
-                      {tool === "hermes"
-                        ? `Forwards each new email you receive (not mail you send) to ${label}, which triages it.`
-                        : `Starts ${label} for each new email you receive (not mail you send), with only the xaq tools.`}{" "}
+                      {`Starts ${label} for each new email you receive (not mail you send), with only the xaq tools.`}{" "}
                       Add{" "}
                       <code className="font-mono whitespace-nowrap text-foreground">--types</code> to wake it for other events too. Just testing delivery?{" "}
                       <code className="font-mono whitespace-nowrap text-foreground">--exec {shellQuote(LISTEN_TEST_EXEC)}</code> only confirms each email.
@@ -503,7 +489,7 @@ function Checklist({ agent, state, severalAgents }: { agent: Agent; state: Verif
                 </Link>
               </>
             ) : sent ? (
-              "Usually a few seconds; with polling (no real-time delivery) up to the poll interval."
+              "Usually within the poll interval."
             ) : undefined
           }
         />
@@ -552,14 +538,12 @@ function AccountEmail({ id }: { id: string }) {
 }
 
 function McpHelp({
-  tool,
   label,
   paired,
   c,
   agentId,
   publicUrl,
 }: {
-  tool: AgentTool;
   label: string;
   paired: boolean;
   c: ReturnType<typeof connectCommands>;
@@ -568,7 +552,7 @@ function McpHelp({
 }) {
   return (
     <div className="space-y-2 text-sm text-muted-foreground">
-      {paired && tool !== "other" ? (
+      {paired && c.setupMcp ? (
         <>
           <p>
             If you ran connect with <span className="font-mono">--setup-mcp</span>, restart {label}. If not, run this on the same machine, then restart{" "}
@@ -609,7 +593,7 @@ function SendTest({ agent, sent, blocked }: { agent: Agent; sent: boolean; /** T
   // Paused, needs_reauth and error accounts don't pick up new mail: the test would never arrive.
   const all = (accounts.data ?? []).filter((a) => a.status === "active");
   // Prefer mailboxes this agent can read: only those events reach it.
-  const readable = all.filter((a) => agent.grants.some((g) => g.accountId === a.id && g.capabilities.includes("read")));
+  const readable = all.filter((a) => agent.grants.some((g) => g.accountId === a.id));
   const choices = readable.length ? readable : all;
   const [picked, setPicked] = useState<string>();
   const accountId = picked && choices.some((a) => a.id === picked) ? picked : choices[0]?.id;
@@ -684,7 +668,7 @@ function SendTest({ agent, sent, blocked }: { agent: Agent; sent: boolean; /** T
   );
 }
 
-/** Step 8 revisited once done: what was verified, the same next steps, and a way to check again. */
+/** Step 7 revisited once done: what was verified, the same next steps, and a way to check again. */
 function CompletedView({
   agent,
   state,
@@ -727,7 +711,6 @@ function CompletedView({
         readIt={readIt}
         headingRef={headingRef}
         serviceCmd={c.listenService}
-        accountId={state.test?.accountId}
         summary={
           <ul aria-label="What was checked" className="space-y-1.5 text-sm">
             <DoneItem ok>
@@ -841,7 +824,6 @@ function SuccessPanel({
   readIt,
   headingRef,
   serviceCmd,
-  accountId,
   summary,
 }: {
   agent: Agent;
@@ -851,8 +833,6 @@ function SuccessPanel({
   readIt: boolean;
   headingRef: React.RefObject<HTMLHeadingElement | null>;
   serviceCmd: string;
-  /** The mailbox the test email went through: real-time also needs its Gmail watch. */
-  accountId?: string;
   /** What was verified (the completed step, revisited). */
   summary?: React.ReactNode;
 }) {
@@ -878,14 +858,7 @@ function SuccessPanel({
           )}
           <p className="text-sm text-muted-foreground">
             New mail reaches <Visible text={agent.name} />
-            {listening ? (
-              <>
-                {" "}
-                <ArrivalSpeed of="arriving" neutral="when it arrives" accountId={accountId} />
-              </>
-            ) : (
-              " whenever you ask it"
-            )}
+            {listening ? " when it arrives" : " whenever you ask it"}
             .
           </p>
         </div>
@@ -915,7 +888,7 @@ function SuccessPanel({
           <Link to="/agents/$agentId" params={{ agentId: agent.id }} className="font-medium text-foreground underline underline-offset-4">
             its page
           </Link>
-          ; sends that need your OK and new agents asking for access wait in{" "}
+          ; new agents asking for access wait in{" "}
           <Link to="/approvals" className="font-medium text-foreground underline underline-offset-4">
             Approvals
           </Link>

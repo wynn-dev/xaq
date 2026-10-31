@@ -1,5 +1,5 @@
-// /api/connections: the MCP broker's connections admin API (docs/MCP-BROKER.md, routes in shared/types.ts).
-// Console session + CSRF like every /api router (server/app.ts). 404 while Settings.brokerUpstreams is off.
+// /api/connections: the MCP broker's connections admin API (routes in shared/types.ts).
+// Console session + CSRF like every /api router (server/app.ts).
 // Credentials never cross this boundary: a static header goes in through /connect and is never returned.
 
 import { z } from "zod";
@@ -21,10 +21,8 @@ import { checkGoogleApis, googleSetupContext, isGooglePreset } from "../extensio
 import { extensionConsentConnection } from "../google/oauth.ts";
 import { exposedName } from "../broker/catalog/index.ts";
 import { connectionView, getConnection, listConnections, notifyAgent } from "../broker/service.ts";
-import { Approvals } from "../mail/approvals.ts";
-import { connectionHookUrl } from "../integrations/hooks.ts";
-import type { WebhookReachability } from "../broker/reachability.ts";
-import { presetServerSlug, presetServerUrl } from "../integrations/user-server.ts";
+import { presetServerSlug } from "../../shared/user-server.ts";
+import { presetServerUrl } from "../integrations/user-server.ts";
 import type { IntegrationPreset, PresetAuth } from "../broker/types.ts";
 import type { AppContext } from "../context.ts";
 import { now } from "../db/index.ts";
@@ -32,9 +30,6 @@ import { canonicalPrivateTarget, originKey, PrivateTargetError, validateUpstream
 import { badRequest, conflict, errorMessage, HttpError, notFound } from "../util/errors.ts";
 import { newId, randomToken } from "../util/ids.ts";
 import { ADMIN_ACTOR, readBody, router } from "./util.ts";
-
-/** A preset that takes no webhooks: no webhook step, no Funnel offer, no reachability check. */
-const NO_WEBHOOKS: WebhookReachability = { reach: "unknown", webhookBase: null, funnel: null, reason: "no preset takes webhooks" };
 
 /** The upstream runtime's URL rule (http(s), no userinfo): the same check the connect flow applies. */
 const httpUrl = z
@@ -120,17 +115,8 @@ function freeSlug(ctx: AppContext, base: string): string {
 
 export function connectionsApi(ctx: AppContext) {
   const app = router();
-  const approvals = new Approvals(ctx);
   const audit = (action: string, target: string, detail: Record<string, unknown> | null = null) =>
     ctx.audit.record({ ...ADMIN_ACTOR, action, target, outcome: "ok", detail });
-
-  // Everything here is the unreleased broker: invisible until the setting is on.
-  const gate = async (_c: unknown, next: () => Promise<void>) => {
-    if (!ctx.broker.enabled()) throw new HttpError(404, "not_found", "No such API route");
-    await next();
-  };
-  app.use("/connections", gate);
-  app.use("/connections/*", gate);
 
   const requireConnection = (id: string): Connection => {
     const c = getConnection(ctx, id);
@@ -160,19 +146,13 @@ export function connectionsApi(ctx: AppContext) {
     const missing = ids.filter((id) => !ctx.db.get("SELECT 1 FROM agents WHERE id = ?", id));
     if (missing.length) throw badRequest(`Unknown agent ${missing.join(", ")}`);
   };
-  const presetView = (p: IntegrationPreset, reach: WebhookReachability): PresetView => {
+  const presetView = (p: IntegrationPreset): PresetView => {
     const publicUrl = ctx.settings.publicUrl();
     const steps = p.setupSteps({
       // A Google extension's steps name the project, the app type and the connected accounts (google-setup.ts).
       google: isGooglePreset(p) ? googleSetupContext(ctx) : null,
       publicUrl,
       redirectUri: `${publicUrl}/oauth/connections/callback`,
-      // The preset's URL (POST /hooks/connections/<preset id>): no connection exists yet while choosing a preset, and
-      // the route finds the connection by its signature. Only when the internet can reach it.
-      webhookUrl: reach.webhookBase ? connectionHookUrl(reach.webhookBase, p.id) : null,
-      funnel: reach.funnel
-        ? { port: reach.funnel.port, command: reach.funnel.command, offCommand: reach.funnel.offCommand, webhookUrl: connectionHookUrl(reach.funnel.origin, p.id) }
-        : null,
     });
     return {
       id: p.id,
@@ -193,12 +173,7 @@ export function connectionsApi(ctx: AppContext) {
     return c.json<ConnectionView[]>(listConnections(ctx).map((x) => connectionView(ctx, x, Date.now(), presets)));
   });
 
-  app.get("/connections/presets", async (c) => {
-    const presets = ctx.broker.presets();
-    // The reachability check (DNS, the Tailscale CLI) only for a preset that takes webhooks: none does today.
-    const reach: WebhookReachability = presets.some((p) => p.events?.handleWebhook) ? await ctx.broker.webhookReachability() : NO_WEBHOOKS;
-    return c.json<PresetView[]>(presets.map((p) => presetView(p, p.events?.handleWebhook ? reach : NO_WEBHOOKS)));
-  });
+  app.get("/connections/presets", (c) => c.json<PresetView[]>(ctx.broker.presets().map(presetView)));
 
   // A Google extension's "Check again": is each of its APIs on in the project, checked as the picked account. The probe
   // token is downscoped (the extension's granted scopes, or only identity before consent): never the account's own.
@@ -240,7 +215,7 @@ export function connectionsApi(ctx: AppContext) {
     const chosenName = body.name ?? freeName(ctx, userServer ? new URL(url!).host : (preset?.displayName ?? new URL(url!).hostname), ownerId);
     const agentIds = body.agentIds ?? ctx.db.all<{ id: string }>("SELECT id FROM agents ORDER BY created_at").map((a) => a.id);
     requireAgents(agentIds);
-    const levelDefault = body.levelDefault ?? "ask";
+    const levelDefault = body.levelDefault ?? "full";
     const id = newId("con");
     const t = now();
     // A Google extension's connection has no access until an account is picked and allowed (Connect does both).
@@ -284,7 +259,6 @@ export function connectionsApi(ctx: AppContext) {
     const changed: string[] = [];
     const granted: string[] = [];
     let credentialsCleared = false;
-    let cancelled = 0;
     ctx.db.tx(() => {
       const t = now();
       if (body.name !== undefined && body.name !== before.name) {
@@ -316,7 +290,7 @@ export function connectionsApi(ctx: AppContext) {
         if (ctx.db.get("SELECT 1 FROM connections WHERE slug = ? AND id <> ?", body.slug, id)) throw conflict(`The slug ${body.slug} is taken`);
         ctx.db.run("UPDATE connections SET slug = ?, updated_at = ? WHERE id = ?", body.slug, t, id);
         // Exposed names follow the slug, by the catalog's rule (sanitised, cut to 64 with a hash suffix); the
-        // registry recomputes them from the slug anyway. Approval rules keep the upstream name, so they survive.
+        // registry recomputes them from the slug anyway.
         const tools = ctx.db.all<{ name: string }>("SELECT name FROM upstream_tools WHERE connection_id = ?", id);
         // Two passes so a rename can't collide with this connection's own old names midway.
         for (const tool of tools) ctx.db.run("UPDATE upstream_tools SET exposed_name = ? WHERE connection_id = ? AND name = ?", `x_renaming_${randomToken(20)}`, id, tool.name);
@@ -335,7 +309,7 @@ export function connectionsApi(ctx: AppContext) {
         if (before.kind !== "remote_http" || before.preset) throw badRequest("Only custom MCP connections have an editable URL", "Add a new connection instead.");
         // A new URL is a new server: the old credentials must never be sent to it. They're deleted, the
         // connection needs reconnecting, its cached negotiation and expiry go, the private-target allow (granted
-        // for the old host) goes, and pending calls (approved against the old server) are cancelled.
+        // for the old host) goes.
         ctx.db.run(
           `UPDATE connections SET url = ?, private_target = NULL, status = 'needs_reauth', status_reason = 'URL changed; reconnect',
              expires_at = NULL, protocol = NULL, protocol_checked_at = NULL, updated_at = ? WHERE id = ?`,
@@ -346,7 +320,6 @@ export function connectionsApi(ctx: AppContext) {
         credentialsCleared = !!ctx.db.get("SELECT 1 AS x FROM connection_credentials WHERE connection_id = ?", id);
         // Sign-ins started for the old server can't complete (finishConnect also checks the origin).
         ctx.db.run("DELETE FROM oauth_states WHERE connection_id = ?", id);
-        cancelled = approvals.cancelForConnection(id, null, `${before.name}'s URL changed`);
         changed.push("url");
       }
     });
@@ -362,7 +335,7 @@ export function connectionsApi(ctx: AppContext) {
     for (const agentId of granted) ctx.broker.invalidate({ agentId });
     for (const agentId of granted) notifyAgent(ctx, agentId);
     if (changed.length || granted.length) {
-      audit("connection.update", id, { changed, ...(granted.length ? { granted } : {}), ...(changed.includes("url") ? { credentialsCleared, cancelled } : {}) });
+      audit("connection.update", id, { changed, ...(granted.length ? { granted } : {}), ...(changed.includes("url") ? { credentialsCleared } : {}) });
     }
     return c.json<ConnectionView>(view(id));
   });
@@ -372,8 +345,7 @@ export function connectionsApi(ctx: AppContext) {
     return c.body(null, 204);
   });
 
-  // Mounted before the policy's own /connections/:id/kill (server/api/broker-approvals.ts): the service runs the
-  // onKill hooks (a revoke needs the token) before the policy clears the credentials.
+  // The service runs the onKill hooks (a revoke needs the token) before the policy clears the credentials.
   app.post("/connections/:id/kill", async (c) => {
     const id = c.req.param("id");
     requireConnection(id);
@@ -454,11 +426,7 @@ export function connectionsApi(ctx: AppContext) {
         );
       }
     });
-    // Fresh tool views first, then the policy cancels pending calls and deletes "always allow" rules of removed
-    // grants, and re-checks changed ones.
     for (const agentId of new Set([...removed, ...changed])) ctx.broker.invalidate({ agentId });
-    for (const agentId of removed) ctx.broker.onGrantRemoved(agentId, id);
-    for (const agentId of changed.filter((a) => before.has(a))) ctx.broker.onGrantChanged(agentId, id);
     if (removed.length || changed.length) audit("connection.grants", id, { removed, changed });
     for (const agentId of new Set([...removed, ...changed])) notifyAgent(ctx, agentId);
     return c.json<ConnectionGrant[]>(grantsOf(id));

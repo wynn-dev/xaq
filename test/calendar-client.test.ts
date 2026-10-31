@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AppContext } from "../server/context.ts";
 import { activationUrl, type CalendarClient, classifyCalendarError } from "../server/google/calendar.ts";
-import { CALENDAR_SCOPES, GMAIL_SCOPE } from "../server/google/scopes.ts";
+import { CALENDAR_SCOPES, GMAIL_SCOPE } from "../shared/google-scopes.ts";
 import { isOutcomeUnknown } from "../server/google/http.ts";
 import { GoogleApiError } from "../server/google/types.ts";
 import { connectFakeAccount, type FakeGoogle, startFakeGoogle } from "./fake-google.ts";
@@ -259,7 +259,7 @@ describe("writes", () => {
   });
 });
 
-describe("free/busy and channels", () => {
+describe("free/busy", () => {
   it("returns merged busy intervals for own and other users' calendars, and notFound for unknown ones", async () => {
     fake.addAccount(BOB);
     fake.calendar.putEvent(ME, ME, { summary: "a", start: at(0), end: at(2) });
@@ -270,17 +270,6 @@ describe("free/busy and channels", () => {
     expect(r.calendars.primary!.busy).toEqual([{ start: new Date(T0).toISOString(), end: new Date(T0 + 3 * 3600_000).toISOString() }]);
     expect(r.calendars[BOB]!.busy).toHaveLength(1);
     expect(r.calendars["ghost@example.com"]!.errors).toEqual([{ domain: "global", reason: "notFound" }]);
-  });
-
-  it("creates and stops watch channels (stopping a gone one is fine)", async () => {
-    fake.calendar.autoNotify = false;
-    const ch = await cal.watchEvents(ME, { id: "chn_1", address: "https://inbox.example.com/google/calendar/push", token: "secret", ttlSeconds: 3600 });
-    expect(ch.id).toBe("chn_1");
-    expect(Number(ch.expiration)).toBeGreaterThan(Date.now());
-    expect(fake.calendar.channels()).toMatchObject([{ id: "chn_1", calendarId: ME, token: "secret" }]);
-    await cal.stopChannel({ id: ch.id, resourceId: ch.resourceId });
-    expect(fake.calendar.channels()).toEqual([]);
-    await expect(cal.stopChannel({ id: ch.id, resourceId: ch.resourceId })).resolves.toBeUndefined();
   });
 });
 

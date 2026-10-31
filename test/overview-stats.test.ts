@@ -23,10 +23,9 @@ describe("overview", () => {
     db.run("INSERT INTO agents (id, name, key_prefix, key_hash, last_used_at, created_at) VALUES ('g1', 'g1', 'p', 'h1', ?, ?), ('g2', 'g2', 'p', 'h2', ?, ?)", ago(HOUR), ago(0), ago(48 * HOUR), ago(0));
 
     let n = 0;
-    const event = (createdAt: string, seq?: number) =>
+    const event = (createdAt: string) =>
       db.run(
-        "INSERT INTO events (seq, id, type, account_id, dedupe_key, created_at) VALUES (?, ?, 'message.received', 'a1', ?, ?)",
-        seq ?? null,
+        "INSERT INTO events (id, type, account_id, dedupe_key, created_at) VALUES (?, 'message.received', 'a1', ?, ?)",
         `evt_${++n}`,
         `k${n}`,
         createdAt,
@@ -36,7 +35,6 @@ describe("overview", () => {
     event(ago(41 * 60_000)); // 11:xx
     event(ago(23 * HOUR + 30 * 60_000)); // 13:04 yesterday: in the 24 h window but before the first bucket
     event(ago(30 * HOUR)); // outside the window
-    event(ago(60_000), -1); // synthetic test event: never counted
 
     const audit = (ts: string, actorType: string, outcome: string) =>
       db.run("INSERT INTO audit_log (ts, actor_type, action, outcome) VALUES (?, ?, 'read_message', ?)", ts, actorType, outcome);
@@ -50,28 +48,11 @@ describe("overview", () => {
     db.run("INSERT INTO audit_log (ts, actor_type, action, outcome) VALUES (?, 'agent', 'pairing.key_delivered', 'ok')", ago(3 * HOUR));
     db.run("INSERT INTO audit_log (ts, actor_type, action, outcome) VALUES (?, 'admin', 'agent.create', 'ok')", ago(60_000));
 
-    db.run("INSERT INTO webhooks (id, agent_id, name, url, secret_enc, secret_prefix, event_types, created_at) VALUES ('w', 'g1', 'w', 'http://x', 'x', 'x', '[]', ?)", ago(0));
-    const delivery = (id: string, status: string, updatedAt: string, attempts = 1) =>
-      db.run("INSERT INTO deliveries (id, webhook_id, event_seq, status, attempts, created_at, updated_at) VALUES (?, 'w', ?, ?, ?, ?, ?)", id, Number(id.slice(1)), status, attempts, updatedAt, updatedAt);
-    delivery("d1", "succeeded", ago(HOUR));
-    delivery("d2", "failed", ago(HOUR));
-    delivery("d3", "dead", ago(HOUR));
-    delivery("d4", "succeeded", ago(30 * HOUR));
-    delivery("d5", "pending", ago(HOUR), 0);
-    db.run("INSERT INTO deliveries (id, webhook_id, event_seq, status, attempts, created_at, updated_at) VALUES ('t1', 'w', -1, 'succeeded', 1, ?, ?)", ago(HOUR), ago(HOUR)); // test delivery
-
-    const approval = (id: string, status: string, expiresAt: string) =>
-      db.run("INSERT INTO approvals (id, agent_id, account_id, kind, status, draft_id, payload, created_at, expires_at) VALUES (?, 'g1', 'a1', 'send', ?, 'd', '{}', ?, ?)", id, status, ago(0), expiresAt);
-    approval("p1", "pending", ago(-HOUR));
-    approval("p2", "pending", ago(HOUR)); // overdue, about to expire
-    approval("p3", "sent", ago(-HOUR));
 
     const s = overviewStats(t.ctx, at);
     expect(s.accounts).toEqual({ total: 3, active: 1, needsAttention: 1 });
     expect(s.agents).toEqual({ total: 2, activeLast24h: 1 });
     expect(s.events24h).toBe(4);
-    expect(s.deliveries24h).toEqual({ succeeded: 1, failed: 2 });
-    expect(s.pendingApprovals).toBe(1);
     expect(s.toolCalls24h).toBe(3);
     expect(s.denied24h).toBe(1);
 
@@ -92,7 +73,6 @@ describe("overview", () => {
     const res = await overviewApi(t.ctx).request("/overview");
     const body = (await res.json()) as OverviewStats;
     expect(body.accounts).toEqual({ total: 0, active: 0, needsAttention: 0 });
-    expect(body.deliveries24h).toEqual({ succeeded: 0, failed: 0 });
     expect(body.activity).toHaveLength(24);
     expect(body.activity.every((b) => b.events === 0 && b.toolCalls === 0)).toBe(true);
   });

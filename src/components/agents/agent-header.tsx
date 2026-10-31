@@ -51,7 +51,7 @@ export function AgentHeader({ agent }: { agent: Agent }) {
   });
   const remove = useApiMutation({
     mutationFn: () => api(path, { method: "DELETE" }),
-    invalidate: [keys.agents, keys.webhooks, keys.setupState, keys.overview],
+    invalidate: [keys.agents, keys.setupState, keys.overview],
     success: `Agent "${agent.name}" deleted`,
     errorTitle: false,
     onSuccess: () => {
@@ -72,7 +72,7 @@ export function AgentHeader({ agent }: { agent: Agent }) {
       title: `Delete ${agent.name}?`,
       description: (
         <>
-          <p>Its API key stops working, and its grants and webhooks are deleted. Pending approvals it requested are rejected.</p>
+          <p>Its API key stops working, and its grants are deleted.</p>
           <p>Audit log entries are kept.</p>
         </>
       ),
@@ -142,7 +142,7 @@ export function AgentHeader({ agent }: { agent: Agent }) {
       </div>
       {agent.disabled && (
         <p className="rounded-lg border border-dashed px-3 py-2 text-sm text-muted-foreground">
-          This agent is disabled: its key is refused and its webhooks don't fire. Its permissions are kept for when you enable it again.
+          This agent is disabled: its key is refused and its listeners stop. Its permissions are kept for when you enable it again.
         </p>
       )}
 

@@ -1,4 +1,4 @@
-// Extension integrity (docs/EXTENSIONS.md, "Sources, pinning and the registry"): sha256 over a canonical listing of
+// Extension integrity: sha256 over a canonical listing of
 // the extension directory. For each regular file, sorted by POSIX path relative to the extension root (byte order of
 // the UTF-8 path), the line is `<path>\0<mode 644|755>\0<hex sha256 of content>\n`. Symlinks, devices and anything
 // that isn't a regular file or a directory are refused. Encoded as `sha256-<base64>`.

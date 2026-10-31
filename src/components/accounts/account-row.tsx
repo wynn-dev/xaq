@@ -1,11 +1,10 @@
 import type { Account } from "@shared/types";
+import { CALENDAR_SCOPES } from "@shared/google-scopes";
 import { AlertTriangleIcon, BotIcon, CalendarPlusIcon, MoreHorizontalIcon, PauseIcon, PlayIcon, RefreshCwIcon, Trash2Icon, UnplugIcon } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { TimeAgo } from "@/components/common";
-import { SCOPES } from "@/lib/gcp-project";
 import { queries } from "@/lib/queries";
-import { useNow } from "@/hooks/use-now";
 import { confirm } from "@/components/confirm";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,15 +20,11 @@ import { AccountAvatar, AccountStatusBadge, CalendarBadge } from "./account-stat
 import { connectAccount } from "./connect-host";
 import { useAccountActions } from "./use-account-actions";
 
-export function AccountRow({ account: a, showWatch }: { account: Account; showWatch: boolean }) {
+export function AccountRow({ account: a }: { account: Account }) {
   const { resync, pause, resume, remove } = useAccountActions();
   const reconnect = () => connectAccount({ reauthAccountId: a.id, email: a.email });
-  const now = useNow(60_000);
-  const watchLeft = a.watchExpiresAt ? new Date(a.watchExpiresAt).getTime() - now : null;
-  const watchSoon = watchLeft !== null && watchLeft < 12 * 3600_000;
   const agents = useQuery(queries.agents());
   const users = (agents.data ?? []).filter((ag) => ag.grants.some((g) => g.accountId === a.id));
-  const healthy = a.status === "active";
   const calendar = useCalendarView(a);
   const addCalendar = () => addCalendarTo(a);
 
@@ -62,12 +57,6 @@ export function AccountRow({ account: a, showWatch }: { account: Account; showWa
             <span>
               Last sync <TimeAgo date={a.lastSyncAt} fallback="never" />
             </span>
-            {showWatch && healthy && (
-              <span className={watchSoon ? "text-warning" : undefined}>
-                Gmail watch {watchLeft === null ? "" : watchLeft < 0 ? "expired " : "renews "}
-                <TimeAgo date={a.watchExpiresAt} fallback="not set" />
-              </span>
-            )}
             <span>
               Connected <TimeAgo date={a.createdAt} />
             </span>
@@ -174,6 +163,6 @@ function useCalendarView(a: Account): AccountCalendarView | null {
   const enabled = setup.data?.enabled ?? false;
   if (entry) return accountCalendarView({ ...entry, error: a.calendar?.error }, enabled);
   if (!setup.isSuccess && !a.calendar) return null;
-  const c = a.calendar ?? { status: "not_granted" as const, missingScopes: [...SCOPES.calendar], error: null };
-  return accountCalendarView({ ...c, syncedCalendars: 0, push: false }, enabled);
+  const c = a.calendar ?? { status: "not_granted" as const, missingScopes: [...CALENDAR_SCOPES], error: null };
+  return accountCalendarView({ ...c, syncedCalendars: 0 }, enabled);
 }

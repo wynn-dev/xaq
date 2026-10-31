@@ -5,8 +5,6 @@
 //   pnpm exec tsx scripts/demo/seed.ts --port 8531            seeded instance (prints the password)
 //   pnpm exec tsx scripts/demo/seed.ts --port 8531 --fresh    unclaimed first run (prints the setup link)
 //   --public-url <url>   publicUrl to store (default: https://inbox.acme.dev; use the local URL to click through OAuth)
-//   --fresh --stage pubsub              claimed, client set, ops@acme.dev connected: the wizard's Pub/Sub step
-//   --pubsub-fail org-policy|scope|api  make Pub/Sub provisioning fail the way real projects do
 //   --hidden-chars                      add a pending send whose subject/body hide bidi and zero-width characters
 //
 // Serves the console from dist/web (run `pnpm build` or `pnpm exec vite build` first), or point
@@ -16,14 +14,13 @@
 // (--fresh: { url, setupUrl, client }, the OAuth client to import).
 
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { PairingPoll, PairingStart, PairingStartInput } from "../../shared/agent-api.ts";
-import type { Account, Agent, AgentWithKey, Approval, GrantInput, PairingRequest, Webhook, WebhookWithSecret } from "../../shared/types.ts";
+import type { Account, Agent, AgentWithKey, GrantInput, PairingRequest } from "../../shared/types.ts";
 import { readSetupToken } from "../../server/auth/setup-token.ts";
 import { CALENDAR_SCOPES } from "../../server/google/scopes.ts";
 import { loadConfig } from "../../server/config.ts";
@@ -38,8 +35,6 @@ const { values: args } = parseArgs({
     port: { type: "string", default: "8531" },
     fresh: { type: "boolean", default: false },
     "public-url": { type: "string" },
-    stage: { type: "string" },
-    "pubsub-fail": { type: "string" },
     "hidden-chars": { type: "boolean", default: false },
   },
 });
@@ -57,17 +52,15 @@ const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
 
 const dataDir = mkdtempSync(join(tmpdir(), "xaq-demo-"));
 const fake = await startFakeGoogle();
-fake.pullWaitMs = 1000;
 const proxy = await startClientProxy(fake.url);
 // Report the real package version, so screenshots match what users install.
 const pkgVersion = (JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string }).version;
 const config = loadConfig({ dataDir, host: "127.0.0.1", port: PORT }, pkgVersion);
-config.google = { oauthBase: proxy.url, authBase: proxy.url, gmailBase: proxy.url, pubsubBase: proxy.url, calendarBase: proxy.url };
+config.google = { oauthBase: proxy.url, authBase: proxy.url, gmailBase: proxy.url, calendarBase: proxy.url };
 const running = await startServer({ config });
 const { ctx } = running;
 const base = running.url;
 const publicUrl = args["public-url"] ?? (args.fresh ? base : "https://inbox.acme.dev");
-const receivers: { close(): void }[] = [];
 const streams: AbortController[] = [];
 
 let shuttingDown = false;
@@ -75,7 +68,6 @@ async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   for (const s of streams) s.abort();
-  for (const r of receivers) r.close();
   await running.close();
   await proxy.close();
   await fake.close();
@@ -87,30 +79,8 @@ process.on("SIGTERM", () => void shutdown());
 
 fake.addAccount(OPS, { name: "Acme Ops" });
 
-const fail = args["pubsub-fail"];
-if (fail === "org-policy") fake.orgPolicyBlocksIam(true);
-if (fail === "api") fake.disableApi("pubsub", true);
-// Gmail-only consent, as normal connects will be once Pub/Sub access is requested incrementally.
-const consentScopes = fail === "scope" ? [GMAIL_SCOPE, "https://www.googleapis.com/auth/userinfo.email"] : undefined;
-
 if (args.fresh) {
   const token = readSetupToken(dataDir);
-  if (args.stage === "pubsub") {
-    const post = (path: string, body: unknown, cookie = "") =>
-      fetch(base + path, { method: path.includes("client") ? "PUT" : "POST", headers: { cookie, "x-agentinbox-csrf": "1", "content-type": "application/json" }, body: JSON.stringify(body) });
-    const claim = await post("/api/setup/claim", { token, password: PASSWORD });
-    const cookie = claim.headers.get("set-cookie")!.split(";")[0]!;
-    await fetch(base + "/api/settings", { method: "PATCH", headers: { cookie, "x-agentinbox-csrf": "1", "content-type": "application/json" }, body: JSON.stringify({ publicUrl: base }) });
-    await post("/api/google/client", { ...DEMO_CLIENT, projectId: "acme-xaq", appType: "internal" }, cookie);
-    fake.consentAs(OPS, { scopes: consentScopes });
-    const { authUrl } = (await (await post("/api/accounts/connect", {}, cookie)).json()) as { authUrl: string };
-    const location = (await fetch(authUrl, { redirect: "manual" })).headers.get("location")!;
-    await post("/api/accounts/connect/complete", { url: location }, cookie);
-    writeFileSync(`/tmp/xaq-demo-${PORT}.json`, JSON.stringify({ url: base, password: PASSWORD, cookie, fresh: true }));
-    console.log(`\n  xaq demo (wizard at the Pub/Sub step${fail ? `, provisioning fails: ${fail}` : ""}) on ${base}\n  Password: ${PASSWORD}\n`);
-    if (consentScopes) setInterval(() => fake.consentAs(OPS, { scopes: [...consentScopes, "https://www.googleapis.com/auth/pubsub"] }), 3000).unref();
-    await new Promise(() => {});
-  }
   console.log(`
   xaq demo (fresh, unclaimed) on ${base}
 
@@ -120,8 +90,6 @@ if (args.fresh) {
   Fake accounts:  ${OPS} (consent is automatic; queue another with the next connect)
 `);
   writeFileSync(`/tmp/xaq-demo-${PORT}.json`, JSON.stringify({ url: base, setupUrl: `${base}/setup?token=${token}`, fresh: true, client: DEMO_CLIENT }));
-  // The only mailbox consents automatically; with --pubsub-fail scope, consent is Gmail-only.
-  if (consentScopes) setInterval(() => fake.consentAs(OPS, { scopes: consentScopes }), 3000).unref();
   await new Promise(() => {});
 }
 
@@ -133,7 +101,7 @@ let cookie = "";
 async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(base + path, {
     method,
-    headers: { cookie, "x-agentinbox-csrf": "1", ...(body !== undefined ? { "content-type": "application/json" } : {}) },
+    headers: { cookie, "x-xaq-csrf": "1", ...(body !== undefined ? { "content-type": "application/json" } : {}) },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const setCookie = res.headers.get("set-cookie");
@@ -144,9 +112,7 @@ async function api<T>(method: string, path: string, body?: unknown): Promise<T> 
 }
 
 await api("POST", "/api/setup/claim", { token: readSetupToken(dataDir), password: PASSWORD });
-await api("PATCH", "/api/settings", { publicUrl, pollIntervalSeconds: 30, webhookAllowlist: ["localhost", "127.0.0.0/8", "::1", "*.localhost"] }).catch(
-  async () => api("PATCH", "/api/settings", { publicUrl, pollIntervalSeconds: 30 }),
-);
+await api("PATCH", "/api/settings", { publicUrl, pollIntervalSeconds: 30 });
 await api("PUT", "/api/google/client", { ...DEMO_CLIENT, projectId: "acme-xaq", appType: "internal" });
 log("claimed, Google client configured");
 
@@ -163,95 +129,35 @@ async function connect(email: string, scopes?: string[]): Promise<Account> {
 // The ops account has Google Calendar; the personal one is mail-only (it never added Calendar).
 const ops = await connect(OPS, [GMAIL_SCOPE, "openid", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/userinfo.profile", ...CALENDAR_SCOPES]);
 const personal = await connect(PERSONAL);
-// Pub/Sub access is requested incrementally, like the console's "Grant Pub/Sub access" button.
-{
-  fake.consentAs(OPS);
-  const { authUrl } = await api<{ authUrl: string }>("POST", "/api/accounts/connect", { scopes: ["pubsub"], reauthAccountId: ops.id });
-  const res = await fetch(authUrl, { redirect: "manual" });
-  const location = res.headers.get("location");
-  if (!location) throw new Error(`pubsub consent failed: ${res.status} ${await res.text()}`);
-  await api("POST", "/api/accounts/connect/complete", { url: location });
-}
-await api("POST", "/api/google/pubsub/provision");
-log("accounts connected, Pub/Sub provisioned");
+log("accounts connected");
 
 const labelIds: Record<string, string> = {};
 for (const name of ["Support", "Billing", "Vendors", "Newsletters", "Alerts"]) labelIds[name] = fake.addLabel(OPS, name);
 const resolveLabels = (names: string[]) => names.map((n) => labelIds[n] ?? n);
 
-// ───────────── Webhook receivers (n8n.localhost etc. resolve to 127.0.0.1) ─────────────
-
-/** Listens on the preferred port (pretty URLs in screenshots), or any free port if another demo holds it. */
-async function receiver(port: number, handler: (req: IncomingMessage, res: ServerResponse) => void): Promise<number> {
-  const server = createServer((req, res) => {
-    req.resume();
-    req.on("end", () => handler(req, res));
-  });
-  const bind = (p: number) =>
-    new Promise<number>((resolve, reject) => {
-      server.once("error", reject);
-      server.listen(p, "127.0.0.1", () => {
-        server.off("error", reject);
-        resolve((server.address() as { port: number }).port);
-      });
-    });
-  const bound = await bind(port).catch(() => bind(0));
-  receivers.push({ close: () => server.close() });
-  return bound;
-}
-let relayCalls = 0;
-const n8nPort = await receiver(5678, (_req, res) => {
-  res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ message: "Workflow was started" }));
-});
-const relayPort = await receiver(8787, (_req, res) => {
-  relayCalls++;
-  if (relayCalls % 3 === 0) {
-    res.writeHead(502, { "content-type": "text/html" }).end("<html><body><h1>502 Bad Gateway</h1><p>upstream connect error or disconnect/reset before headers</p></body></html>");
-  } else res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true, channel: "#billing" }));
-});
-
 // ───────────── Agents ─────────────
 
-const grant = (accountId: string, patch: Partial<GrantInput>): GrantInput => ({
-  accountId,
-  capabilities: ["read"],
-  labelScope: null,
-  sendMode: "draft_only",
-  allowTo: [],
-  replyOnly: false,
-  maxSendsPerHour: null,
-  maxSendsPerDay: null,
-  ...patch,
-});
+const grant = (accountId: string, patch: Partial<GrantInput>): GrantInput => ({ accountId, level: "read", allowTo: [], ...patch });
 
 const support = await api<AgentWithKey>("POST", "/api/agents", {
   name: "Support triage",
   description: "Reads new support tickets and drafts a first reply for a human to send.",
-  grants: [grant(ops.id, { capabilities: ["read", "draft", "organize"], labelScope: [labelIds.Support!], sendMode: "draft_only" })],
+  grants: [grant(ops.id, { level: "full", allowTo: ["*@acme.dev"] })],
 });
 const billing = await api<AgentWithKey>("POST", "/api/agents", {
   name: "Billing bot",
-  description: "Matches vendor invoices to POs and answers billing questions. Every send needs approval.",
-  grants: [
-    grant(ops.id, {
-      capabilities: ["read", "draft", "send", "organize"],
-      labelScope: [labelIds.Billing!, labelIds.Vendors!],
-      sendMode: "approval",
-      allowTo: ["*@acme.dev", "*@northwind.io", "ap@stripe.com"],
-      maxSendsPerHour: args["hidden-chars"] ? 4 : 3,
-      maxSendsPerDay: 20,
-    }),
-  ],
+  description: "Matches vendor invoices to POs and answers billing questions.",
+  grants: [grant(ops.id, { level: "full", allowTo: ["*@acme.dev", "*@northwind.io", "ap@stripe.com"] })],
 });
 await api<AgentWithKey>("POST", "/api/agents", {
   name: "Scheduling assistant",
-  description: "Watches the ops calendar, answers vendor invitations and books follow-ups. Calendar changes need approval.",
-  grants: [grant(ops.id, { capabilities: ["calendar.read", "calendar.write"], calendarWriteMode: "approval", allowTo: ["*@acme.dev", "*@northwind.io"] })],
+  description: "Watches the ops calendar, answers vendor invitations and books follow-ups.",
+  grants: [grant(ops.id, { level: "full", allowTo: ["*@acme.dev", "*@northwind.io"] })],
 });
 const digest = await api<AgentWithKey>("POST", "/api/agents", {
   name: "Weekly digest (old)",
   description: "Summarized the week's newsletters every Friday. Replaced by the n8n workflow.",
-  grants: [grant(ops.id, { capabilities: ["read"], labelScope: [labelIds.Newsletters!] })],
+  grants: [grant(ops.id, {})],
 });
 log("agents created");
 
@@ -303,7 +209,7 @@ function listen(apiKey: string, consumer: string, client: { hostname: string; pl
 const claudeStart = await startPairing({
   name: "Claude Code on wynn-mbp",
   description: "Personal assistant: triages the ops inbox and drafts replies.",
-  requested: { accounts: [OPS], capabilities: ["read", "draft"], reason: "Wake me when support mail arrives so I can draft replies." },
+  requested: { accounts: [OPS], reason: "Wake me when support mail arrives so I can draft replies." },
   client: { hostname: "wynn-mbp", platform: "darwin-arm64", tool: "claude-code", version: pkgVersion },
 });
 setPairingIp(claudeStart.userCode, "100.101.34.7");
@@ -311,8 +217,8 @@ const pendingClaude = (await api<PairingRequest[]>("GET", "/api/pairings?status=
 await api<Agent>("POST", `/api/pairings/${pendingClaude.id}/approve`, {
   userCode: claudeStart.userCode,
   grants: [
-    grant(ops.id, { capabilities: ["read", "draft"], labelScope: [labelIds.Support!, labelIds.Alerts!], sendMode: "draft_only" }),
-    grant(personal.id, { capabilities: ["read"], sendMode: "draft_only" }),
+    grant(ops.id, { level: "full", allowTo: ["*@acme.dev"] }),
+    grant(personal.id, {}),
   ],
 });
 const claudePoll = await poll(claudeStart.deviceCode);
@@ -331,8 +237,6 @@ async function ensurePendingPairing() {
     description: "CI helper: reads build failure emails and opens issues.",
     requested: {
       accounts: [OPS],
-      capabilities: ["read", "draft", "send"],
-      sendMode: "direct",
       reason: "Triage CI and Datadog alert emails, then email the on-call engineer a summary.",
     },
     client: { hostname: "build-01", platform: "linux-x64", tool: "codex", version: pkgVersion },
@@ -361,37 +265,6 @@ async function ensurePendingPairing() {
 }
 const r_delay = () => 45_000;
 await ensurePendingPairing();
-
-// ───────────── Webhooks ─────────────
-
-const n8n = await api<WebhookWithSecret>("POST", "/api/webhooks", {
-  agentId: support.agent.id,
-  name: "n8n · support triage",
-  url: `http://n8n.localhost:${n8nPort}/webhook/support-triage`,
-  eventTypes: ["message.received", "thread.reply_received"],
-  filter: { labelIds: [labelIds.Support!] },
-  includeBody: true,
-  enabled: true,
-});
-await api<WebhookWithSecret>("POST", "/api/webhooks", {
-  agentId: billing.agent.id,
-  name: "Slack relay · #billing",
-  url: `http://relay.localhost:${relayPort}/hooks/billing`,
-  eventTypes: ["message.received"],
-  filter: { labelIds: [labelIds.Billing!], from: ["*@stripe.com", "*@northwind.io", "*@amazon.com", "*@vercel.com", "*@gusto.com"] },
-  includeBody: false,
-  enabled: true,
-});
-const zap = await api<WebhookWithSecret>("POST", "/api/webhooks", {
-  agentId: digest.agent.id,
-  name: "Zapier · newsletter digest",
-  url: "http://legacy.localhost:9/hooks/catch/48213/digest",
-  eventTypes: ["message.received"],
-  filter: { labelIds: [labelIds.Newsletters!] },
-  includeBody: true,
-  enabled: true,
-});
-log("webhooks created");
 
 // ───────────── Mail ─────────────
 
@@ -509,7 +382,7 @@ for (const mins of [1260, 900, 610, 380, 175, 60, 12]) {
   at(mins - 1, () => cc.call("search_threads", { account: OPS, query: "is:unread" }));
 }
 at(170, () => cc.call("get_thread", { account: OPS, thread_id: msgIds["datadog-alert"]!.threadId }));
-at(8, () => cc.call("send_message", { account: OPS, to: ["jules@acme.dev"], subject: "Heads up", body: "Latency alert fired." })); // no send capability
+at(8, () => cc.call("send_message", { account: OPS, to: ["jules@personal.example"], subject: "Heads up", body: "Latency alert fired." })); // allow_to denial
 
 at(600, () => bill.call("search_threads", { query: "label:Billing newer_than:2d" }));
 at(420, () => bill.call("get_thread", { thread_id: msgIds["aws-bill"]!.threadId }));
@@ -520,16 +393,14 @@ at(50, () =>
     to: ["ap@acme.dev"],
     subject: "AR summary: week 42",
     body: "Hi AP team,\n\nThree vendor invoices arrived this week: AWS ($4,318.27), Vercel ($480.00) and Northwind (INV-2291, $3,940.00). All match open POs except Northwind's incident-response line (6 h), which needs sign-off.\n\nBilling bot",
-    reason: "Weekly AR summary for the AP team",
   }),
 );
-at(44, () => bill.call("send_message", { to: ["dana@northwind.io"], subject: "Payment scheduled", body: "Hi Dana, payment is scheduled for tomorrow.", reason: "Confirm payment date" }));
+at(44, () => bill.call("send_message", { to: ["dana@northwind.io"], subject: "Payment scheduled", body: "Hi Dana, payment is scheduled for tomorrow." }));
 at(40, () =>
   bill.call("send_message", {
     to: ["dana.whitfield@gmail.com"],
     subject: "Invoice INV-2291",
     body: "Forwarding the remittance advice as requested.",
-    reason: "Vendor asked to send remittance to a personal address",
   }),
 ); // allow_to denial
 at(31, () =>
@@ -540,32 +411,19 @@ at(31, () =>
       "The incident-response line (6 hours on Oct 9) isn't on the PO yet, so I've asked our ops lead to sign it off.\n\n" +
       "We'll pay the matched amount ($3,040.00) this week and the remainder once it's approved, well within your net-15 terms.\n\n" +
       "Best,\nAcme Billing",
-    reason: "Acknowledge Northwind invoice INV-2291 and explain the partial payment",
   }),
 );
-const pendingTo = async (addr: string) =>
-  (await api<Approval[]>("GET", "/api/approvals?status=pending")).find((a) => a.kind === "send" && a.to.some((t) => t.email === addr));
-at(7, async () => {
-  const a = await pendingTo("ap@acme.dev");
-  if (a) await api("POST", `/api/approvals/${a.id}/approve`, { note: "Looks right." });
-});
-at(6, async () => {
-  const a = await pendingTo("dana@northwind.io");
-  if (a) await api("POST", `/api/approvals/${a.id}/reject`, { note: "Don't confirm dates by email; finance sends remittance from the bank portal." });
-});
 if (args["hidden-chars"]) {
   at(33, () =>
     bill.call("reply", {
       message_id: msgIds["northwind-invoice"]!.id,
       body: "Hi Dana,\n\nPlease use the updated bank details: IBAN \u202EGB29 NWBK\u202C 6016 1331 9268 19.\u200B\n\nThanks",
-      reason: "Confirm new bank details\u2066 as requested\u2069",
     }),
   );
 }
-at(5, () => bill.call("send_message", { to: ["ap@acme.dev"], subject: "One more thing", body: "…", reason: "Follow-up" })); // rate_limit denial
-// The old digest agent gets turned off (its webhook keeps failing), and the n8n hook gets a test send.
+at(5, () => bill.call("send_message", { to: ["ap@acme.dev"], subject: "One more thing", body: "…" }));
+// The old digest agent gets turned off.
 at(15, () => api("PATCH", `/api/agents/${digest.agent.id}`, { disabled: true }));
-at(3, () => api("POST", `/api/webhooks/${n8n.webhook.id}/test`).catch(() => {}));
 
 for (const step of plan.sort((a, b) => b.minutesAgo - a.minutesAgo)) {
   const from = lastAuditId();
@@ -575,9 +433,8 @@ for (const step of plan.sort((a, b) => b.minutesAgo - a.minutesAgo)) {
 await Promise.all([sup.close(), cc.close(), bill.close()]);
 log("agent activity recorded");
 
-// Let ingest pick up what the agents did (sends, labels), then let the worker attempt the deliveries once.
+// Let ingest pick up what the agents did (sends, labels).
 await sleep(5000);
-await waitFor("first delivery attempts", () => ctx.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM deliveries WHERE attempts = 0")!.n === 0, 20_000);
 
 // ───────────── Backdate, so timelines look like a day of real traffic ─────────────
 
@@ -592,19 +449,7 @@ ctx.db.tx(() => {
     prev = t;
     const at = new Date(t).toISOString();
     ctx.db.run("UPDATE events SET created_at = ? WHERE seq = ?", at, e.seq);
-    ctx.db.run(
-      "UPDATE deliveries SET created_at = ?, updated_at = ? WHERE event_seq = ?",
-      at,
-      new Date(Date.parse(at) + 1500).toISOString(),
-      e.seq,
-    );
   }
-  // The legacy Zapier endpoint has been unreachable for a while: its deliveries used up their retries.
-  ctx.db.run(
-    `UPDATE deliveries SET status = 'dead', attempts = 9, next_attempt_at = NULL WHERE webhook_id = ? AND event_seq > 0 AND created_at < ?`,
-    zap.webhook.id,
-    iso(6 * HOUR),
-  );
   for (const p of auditPlan) {
     ctx.db.run("UPDATE audit_log SET ts = ? WHERE id > ? AND id <= ?", iso(p.minutesAgo * 60_000), p.from, p.to);
   }
@@ -614,24 +459,8 @@ ctx.db.tx(() => {
   ctx.db.run("UPDATE accounts SET created_at = ?", iso(3 * 24 * HOUR));
   ctx.db.run("UPDATE agents SET created_at = ?", iso(2 * 24 * HOUR + 3 * HOUR));
   ctx.db.run("UPDATE agents SET created_at = ? WHERE id = ?", iso(26 * HOUR), claudeAgentId);
-  ctx.db.run("UPDATE webhooks SET created_at = ?", iso(2 * 24 * HOUR));
   ctx.db.run("UPDATE agents SET last_used_at = ?, created_at = ? WHERE id = ?", iso(9 * 24 * HOUR), iso(40 * 24 * HOUR), digest.agent.id);
-  ctx.db.run("UPDATE webhooks SET created_at = ? WHERE id = ?", iso(40 * 24 * HOUR), zap.webhook.id);
-  for (const a of ctx.db.all<{ id: string; status: string; subject: string }>("SELECT id, status, COALESCE(json_extract(payload, '$.subject'), '') AS subject FROM approvals")) {
-    const created = a.status === "pending" ? iso(31 * 60_000) : a.subject.startsWith("AR") ? iso(50 * 60_000) : iso(44 * 60_000);
-    const decided = a.status === "pending" ? null : a.subject.startsWith("AR") ? iso(7 * 60_000) : iso(6 * 60_000);
-    ctx.db.run(
-      "UPDATE approvals SET created_at = ?, expires_at = ?, decided_at = ? WHERE id = ?",
-      created,
-      new Date(Date.parse(created) + 72 * HOUR).toISOString(),
-      decided,
-      a.id,
-    );
-  }
 });
-
-const webhooks = await api<Webhook[]>("GET", "/api/webhooks");
-for (const w of webhooks) log(`webhook ${w.name}: ${w.stats.succeeded24h} ok / ${w.stats.failed24h} failed`);
 
 const state = { url: base, password: PASSWORD, cookie, publicUrl, dataDir };
 writeFileSync(`/tmp/xaq-demo-${PORT}.json`, JSON.stringify(state, null, 2));

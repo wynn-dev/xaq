@@ -7,9 +7,9 @@ import { createApp } from "../server/app.ts";
 import { type RunningServer, startServer } from "../server/server.ts";
 import type { GoogleService } from "../server/google/types.ts";
 import type { MailService } from "../server/mail/types.ts";
-import { testConfig } from "./helpers.ts";
-import { addAccount, emitMessage, fakeMail, readGrant, SseReader } from "./listen-server-helpers.ts";
-import { fakeGoogle, fakeIngest } from "./platform-helpers.ts";
+import { fakeIngest, grantInput, testConfig } from "./helpers.ts";
+import { addAccount, emitMessage, fakeMail, SseReader } from "./listen-server-helpers.ts";
+import { fakeGoogle } from "./fake-google.ts";
 
 let running: RunningServer | undefined;
 const readers: SseReader[] = [];
@@ -41,7 +41,7 @@ async function setup(opts: AgentApiOptions = {}, mail: () => MailService = fakeM
   agentApi(ctx, { heartbeatMs: 60_000, ...opts });
   addAccount(ctx, "acc_a", "me@acme.com");
   addAccount(ctx, "acc_b", "other@acme.com");
-  const { agent, apiKey } = ctx.policy.createAgent({ name: "Hermes", grants: [readGrant("acc_a")] });
+  const { agent, apiKey } = ctx.policy.createAgent({ name: "Hermes", grants: [grantInput("acc_a")] });
 
   /** New consumers default to the head; these tests want the backlog unless they say otherwise. */
   const open = async (query = "", headers: Record<string, string> = {}, key = apiKey) => {
@@ -62,13 +62,11 @@ async function setup(opts: AgentApiOptions = {}, mail: () => MailService = fakeM
 const seqs = (r: SseReader) => r.mail().map((m) => m.seq);
 
 describe("GET /agent/v1/events/stream", () => {
-  it("sends the backlog then live events, only within the agent's grants and label scope", async () => {
+  it("sends the backlog then live events, only from the agent's accounts", async () => {
     const s = await setup();
-    s.ctx.policy.upsertGrant(s.agent.id, "acc_a", readGrant("acc_a", { labelScope: ["Label_work"] }));
     const visible1 = emitMessage(s.ctx, "acc_a", "m1", ["INBOX", "Label_work"]);
-    emitMessage(s.ctx, "acc_a", "m2", ["INBOX"]); // out of scope
     emitMessage(s.ctx, "acc_b", "m3", ["INBOX", "Label_work"]); // ungranted account
-    const visible2 = s.ctx.events.emit({ type: "sync.gap", accountId: "acc_a", dedupeKey: "gap1" })!.seq; // account-level: scope-free
+    const visible2 = s.ctx.events.emit({ type: "sync.gap", accountId: "acc_a", dedupeKey: "gap1" })!.seq;
 
     const r = await s.open();
     await r.until(() => r.mail().length >= 2);
@@ -80,18 +78,10 @@ describe("GET /agent/v1/events/stream", () => {
     expect(first!.payload.data).not.toHaveProperty("content");
 
     emitMessage(s.ctx, "acc_b", "m4", ["Label_work"]);
-    emitMessage(s.ctx, "acc_a", "m5", ["INBOX"]);
     const live = emitMessage(s.ctx, "acc_a", "m6", ["Label_work"]);
     await r.until(() => r.mail().length >= 3);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(seqs(r)).toEqual([visible1, visible2, live]);
-
-    // Narrowing the scope applies to the next event without reconnecting.
-    s.ctx.policy.upsertGrant(s.agent.id, "acc_a", readGrant("acc_a", { labelScope: ["Label_other"] }));
-    emitMessage(s.ctx, "acc_a", "m7", ["Label_work"]);
-    const other = emitMessage(s.ctx, "acc_a", "m8", ["Label_other"]);
-    await r.until(() => r.mail().length >= 4);
-    expect(seqs(r)).toEqual([visible1, visible2, live, other]);
   });
 
   it("filters by type and attaches cleaned content with include_body", async () => {
@@ -225,7 +215,6 @@ describe("GET /agent/v1/events/stream", () => {
     ["rotating the key", "key_rotated", (s) => s.ctx.policy.rotateKey(s.agent.id)],
     ["deleting the agent", "agent_deleted", (s) => s.ctx.policy.deleteAgent(s.agent.id)],
     ["deleting the read grant", "no_read_grant", (s) => s.ctx.policy.deleteGrant(s.agent.id, "acc_a")],
-    ["removing read from the grant", "no_read_grant", (s) => s.ctx.policy.upsertGrant(s.agent.id, "acc_a", readGrant("acc_a", { capabilities: ["draft"] }))],
   ];
   for (const [what, reason, revoke] of revocations) {
     it(`closes a live stream with event: revoked on ${what}`, async () => {
@@ -244,7 +233,7 @@ describe("GET /agent/v1/events/stream", () => {
 
   it("keeps a stream open on unrelated agent changes", async () => {
     const s = await setup();
-    const other = s.ctx.policy.createAgent({ name: "Other", grants: [readGrant("acc_a")] });
+    const other = s.ctx.policy.createAgent({ name: "Other", grants: [grantInput("acc_a")] });
     const r = await s.open();
     s.ctx.policy.rotateKey(other.agent.id);
     s.ctx.policy.updateAgent(s.agent.id, { name: "Renamed" });
@@ -299,15 +288,8 @@ describe("agent API auth", () => {
         {
           accountId: "acc_a",
           accountEmail: "me@acme.com",
-          capabilities: ["read", "draft"],
-          labelScope: null,
-          sendMode: "draft_only",
+          level: "read",
           allowTo: [],
-          replyOnly: false,
-          maxSendsPerHour: null,
-          maxSendsPerDay: null,
-          calendarScope: null,
-          calendarWriteMode: "approval",
         },
       ],
       consumers: [],
@@ -366,7 +348,7 @@ describe("stream hardening", () => {
         },
       }) as unknown as MailService,
     );
-    s.ctx.policy.upsertGrant(s.agent.id, "acc_b", readGrant("acc_b"));
+    s.ctx.policy.upsertGrant(s.agent.id, "acc_b", grantInput("acc_b"));
     emitMessage(s.ctx, "acc_a", "slow");
     const r = await s.open("?include_body=1");
     await started;
@@ -375,20 +357,6 @@ describe("stream hardening", () => {
     const next = emitMessage(s.ctx, "acc_b", "m2");
     await r.until(() => r.mail().length >= 1);
     expect(r.mail().map((m) => [m.seq, m.payload.data.accountId])).toEqual([[next, "acc_b"]]);
-  });
-
-  it("only attaches a body when the thread is in the label scope now", async () => {
-    const s = await setup();
-    s.ctx.policy.upsertGrant(s.agent.id, "acc_a", readGrant("acc_a", { labelScope: ["Label_work"] }));
-    emitMessage(s.ctx, "acc_a", "moved", ["Label_work"]);
-    emitMessage(s.ctx, "acc_a", "kept", ["Label_work"]);
-    threadLabelsNow.set("t_moved", ["INBOX"]); // relabelled out of scope after the event
-    const r = await s.open("?include_body=1");
-    await r.until(() => r.mail().length >= 2);
-    const [moved, kept] = r.mail();
-    expect(moved!.payload.data).not.toHaveProperty("content");
-    expect(moved!.payload.data.contentError).toBe("Message body unavailable: not accessible");
-    expect(kept!.payload.data.content).toMatchObject({ body: "Body of kept" });
   });
 
   it("caps after and Last-Event-ID at the newest visible event", async () => {
@@ -532,7 +500,7 @@ describe("consumer start and reversible refusals", () => {
     const me = (await (await fetch(`${s.url}/agent/v1/me`, { headers: { authorization: `Bearer ${s.apiKey}` } })).json()) as AgentSelf;
     const by = Object.fromEntries(me.consumers!.map((c) => [c.consumer, c.startSeq]));
     expect(by).toEqual({ listener: old[1], history: 0, "acked-only": null });
-    expect(me.grants[0]).toMatchObject({ allowTo: expect.any(Array), replyOnly: expect.any(Boolean) });
+    expect(me.grants[0]).toMatchObject({ level: "read", allowTo: expect.any(Array) });
   });
 
   it("reserves the -replay / -dry-run suffixes: never acknowledged, always created at 0", async () => {
@@ -555,7 +523,7 @@ describe("consumer start and reversible refusals", () => {
 
   it("/me lists only this agent's consumers", async () => {
     const s = await setup();
-    const other = s.ctx.policy.createAgent({ name: "Other", grants: [readGrant("acc_a")] });
+    const other = s.ctx.policy.createAgent({ name: "Other", grants: [grantInput("acc_a")] });
     expect((await s.ack("mine", 0)).status).toBe(200);
     expect((await s.ack("theirs", 0, other.apiKey)).status).toBe(200);
     const me = (await (await fetch(`${s.url}/agent/v1/me`, { headers: { authorization: `Bearer ${s.apiKey}` } })).json()) as AgentSelf;
@@ -589,28 +557,3 @@ describe("consumer start and reversible refusals", () => {
   });
 });
 
-describe("head on a busy mailbox with a narrow scope", () => {
-  it("caps at the newest granted seq when no visible event is within the scan budget", async () => {
-    const s = await setup();
-    s.ctx.policy.upsertGrant(s.agent.id, "acc_a", readGrant("acc_a", { labelScope: ["Label_work"] }));
-    const visible = [0, 1, 2].map((i) => emitMessage(s.ctx, "acc_a", `w${i}`, ["Label_work"]));
-    let last = 0;
-    for (let i = 0; i < 2100; i++) last = emitMessage(s.ctx, "acc_a", `n${i}`, ["INBOX"]);
-    emitMessage(s.ctx, "acc_b", "other", ["Label_work"]); // ungranted: never the head
-    const me = (await (await fetch(`${s.url}/agent/v1/me`, { headers: { authorization: `Bearer ${s.apiKey}` } })).json()) as { headSeq: number };
-    expect(me.headSeq).toBe(last);
-
-    // start=now: no replay of the old in-scope events.
-    const fresh = await s.open("?consumer=fresh&start=now");
-    const live = emitMessage(s.ctx, "acc_a", "w3", ["Label_work"]);
-    await fresh.until(() => fresh.mail().length >= 1);
-    expect(seqs(fresh)).toEqual([live]);
-    fresh.cancel();
-
-    // Acks and Last-Event-ID below the head are kept as given.
-    expect(await (await s.ack("probe", visible[2]!)).json()).toEqual({ ackedSeq: visible[2] });
-    const r = await s.open("?consumer=probe", { "last-event-id": String(visible[2]) });
-    await r.until(() => r.mail().length >= 1);
-    expect(seqs(r)).toEqual([live]);
-  });
-});

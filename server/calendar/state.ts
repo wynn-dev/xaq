@@ -1,5 +1,5 @@
-// Calendar sync storage (workstream A, migration 7): calendar_sync holds the per-calendar cursor (and D's
-// push channel columns), calendar_event_state the last seen version of each upcoming or recurring event, so
+// Calendar sync storage (workstream A, migration 7): calendar_sync holds the per-calendar cursor,
+// calendar_event_state the last seen version of each upcoming or recurring event, so
 // sync can tell created / updated (and what changed) / cancelled apart and replay a 410 full resync as changes.
 
 import { createHash } from "node:crypto";
@@ -24,11 +24,6 @@ export interface CalendarSyncRow {
   baseline_at: string | null;
   last_sync_at: string | null;
   last_error: string | null;
-  channel_id: string | null;
-  channel_resource_id: string | null;
-  channel_token_hash: string | null;
-  channel_expires_at: string | null;
-  channel_verified_at: string | null;
   updated_at: string;
 }
 

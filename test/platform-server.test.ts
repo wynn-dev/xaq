@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { type BannerEnv, bannerLines, sameLoopbackServer, startServer, tunnelCommand } from "../server/server.ts";
-import { fakeGoogle, fakeIngest, harness, json } from "./platform-helpers.ts";
-import { testConfig } from "./helpers.ts";
+import { fakeIngest, harness, json, testConfig } from "./helpers.ts";
+import { fakeGoogle } from "./fake-google.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const cli = (...args: string[]) =>
@@ -193,10 +193,9 @@ describe("startup banner", () => {
 });
 
 describe("cli", () => {
-  it("prints the version and the skill, and installs it into a directory", () => {
+  it("prints the version, and installs the skill into a directory", () => {
     const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { version: string };
     expect(cli("--version").trim()).toBe(pkg.version);
-    expect(cli("skill", "print", "--url", "https://mail.example.com/")).toContain("https://mail.example.com/mcp");
 
     const dir = mkdtempSync(join(tmpdir(), "xaq-skills-"));
     try {
@@ -218,7 +217,7 @@ describe("cli", () => {
 
   it("fails without a stack trace on bad input", () => {
     try {
-      cli("skill", "print", "--url", "nope");
+      cli("skill", "install", "--target", tmpdir(), "--url", "nope");
       expect.unreachable();
     } catch (err) {
       const stderr = String((err as { stderr?: string }).stderr);

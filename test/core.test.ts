@@ -19,11 +19,10 @@ describe("settings", () => {
     const t = testContext();
     dispose = t.dispose;
     const s = t.ctx.settings;
-    expect(s.get().ingestMode).toBe("poll");
+    expect(s.get().pollIntervalSeconds).toBe(30);
     expect(s.update({ publicUrl: "https://mail.example.com/" }).publicUrl).toBe("https://mail.example.com");
     expect(() => s.update({ publicUrl: "not a url" })).toThrow(/full URL/);
     expect(() => s.update({ pollIntervalSeconds: 1 })).toThrow(/Poll interval/);
-    expect(s.update({ webhookAllowlist: [" 10.0.0.0/8 ", "10.0.0.0/8"] }).webhookAllowlist).toEqual(["10.0.0.0/8"]);
     s.setState("admin.passwordHash", "x");
     expect(s.getState("admin.passwordHash")).toBe("x");
   });
@@ -111,6 +110,57 @@ describe("migration 6", () => {
       const fresh = new Db(upTo5(mkdtempSync(join(dir, "b-")), false));
       expect(fresh.get("SELECT 1 FROM settings WHERE key = 'setup.verifiedAt'")).toBeUndefined();
       fresh.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("migrations 14 to 16", () => {
+  it("drop the settings of removed features and tools left on hold, keep the rest, and never widen a connection grant", () => {
+    const dir = mkdtempSync(join(tmpdir(), "xaq-mig-"));
+    try {
+      const path = join(dir, "db.sqlite");
+      const raw = new DatabaseSync(path);
+      raw.exec("CREATE TABLE _migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
+      MIGRATIONS.slice(0, 13).forEach((sql, i) => {
+        raw.exec(sql);
+        raw.prepare("INSERT INTO _migrations (version, applied_at) VALUES (?, ?)").run(i + 1, "2026-01-01T00:00:00.000Z");
+      });
+      const put = raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)");
+      put.run("settings", JSON.stringify({ pollIntervalSeconds: 45, attachmentDirs: ["/tmp"], attachmentSaveDir: "/x", brokerUpstreams: true }));
+      raw.exec("INSERT INTO connections (id, owner_id, kind, slug, name, url, auth_type, created_at, updated_at) VALUES ('con_a', 'owner', 'remote_http', 'a', 'A', 'https://a.example', 'none', 'T', 'T')");
+      raw.exec("INSERT INTO connections (id, owner_id, kind, slug, name, url, auth_type, level_default, created_at, updated_at) VALUES ('con_b', 'owner', 'remote_http', 'b', 'B', 'https://b.example', 'none', 'full', 'T', 'T')");
+      const agent = raw.prepare("INSERT INTO agents (id, name, key_prefix, key_hash, created_at) VALUES (?, ?, 'aib_x', ?, 'T')");
+      const access = raw.prepare("INSERT INTO connection_grants (agent_id, connection_id, level, created_at, updated_at) VALUES (?, ?, ?, 'T', 'T')");
+      for (const [id, level] of [["agt_ask", "ask"], ["agt_full", "full"], ["agt_read", "read"]] as const) {
+        agent.run(id, id, `h_${id}`);
+        access.run(id, "con_a", level);
+      }
+      const tool = raw.prepare(
+        "INSERT INTO upstream_tools (connection_id, name, exposed_name, definition, pin_hash, risky, read, class_source, state, held_reason, candidate_definition, candidate_hash, first_seen_at, updated_at) VALUES ('con_a', ?, ?, ?, ?, 0, 0, 'annotation', ?, ?, ?, ?, 'T', 'T')",
+      );
+      tool.run("kept", "a__kept", "{}", "h1", "active", null, null, null);
+      tool.run("changed", "a__changed", "{}", "h2", "held", "changed", "{}", "h3");
+      tool.run("new", "a__new", null, null, "held", "new", "{}", "h4");
+      for (const key of ["broker.search:agt_1", "broker.defaultOnApplied", "broker.searchDirectPinned", "setup.verifiedAt"]) put.run(key, '"2026-01-01"');
+      raw.close();
+
+      const db = new Db(path);
+      expect(JSON.parse(db.get<{ value: string }>("SELECT value FROM settings WHERE key = 'settings'")!.value)).toEqual({ pollIntervalSeconds: 45 });
+      expect(db.all<{ key: string }>("SELECT key FROM settings WHERE key != 'settings'").map((r) => r.key)).toEqual(["setup.verifiedAt"]);
+      expect(db.all<{ name: string }>("SELECT name FROM upstream_tools").map((r) => r.name)).toEqual(["kept"]);
+      // Ask before risky calls becomes read only, not full access.
+      expect(db.all("SELECT agent_id AS a, level FROM connection_grants ORDER BY agent_id")).toEqual([
+        { a: "agt_ask", level: "read" },
+        { a: "agt_full", level: "full" },
+        { a: "agt_read", level: "read" },
+      ]);
+      expect(db.all("SELECT id, level_default AS d FROM connections ORDER BY id")).toEqual([
+        { id: "con_a", d: "read" },
+        { id: "con_b", d: "full" },
+      ]);
+      db.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

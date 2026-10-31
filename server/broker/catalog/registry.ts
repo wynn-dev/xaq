@@ -1,9 +1,9 @@
-// ToolRegistry over the catalog: per-agent tool lists with connection_grants.level applied. Synchronous and
+// The tool registry over the catalog: per-agent tool lists with connection_grants.level applied. Synchronous and
 // cached in memory; call invalidate() whenever connections, grants or the catalog change (Catalog.onChange does the
 // last one).
 
 import type { Db } from "../../db/index.ts";
-import type { AccessLevel, IntegrationPreset, RegisteredTool, ToolRegistry } from "../types.ts";
+import type { AccessLevel, RegisteredTool } from "../types.ts";
 import { candidateKey, checkCollisions, exposedName, type NameRefusal } from "./names.ts";
 import type { CatalogStore } from "./store.ts";
 
@@ -20,8 +20,6 @@ export interface RegistryDeps {
   connections(): RegistryConnection[];
   /** connection_grants rows of one agent. No row: no access. */
   grants(agentId: string): { connectionId: string; level: AccessLevel }[];
-  /** The connection's preset, for `targetPath` (not stored in upstream_tools). */
-  preset?(connectionId: string): Pick<IntegrationPreset, "classify"> | null;
 }
 
 /** Broker connections from migration 8's table (native Google accounts aren't broker connections). */
@@ -49,7 +47,7 @@ interface AgentView {
   byName: Map<string, RegisteredTool>;
 }
 
-export class CatalogRegistry implements ToolRegistry {
+export class CatalogRegistry {
   private snapshot: Snapshot | null = null;
   private readonly agents = new Map<string, AgentView>();
 
@@ -109,10 +107,8 @@ export class CatalogRegistry implements ToolRegistry {
     for (const { row, exposed } of named) {
       if (!exposed || !ok.has(candidateKey(row.connectionId, row.name))) continue;
       if (!row.def || !row.pinHash) continue;
-      const targetPath = this.deps.preset?.(row.connectionId)?.classify(row.def)?.targetPath;
-      const cls = targetPath ? { ...row.cls, targetPath } : row.cls;
       active.push({
-        tool: { exposedName: exposed, connectionId: row.connectionId, slug: conns.get(row.connectionId)!.slug, def: row.def, cls, pinHash: row.pinHash },
+        tool: { exposedName: exposed, connectionId: row.connectionId, slug: conns.get(row.connectionId)!.slug, def: row.def, cls: row.cls, pinHash: row.pinHash },
       });
     }
     active.sort((a, b) => (a.tool.exposedName < b.tool.exposedName ? -1 : a.tool.exposedName > b.tool.exposedName ? 1 : 0));

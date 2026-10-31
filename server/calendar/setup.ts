@@ -1,4 +1,4 @@
-// "Add Google Calendar" state and probes (workstream D, docs/calendar.md "OAuth, setup and the upgrade flow").
+// "Add Google Calendar" state and probes (workstream D).
 // Whether Calendar is part of the install lives in InternalState "calendar.setup"; per-account state in
 // accounts.scopes (granted, backfilled on every token refresh) and accounts.calendar_* (what Google said).
 
@@ -15,7 +15,7 @@ import {
   enableCalendarApiUrl,
 } from "../google/calendar.ts";
 import { googleRuntime } from "../google/runtime.ts";
-import { CALENDAR_SCOPES, describeScopes, hasScopes, missingScopes } from "../google/scopes.ts";
+import { CALENDAR_SCOPES, describeScopes, hasScopes, missingScopes } from "../../shared/google-scopes.ts";
 import { AccountNeedsReauthError, GoogleApiError } from "../google/types.ts";
 import { cleanLine } from "../mail/content.ts";
 import type { InternalState } from "../settings.ts";
@@ -82,11 +82,7 @@ export function setupState(ctx: Pick<AppContext, "settings" | "db">): CalendarSe
   const api = apiState(s, rows);
   const sync = new Map(
     ctx.db
-      .all<{ account_id: string; n: number; push: number }>(
-        `SELECT account_id, COUNT(*) AS n, SUM(channel_verified_at IS NOT NULL AND channel_expires_at > ?) AS push
-         FROM calendar_sync GROUP BY account_id`,
-        now(),
-      )
+      .all<{ account_id: string; n: number }>(`SELECT account_id, COUNT(*) AS n FROM calendar_sync GROUP BY account_id`)
       .map((r) => [r.account_id, r]),
   );
   const accounts = rows.map((r) => ({
@@ -95,7 +91,6 @@ export function setupState(ctx: Pick<AppContext, "settings" | "db">): CalendarSe
     status: accountCalendar(r)?.status ?? "not_granted",
     missingScopes: missingScopes(accountScopes(r), CALENDAR_SCOPES),
     syncedCalendars: sync.get(r.id)?.n ?? 0,
-    push: (sync.get(r.id)?.push ?? 0) > 0,
   }));
   return {
     enabled: s.enabled,

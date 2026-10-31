@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { z } from "zod";
-import type { GoogleClientView, PubsubState, SetupState, SetupStatus } from "../../shared/types.ts";
+import type { GoogleClientView, SetupState, SetupStatus } from "../../shared/types.ts";
 import {
   adminAuth,
   checkSecret,
@@ -120,7 +120,6 @@ export function checkPassword(password: string): void {
 export function setupState(ctx: AppContext, opts: { healthOnly?: boolean } = {}): SetupState {
   const claimed = isClaimed(ctx);
   const client = attempt(ctx, () => ctx.google.clientView()) ?? storedClientView(ctx);
-  const pubsub = attempt(ctx, () => ctx.google.pubsubState()) ?? storedPubsub(ctx);
   const count = (table: "accounts" | "agents") => ctx.db.get<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`)?.n ?? 0;
   const accountsConnected = count("accounts");
   const googleClientConfigured = !!client.clientId && client.hasSecret;
@@ -129,7 +128,6 @@ export function setupState(ctx: AppContext, opts: { healthOnly?: boolean } = {})
     googleClientConfigured,
     gcpProjectId: client.projectId,
     googleAppType: client.appType,
-    pubsub,
     accountsConnected,
     agentsCreated: count("agents"),
     verified: opts.healthOnly ? false : isVerified(ctx),
@@ -160,17 +158,3 @@ function storedClientView(ctx: AppContext): Pick<GoogleClientView, "clientId" | 
   return { clientId: s?.clientId || null, hasSecret: !!s?.clientSecretEnc, projectId: s?.projectId || null, appType: s?.appType ?? null };
 }
 
-function storedPubsub(ctx: AppContext): PubsubState {
-  const s = ctx.settings.getState("pubsub");
-  return {
-    mode: ctx.settings.get().ingestMode,
-    topic: s?.topic ?? null,
-    subscription: s?.subscription ?? null,
-    lastError: s?.lastError ?? null,
-    lastMessageAt: s?.lastMessageAt ?? null,
-    principalAccountId: s?.principalAccountId ?? null,
-    principalEmail: null,
-    pendingPrincipalAccountId: s?.pendingPrincipalAccountId ?? null,
-    pendingPrincipalEmail: null,
-  };
-}

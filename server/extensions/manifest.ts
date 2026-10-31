@@ -1,14 +1,13 @@
-// The extension manifest, `xaq-extension.json` (docs/EXTENSIONS.md): its type, a strict validator, the JSON Schema
+// The extension manifest, `xaq-extension.json`: its type, a strict validator, the JSON Schema
 // the xaq-extensions repo checks manifests with (scripts/validate.mjs), and `presetFromManifest`, which turns an
 // installed extension into the IntegrationPreset the broker, policy, catalog and console already use.
 //
 // Strict on purpose: an unknown key anywhere is an error (schema 1), and every value is checked here, not by the
-// schema alone. Setup strings may use {{publicUrl}}, {{redirectUri}} and {{webhookUrl}} and nothing else; a step
-// that uses {{webhookUrl}} must say `"when": "webhookUrl"`, so it only shows when the internet can reach this install.
+// schema alone. Setup strings may use {{publicUrl}} and {{redirectUri}} and nothing else.
 
 import { classifyTool } from "../broker/catalog/classify.ts";
 import type { IntegrationPreset, PresetAuth, SetupContext, SetupStep, ToolClass, ToolDef } from "../broker/types.ts";
-import { CORE_ONLY_SCOPES, EXTENSION_SCOPE_RE, GOOGLE_SERVICE_RE, isExtensionScope } from "../google/scopes.ts";
+import { CORE_ONLY_SCOPES, EXTENSION_SCOPE_RE, GOOGLE_SERVICE_RE, isExtensionScope } from "../../shared/google-scopes.ts";
 import { googleSetupSteps } from "./google-setup.ts";
 import { codeExtensionSource } from "./host/index.ts";
 import { computeIntegrity } from "./integrity.ts";
@@ -23,12 +22,6 @@ export type RiskClass = "read" | "write" | "risky";
 
 export interface RiskEntry {
   class: RiskClass;
-  /**
-   * JSON Pointer (RFC 6901) to the argument naming the call's target, for "always allow … for this target"; or
-   * candidate pointers, of which the first whose top-level argument the tool's live input schema declares wins.
-   * No declared candidate: no target (never a wrong one).
-   */
-  target?: string | string[];
 }
 
 export type RemoteAuth =
@@ -50,8 +43,7 @@ export type CodeAuth =
   | { type: "none" }
   /**
    * Official extensions only: a connection is bound to one of xaq's connected Google accounts and gets access tokens
-   * downscoped to exactly `scopes`, added to the account by incremental consent (docs/EXTENSIONS.md "Google accounts
-   * for code extensions"). Never Gmail, Calendar or Pub/Sub scopes.
+   * downscoped to exactly `scopes`, added to the account by incremental consent. Never Gmail, Calendar or Pub/Sub scopes.
    */
   | { type: "google"; scopes: string[]; apis: GoogleApi[] }
   | {
@@ -65,10 +57,7 @@ export type CodeAuth =
       refreshScope?: string;
     };
 
-export interface ManifestSetupStep extends SetupStep {
-  /** Shown only when this context is present: "webhookUrl" when the internet can reach the install's webhooks. */
-  when?: "webhookUrl";
-}
+export type ManifestSetupStep = SetupStep;
 
 export interface Manifest {
   schema: 1;
@@ -119,7 +108,7 @@ const SCOPE_LIST_RE = /^[\x21\x23-\x5b\x5d-\x7e]+( [\x21\x23-\x5b\x5d-\x7e]+)*$/
 const ENTRY_RE = /^(?!\/)(?!.*(^|\/)\.\.?(\/|$))[A-Za-z0-9_./-]{1,200}\.(mjs|js)$/;
 /** xaq's own event prefixes (shared/types.ts): an extension that names its events can't be called like one. */
 const RESERVED_NAMES = new Set(["message", "thread", "label", "account", "sync", "calendar", "connection", "approval", "xaq"]);
-const TEMPLATE_VARS = ["publicUrl", "redirectUri", "webhookUrl"] as const;
+const TEMPLATE_VARS = ["publicUrl", "redirectUri"] as const;
 /** Only in a manifest with a `google` code.auth: the install's Google Cloud project ID (never at the start of a link). */
 const PROJECT_ID_VAR = "projectId";
 type TemplateVar = (typeof TEMPLATE_VARS)[number] | typeof PROJECT_ID_VAR;
@@ -127,7 +116,7 @@ type TemplateVar = (typeof TEMPLATE_VARS)[number] | typeof PROJECT_ID_VAR;
 export const UNKNOWN_PROJECT_ID = "YOUR_PROJECT_ID";
 const TEMPLATE_RE = /\{\{\s*([^{}]*?)\s*\}\}/g;
 /** A link built on one of the install's addresses: the variable, then a path, query, fragment or nothing. */
-const TEMPLATE_LINK_RE = /^\{\{\s*(publicUrl|redirectUri|webhookUrl)\s*\}\}([/?#]|$)/;
+const TEMPLATE_LINK_RE = /^\{\{\s*(publicUrl|redirectUri)\s*\}\}([/?#]|$)/;
 const SCOPE_RE = /^[\x21\x23-\x5b\x5d-\x7e]+$/;
 // No control characters except newline in prose (manifests are shown to the admin verbatim).
 // oxlint-disable-next-line no-control-regex
@@ -203,7 +192,7 @@ function templateVars(s: string, path: string, projectId = false): TemplateVar[]
         path,
         name === PROJECT_ID_VAR
           ? 'uses {{projectId}}, which only an extension with "code.auth": { "type": "google" } can use'
-          : `uses {{${name.slice(0, 40)}}}: only {{publicUrl}}, {{redirectUri}} and {{webhookUrl}} are available${projectId ? ", and {{projectId}}" : ""}`,
+          : `uses {{${name.slice(0, 40)}}}: only {{publicUrl}} and {{redirectUri}} are available${projectId ? ", and {{projectId}}" : ""}`,
       );
     }
     out.push(name as TemplateVar);
@@ -213,9 +202,9 @@ function templateVars(s: string, path: string, projectId = false): TemplateVar[]
   return out;
 }
 
-function templated(v: unknown, path: string, opts: { max: number; multiline?: boolean; projectId?: boolean }, used: Set<TemplateVar>): string {
+function templated(v: unknown, path: string, opts: { max: number; multiline?: boolean; projectId?: boolean }): string {
   const s = str(v, path, opts);
-  for (const name of templateVars(s, path, opts.projectId)) used.add(name);
+  templateVars(s, path, opts.projectId);
   return s;
 }
 
@@ -236,23 +225,22 @@ function noTemplate(s: string, path: string): string {
 }
 
 function validateStep(v: unknown, path: string, projectId = false): ManifestSetupStep {
-  const o = obj(v, path, ["id", "title", "body", "link", "copy", "input", "when"], ["id", "title", "body"]);
-  const used = new Set<TemplateVar>();
+  const o = obj(v, path, ["id", "title", "body", "link", "copy", "input"], ["id", "title", "body"]);
   if (o.id !== undefined && typeof o.id === "string" && o.id.startsWith("google-")) fail(`${path}.id`, 'can\'t start with "google-": xaq uses those for its own Google steps');
   const step: ManifestSetupStep = {
     id: str(o.id, `${path}.id`, { max: 32, re: STEP_ID_RE, what: "lowercase letters, digits and dashes" }),
-    title: templated(o.title, `${path}.title`, { max: 120, projectId }, used),
-    body: templated(o.body, `${path}.body`, { max: 4000, multiline: true, projectId }, used),
+    title: templated(o.title, `${path}.title`, { max: 120, projectId }),
+    body: templated(o.body, `${path}.body`, { max: 4000, multiline: true, projectId }),
   };
   if (o.link !== undefined) {
     const l = obj(o.link, `${path}.link`, ["label", "url"], ["label", "url"]);
-    const label = templated(l.label, `${path}.link.label`, { max: 120, projectId }, used);
+    const label = templated(l.label, `${path}.link.label`, { max: 120, projectId });
     // {{projectId}} can't be the start of a link (TEMPLATE_LINK_RE), only after an https host: it never picks the host.
-    const url = templated(l.url, `${path}.link.url`, { max: 2048, projectId }, used);
+    const url = templated(l.url, `${path}.link.url`, { max: 2048, projectId });
     // A link is either an https URL or one of this install's own addresses, followed by a path, query, fragment or
     // nothing (so `{{publicUrl}}@evil.example` can't turn the install's address into a user name).
     if (/^\{\{/.test(url)) {
-      if (!TEMPLATE_LINK_RE.test(url)) fail(`${path}.link.url`, "must be {{publicUrl}}, {{redirectUri}} or {{webhookUrl}} followed by /, ?, # or nothing");
+      if (!TEMPLATE_LINK_RE.test(url)) fail(`${path}.link.url`, "must be {{publicUrl}} or {{redirectUri}} followed by /, ?, # or nothing");
     } else httpsUrl(url, `${path}.link.url`);
     // {{projectId}} only in the path, query or fragment of a link: never in its host.
     const at = url.search(/\{\{\s*projectId\s*\}\}/);
@@ -261,7 +249,7 @@ function validateStep(v: unknown, path: string, projectId = false): ManifestSetu
   }
   if (o.copy !== undefined) {
     const c = obj(o.copy, `${path}.copy`, ["label", "value"], ["label", "value"]);
-    step.copy = { label: templated(c.label, `${path}.copy.label`, { max: 120, projectId }, used), value: templated(c.value, `${path}.copy.value`, { max: 2048, projectId }, used) };
+    step.copy = { label: templated(c.label, `${path}.copy.label`, { max: 120, projectId }), value: templated(c.value, `${path}.copy.value`, { max: 2048, projectId }) };
   }
   if (o.input !== undefined) {
     const i = obj(o.input, `${path}.input`, ["key", "label", "secret", "pattern", "placeholder"], ["key", "label"]);
@@ -273,11 +261,6 @@ function validateStep(v: unknown, path: string, projectId = false): ManifestSetu
     if (i.pattern !== undefined) step.input.pattern = validatePattern(i.pattern, `${path}.input.pattern`);
     if (i.placeholder !== undefined) step.input.placeholder = noTemplate(str(i.placeholder, `${path}.input.placeholder`, { max: 200 }), `${path}.input.placeholder`);
   }
-  if (o.when !== undefined) {
-    if (o.when !== "webhookUrl") fail(`${path}.when`, 'must be "webhookUrl"');
-    step.when = "webhookUrl";
-  }
-  if (used.has("webhookUrl") && step.when !== "webhookUrl") fail(path, 'uses {{webhookUrl}}, so it needs "when": "webhookUrl"');
   return step;
 }
 
@@ -290,19 +273,10 @@ function validateRisk(v: unknown, path: string): NonNullable<Manifest["risk"]> {
   for (const name of names) {
     const p = `${path}.tools["${name.slice(0, 64)}"]`;
     str(name, p, { max: 128, re: TOOL_NAME_RE, what: "a tool name" });
+    // "target" (once a JSON Pointer for approval rules) is still accepted and ignored, so older manifests install.
     const e = obj(o.tools[name], p, ["class", "target"], ["class"]);
     if (e.class !== "read" && e.class !== "write" && e.class !== "risky") fail(`${p}.class`, 'must be "read", "write" or "risky"');
     const entry: RiskEntry = { class: e.class };
-    if (e.target !== undefined) {
-      const pointer = (t: unknown, tp: string) => str(t, tp, { max: 512, re: POINTER_RE, what: 'a JSON Pointer such as "/projectId"' });
-      if (Array.isArray(e.target)) {
-        const list = strList(e.target, `${p}.target`, pointer, 16);
-        if (!list.length) fail(`${p}.target`, "must not be empty");
-        entry.target = list;
-      } else {
-        entry.target = pointer(e.target, `${p}.target`);
-      }
-    }
     Object.defineProperty(tools, name, { value: entry, enumerable: true, writable: true, configurable: true });
   }
   const risk: NonNullable<Manifest["risk"]> = { tools };
@@ -517,7 +491,7 @@ const httpsUrl$ = stringOf(2048, { pattern: "^https://[^\\s@/]+(/\\S*)?$" });
 
 /**
  * The manifest's JSON Schema (draft 2020-12). It checks shape; validateManifest checks the rest too (template
- * variables, `when` for {{webhookUrl}}, unique step ids and input keys, exempt names listed in risk.tools, event
+ * variables, unique step ids and input keys, exempt names listed in risk.tools, event
  * prefixes, setup inputs named by user_app auth).
  */
 export const MANIFEST_JSON_SCHEMA = {
@@ -657,7 +631,7 @@ export const MANIFEST_JSON_SCHEMA = {
             type: "object",
             additionalProperties: false,
             required: ["label", "url"],
-            properties: { label: stringOf(120), url: stringOf(2048, { pattern: "^(https://|\\{\\{\\s*(publicUrl|redirectUri|webhookUrl)\\s*\\}\\}([/?#]|$))" }) },
+            properties: { label: stringOf(120), url: stringOf(2048, { pattern: "^(https://|\\{\\{\\s*(publicUrl|redirectUri)\\s*\\}\\}([/?#]|$))" }) },
           },
           copy: { type: "object", additionalProperties: false, required: ["label", "value"], properties: { label: stringOf(120), value: stringOf(2048) } },
           input: {
@@ -672,7 +646,6 @@ export const MANIFEST_JSON_SCHEMA = {
               placeholder: stringOf(200, noTemplate$),
             },
           },
-          when: { const: "webhookUrl" },
         },
       },
     },
@@ -707,16 +680,15 @@ export const MANIFEST_JSON_SCHEMA = {
 
 // ───────────── Setup copy ─────────────
 
-/** The manifest's setup steps for this install: `when` applied, {{variables}} filled in. */
+/** The manifest's setup steps for this install, {{variables}} filled in. */
 export function renderSetup(steps: readonly ManifestSetupStep[], ctx: SetupContext): SetupStep[] {
   // {{projectId}} validated only in a google manifest; outside a link it is shown as is, inside one it's encoded.
   const projectId = ctx.google?.projectId ?? UNKNOWN_PROJECT_ID;
-  const vars: Record<TemplateVar, string> = { publicUrl: ctx.publicUrl, redirectUri: ctx.redirectUri, webhookUrl: ctx.webhookUrl ?? "", projectId };
+  const vars: Record<TemplateVar, string> = { publicUrl: ctx.publicUrl, redirectUri: ctx.redirectUri, projectId };
   const fill = (s: string) => s.replace(TEMPLATE_RE, (_, name: string) => vars[name as TemplateVar] ?? "");
   const fillUrl = (s: string) => s.replace(TEMPLATE_RE, (_, name: string) => (name === PROJECT_ID_VAR ? encodeURIComponent(projectId) : (vars[name as TemplateVar] ?? "")));
   const out: SetupStep[] = [];
   for (const s of steps) {
-    if (s.when === "webhookUrl" && !ctx.webhookUrl) continue;
     const step: SetupStep = { id: s.id, title: fill(s.title), body: fill(s.body) };
     if (s.link) step.link = { label: fill(s.link.label), url: fillUrl(s.link.url) };
     if (s.copy) step.copy = { label: fill(s.copy.label), value: fill(s.copy.value) };
@@ -728,28 +700,13 @@ export function renderSetup(steps: readonly ManifestSetupStep[], ctx: SetupConte
 
 // ───────────── Risk map ─────────────
 
-/** The first candidate pointer whose top-level argument the live input schema declares. */
-function declaredTarget(tool: ToolDef, target: string | string[] | undefined): string | undefined {
-  if (target === undefined) return undefined;
-  const props = tool.inputSchema.properties;
-  if (!props || typeof props !== "object" || Array.isArray(props)) return undefined;
-  for (const pointer of Array.isArray(target) ? target : [target]) {
-    const top = pointer.slice(1).split("/")[0]!.replace(/~1/g, "/").replace(/~0/g, "~");
-    if (Object.hasOwn(props, top)) return pointer;
-  }
-  return undefined;
-}
-
 /** The risk map as IntegrationPreset.classify: exact names only; null (the generic rules) for anything unlisted. */
 export function classifierFor(risk: Manifest["risk"]): (tool: ToolDef) => ToolClass | null {
   const tools = risk?.tools ?? {};
   return (tool) => {
     const entry = Object.hasOwn(tools, tool.name) ? tools[tool.name] : undefined;
     if (!entry) return null;
-    const cls: ToolClass = { risky: entry.class === "risky", read: entry.class === "read", source: "preset" };
-    const path = declaredTarget(tool, entry.target);
-    if (path) cls.targetPath = path;
-    return cls;
+    return { risky: entry.class === "risky", read: entry.class === "read", source: "preset" };
   };
 }
 

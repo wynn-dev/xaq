@@ -13,8 +13,6 @@ const MAX_PENDING_WRITES = 1000;
 /** Bus channel → stream message kind (bus "agent" is the access-change signal for listener streams; the console gets "agentState"). */
 const CHANNELS = {
   event: "event",
-  delivery: "delivery",
-  approval: "approval",
   audit: "audit",
   account: "account",
   pairing: "pairing",

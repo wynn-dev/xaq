@@ -3,7 +3,6 @@ import { AlertTriangleIcon, UnplugIcon } from "lucide-react";
 import { ToneBadge } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { useBrokerEnabled } from "@/hooks/use-broker";
 import { useNow } from "@/hooks/use-now";
 import { queries } from "@/lib/queries";
 import { connectionStatusView } from "./connection-flow";
@@ -11,11 +10,10 @@ import { useReconnect } from "./connection-row";
 
 /** Overview: connections that need a reconnect soon. (A changed upstream tool needs nothing: it's only audited.) */
 export function ConnectionsNotice() {
-  const on = useBrokerEnabled();
-  const list = useQuery({ ...queries.connections(), enabled: on });
+  const list = useQuery(queries.connections());
   const now = useNow(60_000);
   const { reconnect, dialog } = useReconnect();
-  if (!on || !list.data) return null;
+  if (!list.data) return null;
   const fix = list.data
     .map((c) => ({ c, view: connectionStatusView(c, now) }))
     .filter(({ view }) => view.action === "reconnect");

@@ -1,16 +1,10 @@
-// Downscoped Google access for core code and for code extensions (docs/EXTENSIONS.md "Google accounts for code
-// extensions"). A connected account's refresh token covers everything it granted xaq (Gmail at least); a caller that
+// Downscoped Google access for core code and for code extensions. A connected account's refresh token covers everything it granted xaq (Gmail at least); a caller that
 // needs only Drive gets a token for Drive only, minted with the refresh grant's `scope` (TokenManager.scopedAccessToken).
-//
-// For core code (Gmail's attach-from-Drive):
-//   if (accountHasScopes(ctx, accountId, [DRIVE_READONLY_SCOPE])) {
-//     const { accessToken } = await googleAccessToken(ctx, accountId, [DRIVE_READONLY_SCOPE]);
-//   }
 
 import type { AppContext } from "../context.ts";
 import { accountScopes, getRow } from "./accounts.ts";
 import { googleRuntime } from "./runtime.ts";
-import { hasScopes, missingScopes } from "./scopes.ts";
+import { missingScopes } from "../../shared/google-scopes.ts";
 import type { ScopedToken } from "./tokens.ts";
 
 export type { ScopedToken };
@@ -19,12 +13,6 @@ export type { ScopedToken };
 export function grantedScopes(ctx: Pick<AppContext, "db">, accountId: string): string[] {
   const row = getRow(ctx, accountId);
   return row ? accountScopes(row) : [];
-}
-
-/** Whether the account has granted xaq every one of `scopes` (as last recorded). False for an unknown account. */
-export function accountHasScopes(ctx: Pick<AppContext, "db">, accountId: string, scopes: readonly string[]): boolean {
-  const row = getRow(ctx, accountId);
-  return !!row && hasScopes(accountScopes(row), scopes);
 }
 
 /** The ones of `scopes` the account hasn't granted (all of them for an unknown account). */

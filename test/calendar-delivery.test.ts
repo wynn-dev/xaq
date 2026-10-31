@@ -1,21 +1,19 @@
-// Calendar events on the delivery surfaces (docs/calendar.md, workstream G): webhook filters and bodies,
+// Calendar events on the delivery surfaces: event filters and bodies,
 // listener streams for calendar.read-only agents, and what a listener hands its command.
 
 import { afterEach, describe, expect, it } from "vitest";
-import type { CalendarEventSummary, MessageContent, WebhookPayload } from "../shared/types.ts";
-import { accessProblem, newestGrantedSeq, newestVisibleSeq } from "../server/agentapi/listeners.ts";
+import type { CalendarEventSummary, MessageContent, EventPayload } from "../shared/types.ts";
+import { accessProblem, newestGrantedSeq } from "../server/agentapi/listeners.ts";
 import { summarizeEvent } from "../server/calendar/summary.ts";
 import type { CalendarService } from "../server/calendar/types.ts";
 import type { StoredEvent } from "../server/events/types.ts";
-import { batchEnv, commandInput, eventEnv, skipReason } from "../server/listen/event.ts";
-import { wrappedBody } from "../server/listen/forward.ts";
+import { commandInput, eventEnv, skipReason } from "../server/listen/event.ts";
 import { parseTypes, resolveListen } from "../server/listen/options.ts";
-import { HERMES_ROUTE_PROMPT, STDIN_PROMPT } from "../server/listen/recipes.ts";
-import { matchesFilter, normalizeFilter, webhookFilterSchema } from "../server/webhooks/filter.ts";
-import { buildPayload, scopeBodyCheck } from "../server/webhooks/payload.ts";
-import { testContext } from "./helpers.ts";
+import { STDIN_PROMPT } from "../server/listen/recipes.ts";
+import { matchesFilter, normalizeFilter, eventFilterSchema } from "../server/events/filter.ts";
+import { buildPayload, scopeBodyCheck } from "../server/events/payload.ts";
+import { grantInput, testContext } from "./helpers.ts";
 import { makeEvent } from "./listen-client-fake.ts";
-import { grantInput } from "./mail-fakes.ts";
 
 let dispose: (() => Promise<void>) | undefined;
 afterEach(async () => {
@@ -57,7 +55,7 @@ const stored = (patch: Partial<StoredEvent> = {}): StoredEvent => ({
   ...patch,
 });
 
-const payload = (e: CalendarEventSummary = calEvent(), patch: Partial<WebhookPayload["data"]> = {}): WebhookPayload => ({
+const payload = (e: CalendarEventSummary = calEvent(), patch: Partial<EventPayload["data"]> = {}): EventPayload => ({
   type: "calendar.invitation_received",
   timestamp: "2026-10-16T09:00:00.000Z",
   data: { ...stored({ calendarEvent: e }), threadLabelIds: undefined, ...patch },
@@ -70,10 +68,10 @@ const description = (body: string): MessageContent => ({
   signals: { hiddenContentRemoved: false, suspiciousInstructions: [], auth: null, external: true },
 });
 
-describe("webhook filters on calendar events", () => {
+describe("event filters on calendar events", () => {
   it("accepts calendarIds (the console sends them) and keeps them normalized", () => {
-    expect(webhookFilterSchema.safeParse({ calendarIds: [ME, TEAM] }).success).toBe(true);
-    expect(webhookFilterSchema.safeParse({ calendarIds: [""] }).success).toBe(false);
+    expect(eventFilterSchema.safeParse({ calendarIds: [ME, TEAM] }).success).toBe(true);
+    expect(eventFilterSchema.safeParse({ calendarIds: [""] }).success).toBe(false);
     expect(normalizeFilter({ calendarIds: [` ${TEAM} `, TEAM, ""] })).toEqual({ calendarIds: [TEAM] });
     expect(normalizeFilter({ calendarIds: [] })).toEqual({});
   });
@@ -107,7 +105,7 @@ describe("webhook filters on calendar events", () => {
   });
 });
 
-describe("webhook bodies for calendar events", () => {
+describe("listener bodies for calendar events", () => {
   function setup(content: MessageContent | null) {
     const calls: string[] = [];
     const t = testContext({
@@ -131,41 +129,34 @@ describe("webhook bodies for calendar events", () => {
     expect([data.content, data.contentError]).toEqual([undefined, undefined]);
   });
 
-  it("re-checks calendar.read and the calendar scope before fetching the description", async () => {
+  it("re-checks the grant before fetching the description", async () => {
     const { ctx, calls } = setup(description("Agenda"));
-    const scoped = ctx.policy.createAgent({ name: "scoped", grants: [grantInput("acc_1", { capabilities: ["calendar.read"], calendarScope: [TEAM] })] }).agent.id;
-    const mailOnly = ctx.policy.createAgent({ name: "mail", grants: [grantInput("acc_1")] }).agent.id;
-    const all = ctx.policy.createAgent({ name: "all", grants: [grantInput("acc_1", { capabilities: ["calendar.read"] })] }).agent.id;
+    const reader = ctx.policy.createAgent({ name: "reader", grants: [grantInput("acc_1")] }).agent.id;
+    const none = ctx.policy.createAgent({ name: "none" }).agent.id;
     const body = async (agentId: string, ev: StoredEvent) => (await buildPayload(ctx, ev, true, { bodyCheck: scopeBodyCheck(ctx, agentId, ev) })).data;
 
-    expect(await body(scoped, stored())).toMatchObject({ contentError: "Event description unavailable: not accessible" });
-    expect(await body(mailOnly, stored())).toMatchObject({ contentError: "Event description unavailable: not accessible" });
+    expect(await body(none, stored())).toMatchObject({ contentError: "Event description unavailable: not accessible" });
     expect(calls).toEqual([]);
-    expect((await body(scoped, stored({ calendarEvent: calEvent(TEAM) }))).content?.body).toBe("Agenda");
-    expect((await body(all, stored())).content?.body).toBe("Agenda");
+    expect((await body(reader, stored())).content?.body).toBe("Agenda");
   });
 });
 
 describe("listener streams for calendar.read", () => {
-  it("lets an agent with only calendar.read stream, and counts its calendar events for cursors", () => {
+  it("lets any grant stream, and caps cursors at its accounts' newest event", () => {
     const t = testContext();
     dispose = t.dispose;
     const { ctx } = t;
     ctx.db.run("INSERT INTO accounts (id, email, refresh_token_enc, created_at) VALUES ('acc_1', ?, 'x', ?)", ME, new Date().toISOString());
-    const cal = ctx.policy.createAgent({ name: "cal", grants: [grantInput("acc_1", { capabilities: ["calendar.read"], calendarScope: [ME] })] }).agent.id;
-    const none = ctx.policy.createAgent({ name: "none", grants: [grantInput("acc_1", { capabilities: ["calendar.write"] })] }).agent.id;
+    const cal = ctx.policy.createAgent({ name: "cal", grants: [grantInput("acc_1", { level: "read" })] }).agent.id;
+    const none = ctx.policy.createAgent({ name: "none" }).agent.id;
     const hash = (id: string) => ctx.db.get<{ key_hash: string }>("SELECT key_hash FROM agents WHERE id = ?", id)!.key_hash;
     expect(accessProblem(ctx.db, cal, hash(cal))).toBeNull();
     expect(accessProblem(ctx.db, none, hash(none))).toBe("no_read_grant");
 
-    const mine = ctx.events.emit({ type: "calendar.event_created", accountId: "acc_1", calendarEvent: calEvent(ME), dedupeKey: "k1" })!;
-    const mail = ctx.events.emit({ type: "message.received", accountId: "acc_1", message: makeEvent(1).data.message, dedupeKey: "k2" })!;
+    ctx.events.emit({ type: "calendar.event_created", accountId: "acc_1", calendarEvent: calEvent(ME), dedupeKey: "k1" });
     const other = ctx.events.emit({ type: "calendar.event_created", accountId: "acc_1", calendarEvent: calEvent(TEAM), dedupeKey: "k3" })!;
     expect(newestGrantedSeq(ctx, cal)).toBe(other.seq);
-    // Neither the mail nor the out-of-scope calendar's event is visible.
-    expect(newestVisibleSeq(ctx, cal)).toBe(mine.seq);
-    expect(mail.seq).toBeGreaterThan(mine.seq);
-    expect([newestGrantedSeq(ctx, none), newestVisibleSeq(ctx, none)]).toEqual([0, 0]);
+    expect(newestGrantedSeq(ctx, none)).toBe(0);
   });
 });
 
@@ -192,12 +183,9 @@ describe("listener input for calendar events", () => {
     expect([ce.id, ce.calendarId, ce.start]).toEqual([e.id, e.calendarId, e.start]);
   });
 
-  it("wraps the description as unknown when there is no organizer, and forwards the same form to Hermes", () => {
+  it("wraps the description as unknown when there is no organizer", () => {
     const { event } = commandInput(payload(calEvent(ME, { organizer: null }), { content: description("x") }));
     expect(event.data.content!.body.startsWith('<calendar_content organizer="unknown" untrusted>')).toBe(true);
-    const wrapped = JSON.parse(wrappedBody(payload(calEvent(), { content: description("Agenda") })));
-    expect(wrapped).toMatchObject({ type: "calendar.invitation_received", notice: expect.stringMatching(/invitation/) });
-    expect(wrapped.event.data.content.body).toMatch(/^<calendar_content organizer="bob@partner\.com" untrusted>/);
   });
 
   it("puts the calendar and event ids in the environment, never the title", () => {
@@ -205,29 +193,22 @@ describe("listener input for calendar events", () => {
     expect(env).toMatchObject({ XAQ_EVENT_TYPE: "calendar.invitation_received", XAQ_CALENDAR_ID: ME, XAQ_CALENDAR_EVENT_ID: "ev1" });
     expect(env).not.toHaveProperty("XAQ_MESSAGE_ID");
     expect(JSON.stringify(env)).not.toContain("Quarterly");
-    expect(batchEnv([payload()])).toMatchObject({ XAQ_CALENDAR_EVENT_ID: "ev1", XAQ_EVENT_COUNT: "1" });
   });
 
   it("--types takes the calendar types; mail-only skips let calendar events through", () => {
     expect(parseTypes("message.received,calendar.invitation_received")).toEqual(["message.received", "calendar.invitation_received"]);
     expect(parseTypes("all")).toContain("calendar.event_cancelled");
     const base = { url: "https://x", apiKey: "k", agentId: "a", agentName: "n", consumer: "c", exec: "run" };
-    const c = resolveListen("default", base, { types: "calendar.invitation_received", notFrom: ["*@partner.com"], notLabel: ["CATEGORY_PROMOTIONS"] }).config;
+    const c = resolveListen(base, { types: "calendar.invitation_received", notFrom: ["*@partner.com"] }).config;
     expect(c.skipCategories.length).toBeGreaterThan(0);
     expect(skipReason(payload(), c)).toBeNull();
-    // The include filter applies, with calendar meanings.
-    const f = resolveListen("default", base, { types: "all", from: ["*@partner.com"], subject: "planning" }).config;
-    expect(skipReason(payload(), f)).toBeNull();
-    expect(skipReason(payload(calEvent(ME, { summary: "Standup" })), f)).toBe("filter");
-    expect(skipReason(payload(), resolveListen("default", base, {}).config)).toBe("type calendar.invitation_received");
+    expect(skipReason(payload(), resolveListen(base, {}).config)).toBe("type calendar.invitation_received");
   });
 
-  it("recipe prompts mention calendar invitations as untrusted", () => {
-    for (const p of [STDIN_PROMPT, HERMES_ROUTE_PROMPT]) {
-      expect(p).toMatch(/calendar/);
-      expect(p).toMatch(/untrusted/);
-      // They sit inside "…" in shell commands.
-      expect(p).not.toMatch(/["$`\\]/);
-    }
+  it("the recipe prompt mentions calendar invitations as untrusted", () => {
+    expect(STDIN_PROMPT).toMatch(/calendar/);
+    expect(STDIN_PROMPT).toMatch(/untrusted/);
+    // It sits inside "…" in a shell command.
+    expect(STDIN_PROMPT).not.toMatch(/["$`\\]/);
   });
 });

@@ -101,7 +101,7 @@ export function ConnectSnippets({ apiKey }: { apiKey?: string }) {
         </TabsContent>
         <TabsContent value="skill" className="space-y-2">
           <p className="text-sm text-muted-foreground">
-            The xaq skill teaches agents how to use the tools well: triage, replying in threads, handling approvals and treating email
+            The xaq skill teaches agents how to use the tools well: triage, replying in threads and treating email
             content as untrusted data. Install it next to your agent:
           </p>
           <CodeBlock code={s.skill} wrap />

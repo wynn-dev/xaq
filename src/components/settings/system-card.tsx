@@ -47,7 +47,7 @@ export function SystemCard() {
             <dd className="space-y-0.5">
               <span className="flex items-center gap-1.5">
                 <StatusDot tone={s.ingest.lastError ? "bad" : s.ingest.running ? "good" : "idle"} />
-                {s.ingest.mode === "pubsub" ? "Real-time (Pub/Sub)" : "Polling"} · {s.ingest.running ? "running" : "stopped"}
+                Polling · {s.ingest.running ? "running" : "stopped"}
               </span>
               <span className="block text-xs text-muted-foreground">
                 Last check <TimeAgo date={s.ingest.lastPullAt} fallback="never" />

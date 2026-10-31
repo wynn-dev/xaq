@@ -2,7 +2,7 @@ import type { AuditLog } from "../../audit.ts";
 import type { Db } from "../../db/index.ts";
 import type { Logger } from "../../util/log.ts";
 import { errorMessage } from "../../util/errors.ts";
-import type { EmitConnectionEvent, SqliteCredentialStore } from "./store.ts";
+import type { EmitConnectionEvent, CredentialStore } from "./store.ts";
 
 /**
  * Dated expiry warnings for credentials that stop working without a human: no refresh grant (T3: the
@@ -45,7 +45,7 @@ export interface ExpiryDeps {
   audit: AuditLog;
   log: Logger;
   emit: EmitConnectionEvent;
-  store: SqliteCredentialStore;
+  store: CredentialStore;
   now?: () => number;
   /** The console page of a connection: the one-click Reconnect link in `connection.expiring`. */
   consoleUrl?: (connectionId: string) => string;

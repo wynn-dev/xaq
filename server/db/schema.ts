@@ -236,7 +236,7 @@ export const MIGRATIONS: string[] = [
     SELECT 'setup.verifiedAt', json_quote(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     WHERE EXISTS (SELECT 1 FROM agents WHERE last_mcp_at IS NOT NULL);
   `,
-  /* 7: Google Calendar (docs/calendar.md). Additive only: mail keeps working untouched. */ `
+  /* 7: Google Calendar. Additive only: mail keeps working untouched. */ `
   -- Grants: calendar.read / calendar.write live in grants.capabilities; existing grants have neither (mail-only).
   ALTER TABLE grants ADD COLUMN calendar_scope TEXT;   -- JSON string[] of calendar ids | NULL (= every calendar)
   ALTER TABLE grants ADD COLUMN calendar_write_mode TEXT NOT NULL DEFAULT 'approval'; -- 'direct' | 'approval'
@@ -297,7 +297,7 @@ export const MIGRATIONS: string[] = [
     SELECT 'calendar.setup', '{"enabled":false}'
     WHERE EXISTS (SELECT 1 FROM accounts);
   `,
-  /* 8: MCP broker (docs/MCP-BROKER.md, M1 PR 2). New tables, events.connection_id and the approvals rebuild; nothing reads them yet. */ `
+  /* 8: MCP broker. New tables, events.connection_id and the approvals rebuild; nothing reads them yet. */ `
   -- One upstream with its credential. Gmail/Calendar stay in accounts (M1 doesn't move them).
   CREATE TABLE connections (
     id TEXT PRIMARY KEY,                       -- con_…
@@ -478,7 +478,7 @@ export const MIGRATIONS: string[] = [
   -- NULL: only the agents picked (connection_grants). Per-agent levels still live in connection_grants.
   ALTER TABLE connections ADD COLUMN all_agents INTEGER CHECK (all_agents IS NULL OR all_agents = 1);
   `,
-  /* 11: extensions (docs/EXTENSIONS.md). Additive: a new table. */ `
+  /* 11: extensions. Additive: a new table. */ `
   -- One row per installed extension: what it was installed from and exactly what was installed. Its files are in
   -- <dataDir>/extensions/<name>/<first 16 hex of the integrity digest>/, read-only (server/extensions/store.ts).
   -- source: a registry name, a GitHub or other repository URL, or an absolute directory. commit_sha: the resolved
@@ -496,10 +496,66 @@ export const MIGRATIONS: string[] = [
     installed_at TEXT NOT NULL
   );
   `,
-  /* 12: code extensions with a Google account (docs/EXTENSIONS.md "Google accounts for code extensions"). Additive. */ `
+  /* 12: code extensions with a Google account. Additive. */ `
   -- The connected Google account a connection of an extension with "code.auth": { "type": "google" } works as, picked
   -- in its setup. Its tokens stay the account's (accounts.refresh_token_enc): the connection only gets downscoped
   -- access tokens. NULL for every other connection, and once the account is removed from xaq (it then needs setup).
   ALTER TABLE connections ADD COLUMN google_account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL;
+  `,
+  /* 13: no webhooks, Gmail Pub/Sub or Calendar push: events reach agents through listeners and wait_for_events. */ `
+  DROP TABLE deliveries;
+  DROP TABLE webhooks;
+  DELETE FROM events WHERE seq < 0;
+  ALTER TABLE accounts DROP COLUMN watch_expires_at;
+  DROP INDEX calendar_sync_channel;
+  ALTER TABLE calendar_sync DROP COLUMN channel_id;
+  ALTER TABLE calendar_sync DROP COLUMN channel_resource_id;
+  ALTER TABLE calendar_sync DROP COLUMN channel_token_hash;
+  ALTER TABLE calendar_sync DROP COLUMN channel_expires_at;
+  ALTER TABLE calendar_sync DROP COLUMN channel_verified_at;
+  DELETE FROM settings WHERE key = 'pubsub';
+  UPDATE settings SET value = json_remove(value, '$.ingestMode', '$.webhookAllowlist') WHERE key = 'settings';
+  `,
+  /* 14: settings of removed features: attachments by path and saved to disk, the broker switch, per-agent search mode. */ `
+  UPDATE settings SET value = json_remove(value, '$.attachmentDirs', '$.attachmentSaveDir', '$.brokerUpstreams') WHERE key = 'settings';
+  DELETE FROM settings WHERE key LIKE 'broker.search:%' OR key IN ('broker.defaultOnApplied', 'broker.searchDirectPinned', 'brokerUpstreams');
+  `,
+  /* 15: tools an older version held for a change: gone; the next listing adds them again, classified afresh. */ `
+  DELETE FROM upstream_tools WHERE state = 'held';
+  `,
+  /* 16: one permission model (full or read, plus the recipient allowlist); no approvals. */ `
+  -- Grants: full only where the agent already sent mail or changed calendars without a person (send with send_mode
+  -- direct, calendar.write with calendar_write_mode direct); everything else (drafts only, approvals, read, organize)
+  -- becomes read. The recipient allowlist (allow_to) stays; label and calendar scopes, send modes, reply-only and
+  -- send caps go.
+  ALTER TABLE grants ADD COLUMN level TEXT NOT NULL DEFAULT 'read' CHECK (level IN ('full', 'read'));
+  UPDATE grants SET level = 'full'
+    WHERE (send_mode = 'direct' AND EXISTS (SELECT 1 FROM json_each(grants.capabilities) WHERE value = 'send'))
+       OR (calendar_write_mode = 'direct' AND EXISTS (SELECT 1 FROM json_each(grants.capabilities) WHERE value = 'calendar.write'));
+  ALTER TABLE grants DROP COLUMN capabilities;
+  ALTER TABLE grants DROP COLUMN label_scope;
+  ALTER TABLE grants DROP COLUMN send_mode;
+  ALTER TABLE grants DROP COLUMN reply_only;
+  ALTER TABLE grants DROP COLUMN max_sends_per_hour;
+  ALTER TABLE grants DROP COLUMN max_sends_per_day;
+  ALTER TABLE grants DROP COLUMN calendar_scope;
+  ALTER TABLE grants DROP COLUMN calendar_write_mode;
+
+  -- Connection levels: full stays full; ask (risky calls waited for a person) and read become read. A column's own
+  -- CHECK goes with it, so swap the columns.
+  ALTER TABLE connection_grants RENAME COLUMN level TO level_old;
+  ALTER TABLE connection_grants ADD COLUMN level TEXT NOT NULL DEFAULT 'full' CHECK (level IN ('full', 'read'));
+  UPDATE connection_grants SET level = CASE level_old WHEN 'full' THEN 'full' ELSE 'read' END;
+  ALTER TABLE connection_grants DROP COLUMN level_old;
+  ALTER TABLE connections RENAME COLUMN level_default TO level_default_old;
+  ALTER TABLE connections ADD COLUMN level_default TEXT NOT NULL DEFAULT 'full' CHECK (level_default IN ('full', 'read'));
+  UPDATE connections SET level_default = CASE level_default_old WHEN 'full' THEN 'full' ELSE 'read' END;
+  ALTER TABLE connections DROP COLUMN level_default_old;
+
+  DROP TABLE approvals;
+  DROP TABLE approval_rules;
+  DELETE FROM events WHERE type = 'approval.requested';
+  DELETE FROM settings WHERE key = 'broker.policy';
+  UPDATE settings SET value = json_remove(value, '$.approvalTtlHours') WHERE key = 'settings' AND json_valid(value);
   `,
 ];

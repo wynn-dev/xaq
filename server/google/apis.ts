@@ -1,6 +1,5 @@
-// Google APIs a code extension's account access needs on in the user's own Google Cloud project (docs/EXTENSIONS.md
-// "Google accounts for code extensions"): the console deep links, the gcloud command, and a cheap probe per API that
-// recognises Google's "API not enabled" answer (SERVICE_DISABLED / accessNotConfigured), as pubsub.ts does.
+// Google APIs a code extension's account access needs on in the user's own Google Cloud project: the console deep
+// links, the gcloud command, and a cheap probe per API that recognises Google's "API not enabled" answer (SERVICE_DISABLED / accessNotConfigured).
 //
 // A probe never uses the account's own token (it can read Gmail): only a downscoped one, for the extension's granted
 // scopes when there are any, else for the identity scopes alone. Before consent, an identity-only token can't prove
@@ -13,7 +12,7 @@ import { apiLibraryUrl, enableApisCommand, PROJECT_ID_RE } from "./api-links.ts"
 import { errorFromResponse, hasReason, isAbortError } from "./http.ts";
 import { accountScopes, getRow } from "./accounts.ts";
 import { googleAccessToken } from "./scoped.ts";
-import { GOOGLE_SERVICE_RE, IDENTITY_TOKEN_SCOPES } from "./scopes.ts";
+import { GOOGLE_SERVICE_RE, IDENTITY_TOKEN_SCOPES } from "../../shared/google-scopes.ts";
 import { AccountNeedsReauthError, GoogleApiError, ScopesNotGrantedError } from "./types.ts";
 
 export { GOOGLE_SERVICE_RE };

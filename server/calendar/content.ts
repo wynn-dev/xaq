@@ -1,4 +1,4 @@
-// Event text as untrusted content (workstream C, docs/calendar.md "Events: no body"). An invitation is an
+// Event text as untrusted content (workstream C). An invitation is an
 // injection vector: anyone can put an event on the account's calendar, with whatever title, location, names
 // and description they like. The description (HTML from the Calendar UI, plain text from the API) gets the
 // same cleaning as a mail body (server/mail/content.ts) and is wrapped in <calendar_content … untrusted> when
@@ -130,7 +130,7 @@ export function eventSummarySignals(e: CalendarEventSummary, accountEmail: strin
   };
 }
 
-/** Fetches the event and returns its cleaned description (webhook includeBody; the background lane). */
+/** Fetches the event and returns its cleaned description (listener bodies; the background lane). */
 export async function eventContent(ctx: AppContext, accountId: string, calendarId: string, eventId: string): Promise<MessageContent | null> {
   const account = ctx.accounts.require(accountId);
   const raw = await ctx.google.calendar(accountId).getEvent(calendarId, eventId);

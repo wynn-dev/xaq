@@ -1,11 +1,9 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 export const SKILL_URL_PLACEHOLDER = "{{XAQ_URL}}";
 export const SKILL_NAME = "xaq";
-/** The skill's name before the rename: `skill install` replaces it rather than leaving two. */
-export const LEGACY_SKILL_NAME = "agentinbox";
 
 /** Agent skill directories `skill install --target` knows by name. */
 export const SKILL_TARGETS = {
@@ -45,41 +43,13 @@ export function skillPath(target: string): string {
   return join(skillsDir(target), SKILL_NAME, "SKILL.md");
 }
 
-/**
- * Removes the pre-rename `agentinbox/SKILL.md` next to the new skill, so the agent doesn't see two. Only a
- * SKILL.md that is ours (`name: agentinbox`) goes, and the directory only if nothing else is in it.
- * Returns the removed file, or null.
- */
-export function removeLegacySkill(target: string): string | null {
-  const dir = join(skillsDir(target), LEGACY_SKILL_NAME);
-  const file = join(dir, "SKILL.md");
-  let text: string;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch {
-    return null;
-  }
-  if (!/^---\s*\n(?:.*\n)*?name:\s*agentinbox\s*\n/.test(text)) return null;
-  rmSync(file);
-  try {
-    if (!readdirSync(dir).length) rmdirSync(dir);
-  } catch {
-    // Not ours to clean up.
-  }
-  return file;
-}
-
 /** The line in our SKILL.md that marks it as written by xaq-cli. */
 export const SKILL_MARKER = "<!-- xaq-cli skill: written by `xaq skill install`, which may replace it. -->";
 
-/**
- * Whether a SKILL.md is ours: `name: xaq` in its frontmatter, plus our marker line, or (written by
- * nightly.71/72, before the marker) the description's "(formerly agentinbox)".
- */
+/** Whether a SKILL.md is ours: `name: xaq` in its frontmatter, plus our marker line. */
 export function isOurSkill(text: string): boolean {
   const front = /^---\s*\n([\s\S]*?)\n---/.exec(text)?.[1] ?? "";
-  if (!/^name:\s*xaq\s*$/m.test(front)) return false;
-  return text.includes(SKILL_MARKER) || /^description:.*\(formerly agentinbox\)/m.test(front);
+  return /^name:\s*xaq\s*$/m.test(front) && text.includes(SKILL_MARKER);
 }
 
 /**

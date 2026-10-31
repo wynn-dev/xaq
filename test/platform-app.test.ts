@@ -9,8 +9,9 @@ import { runMaintenance } from "../server/maintenance.ts";
 import { bannerLines } from "../server/server.ts";
 import { renderSkill, SKILL_URL_PLACEHOLDER, skillPath } from "../server/skill/index.ts";
 import type { EventsService } from "../server/events/types.ts";
-import type { WebhooksService } from "../server/webhooks/types.ts";
-import { CSRF, fakeGoogle, fakeIngest, harness, type Harness, json } from "./platform-helpers.ts";
+import type { MailService } from "../server/mail/types.ts";
+import { CSRF, fakeIngest, harness, type Harness, json } from "./helpers.ts";
+import { fakeGoogle } from "./fake-google.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {
@@ -79,7 +80,6 @@ describe("setup state", () => {
       googleClientConfigured: true,
       gcpProjectId: "proj-1",
       googleAppType: "external",
-      pubsub: { mode: "poll", topic: null, subscription: null, lastError: null, lastMessageAt: null, principalAccountId: null, principalEmail: null, pendingPrincipalAccountId: null, pendingPrincipalEmail: null },
       accountsConnected: 0,
       agentsCreated: 0,
       verified: false,
@@ -154,7 +154,6 @@ describe("setup state", () => {
     const cookie = await h.claim();
     const state = await json(await h.request("/api/setup/state", { cookie }));
     expect(state.googleClientConfigured).toBe(false);
-    expect(state.pubsub.mode).toBe("poll");
   });
 });
 
@@ -209,10 +208,7 @@ describe("system API", () => {
     expect(compareVersions("0.2.0-nightly.2", "0.2.0-nightly.2")).toBe(0);
     expect(compareVersions("0.2.0-alpha", "0.2.0-alpha.1")).toBe(-1);
     expect(compareVersions("0.2.0-1", "0.2.0-alpha")).toBe(-1);
-    expect(upgradeCommand({ ...base, trustProxy: true }, {})).toBe("TRUST_PROXY=1 npx -y xaq-cli");
-    expect(upgradeCommand({ ...base, trustProxy: true }, { TRUST_PROXY_FROM: "10.0.0.0/8, fd00::/8", TRUST_PROXY_HOPS: "2" })).toBe(
-      "TRUST_PROXY=1 TRUST_PROXY_HOPS=2 TRUST_PROXY_FROM='10.0.0.0/8, fd00::/8' npx -y xaq-cli",
-    );
+    expect(upgradeCommand({ ...base, trustProxy: true })).toBe("TRUST_PROXY=1 npx -y xaq-cli");
   });
 });
 
@@ -302,12 +298,12 @@ describe("maintenance", () => {
     const calls: string[] = [];
     h = harness({
       events: () => ({ prune: (before: string) => (calls.push(`events<${before.slice(0, 10)}`), 3) }) as unknown as EventsService,
-      webhooks: () =>
+      mail: () =>
         ({
           prune: () => {
             throw new Error("boom");
           },
-        }) as unknown as WebhooksService,
+        }) as unknown as MailService,
     });
     h.ctx.settings.update({ retentionDays: 10 });
     h.ctx.db.run(
@@ -316,7 +312,7 @@ describe("maintenance", () => {
     );
     h.ctx.audit.record({ actorType: "system", action: "new", outcome: "ok" });
     const result = runMaintenance(h.ctx);
-    expect(result).toEqual({ events: 3, deliveries: 0, audit: 1, sessions: 0 });
+    expect(result).toEqual({ events: 3, audit: 1, sessions: 0 });
     expect(calls).toEqual([`events<${new Date(Date.now() - 10 * 86_400_000).toISOString().slice(0, 10)}`]);
     expect(h.ctx.audit.list().items.map((e) => e.action)).toEqual(["new"]);
   });

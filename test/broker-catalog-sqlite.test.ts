@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Db } from "../server/db/index.ts";
 import type { AuditInput } from "../server/audit.ts";
-import { brokerConnections, Catalog, CatalogRegistry, connectionGrants, pinHash, SqliteCatalogStore } from "../server/broker/catalog/index.ts";
+import { brokerConnections, Catalog, CatalogRegistry, CatalogStore, connectionGrants, pinHash } from "../server/broker/catalog/index.ts";
 import type { ToolDef } from "../server/broker/types.ts";
 
 const T = "2026-10-16T12:00:00.000Z";
 const tool = (name: string, extra: Partial<ToolDef> = {}): ToolDef => ({ name, description: `Does ${name}`, inputSchema: { type: "object" }, ...extra });
 
-describe("SqliteCatalogStore on migration 8", () => {
+describe("CatalogStore on migration 8", () => {
   let db: Db;
   beforeEach(() => {
     db = new Db(":memory:");
@@ -29,7 +29,7 @@ describe("SqliteCatalogStore on migration 8", () => {
 
   const make = () => {
     const audits: AuditInput[] = [];
-    const store = new SqliteCatalogStore(db);
+    const store = new CatalogStore(db);
     const catalog = new Catalog({
       store,
       connection: (id) => {
@@ -86,71 +86,6 @@ describe("SqliteCatalogStore on migration 8", () => {
     two.catalog.forget("con_a");
     expect(two.store.state("con_a")!.refreshedAt).toBeNull();
     expect(two.store.tools("con_a")).toEqual([]);
-  });
-
-  describe("upgrade from a version with the tool-change hold", () => {
-    const before = tool("get_page", { annotations: { readOnlyHint: true } });
-    const after = tool("get_page", { annotations: { readOnlyHint: true }, description: "Gets a page by id" });
-    const added = tool("delete_page");
-    const stored = (d: ToolDef) => {
-      const { name: _n, ...rest } = d;
-      return JSON.stringify(rest);
-    };
-    /** Rows exactly as the older version wrote them: one held as changed, one held as new, one active. */
-    const seedHeld = () => {
-      const ins = (name: string, def: string | null, hash: string | null, read: number, state: string, reason: string | null, cand: string | null, candHash: string | null) =>
-        db.run(
-          `INSERT INTO upstream_tools (connection_id, name, exposed_name, definition, pin_hash, risky, read, class_source, state, held_reason,
-             candidate_definition, candidate_hash, first_seen_at, updated_at) VALUES ('con_a', ?, ?, ?, ?, 0, ?, 'annotation', ?, ?, ?, ?, ?, ?)`,
-          name,
-          `alpha__${name}`,
-          def,
-          hash,
-          read,
-          state,
-          reason,
-          cand,
-          candHash,
-          T,
-          T,
-        );
-      ins("get_page", stored(before), pinHash(before), 1, "held", "changed", stored(after), pinHash(after));
-      ins("delete_page", null, null, 0, "held", "new", stored(added), pinHash(added));
-      ins("other", stored(tool("other")), pinHash(tool("other")), 0, "active", null, null, null);
-      db.run("UPDATE connections SET tools_cached_at = ? WHERE id = 'con_a'", T);
-      db.run("UPDATE connection_grants SET level = 'full' WHERE agent_id = 'agt_1' AND connection_id = 'con_a'");
-    };
-
-    it("a tool held before the upgrade works after it: releaseLegacyHolds uses the waiting definition and audits it", () => {
-      seedHeld();
-      const { catalog, registry, audits } = make();
-      expect(catalog.releaseLegacyHolds()).toBe(2);
-      expect(db.get<{ n: number }>("SELECT count(*) AS n FROM upstream_tools WHERE state = 'held' OR held_reason IS NOT NULL OR candidate_hash IS NOT NULL")!.n).toBe(0);
-      expect(registry.forAgent("agt_1").map((t) => t.exposedName)).toEqual(["alpha__delete_page", "alpha__get_page", "alpha__other"]);
-      const got = registry.resolve("agt_1", "alpha__get_page")!;
-      expect(got.def.description).toBe("Gets a page by id");
-      expect(got.pinHash).toBe(pinHash(after));
-      // Re-classified from what it is now: delete_page is risky.
-      expect(registry.resolve("agt_1", "alpha__delete_page")!.cls).toMatchObject({ risky: true, read: false });
-      expect(audits.filter((a) => a.action === "connection.tool_changed").map((a) => a.detail)).toEqual([
-        { connectionId: "con_a", tool: "delete_page", previousHash: null, hash: pinHash(added), fields: ["name", "description", "inputSchema"], releasedHold: true },
-        { connectionId: "con_a", tool: "get_page", previousHash: pinHash(before), hash: pinHash(after), fields: ["description"], releasedHold: true },
-      ]);
-      // Idempotent.
-      expect(catalog.releaseLegacyHolds()).toBe(0);
-    });
-
-    it("a held row the release missed is never hidden, and the next listing replaces it", () => {
-      seedHeld();
-      const { catalog, registry } = make();
-      // Served with its stored definition meanwhile (the held flag is ignored); a held-as-new row has none yet.
-      expect(registry.forAgent("agt_1").map((t) => t.exposedName)).toEqual(["alpha__get_page", "alpha__other"]);
-      const out = catalog.applyListing("con_a", { tools: [after, added, tool("other")] });
-      expect(out).toMatchObject({ ok: true, first: false, changed: ["delete_page", "get_page"], added: [] });
-      expect(db.get<{ n: number }>("SELECT count(*) AS n FROM upstream_tools WHERE state = 'held'")!.n).toBe(0);
-      expect(registry.forAgent("agt_1").map((t) => t.exposedName)).toEqual(["alpha__delete_page", "alpha__get_page", "alpha__other"]);
-      expect(registry.resolve("agt_1", "alpha__get_page")!.def.description).toBe("Gets a page by id");
-    });
   });
 
   it("renames on a slug edit and refuses a sanitised duplicate instead of breaking the UNIQUE index", () => {

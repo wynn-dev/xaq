@@ -10,7 +10,7 @@ import { type Config, type ConfigInput, loadConfig, resolveDataDir } from "./con
 import type { AppContext } from "./context.ts";
 import { acquireInstanceLock, assertMasterKeyUsable, cliCommand, type InstanceLock, serviceInstallCommand } from "./instance.ts";
 import { startMaintenance } from "./maintenance.ts";
-import { recommendedNodeWarning } from "./service-node.ts";
+import { belowRecommendedNode, RECOMMENDED_NODE } from "./extensions/host/spawn.ts";
 import { consoleUrls, isPrivateIPv4, isWildcardHost, loopbackUrl, networkAddresses } from "./urls.ts";
 import { errorMessage } from "./util/errors.ts";
 import { createAppContext, type ServiceOverrides, startServices, stopServices } from "./wire.ts";
@@ -150,7 +150,7 @@ export interface RunOptions extends ConfigInput {
 
 /** `xaq start`: runs in the foreground until SIGINT/SIGTERM. */
 export async function runForeground(opts: RunOptions): Promise<void> {
-  const dataDir = resolveDataDir(opts.dataDir, { quiet: true });
+  const dataDir = resolveDataDir(opts.dataDir);
   const existed = existsSync(dataDir);
   const config = loadConfig(opts, opts.version);
   let running: RunningServer;
@@ -195,11 +195,14 @@ export async function runForeground(opts: RunOptions): Promise<void> {
 }
 
 /**
- * What the daemon logs once at start when its Node is below RECOMMENDED_NODE (see recommendedNodeWarning), or null.
+ * What the daemon logs once at start when its Node is below RECOMMENDED_NODE (Node's October 2026 security release), or null.
  * Under the service the fix is to run `service install` again (it records the Node); otherwise to restart xaq.
  */
 export function startupNodeWarning(config: Pick<Config, "dataDir" | "host" | "port" | "service">, version = process.versions.node): string | null {
-  return recommendedNodeWarning(version, config.service ? serviceInstallCommand(config) : undefined);
+  if (!belowRecommendedNode(version)) return null;
+  const v = Object.values(RECOMMENDED_NODE);
+  const then = config.service ? `Update Node, then run \`${serviceInstallCommand(config)}\` again` : "Update Node, then restart xaq";
+  return `Node.js ${version} runs xaq; the October 2026 security release (${v.slice(0, -1).join(", ")} or ${v.at(-1)}) fixes a sandbox bypass and high-severity issues in Node itself. ${then}.`;
 }
 
 function printBanner(ctx: AppContext, info: { mcp: boolean }): void {

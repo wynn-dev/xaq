@@ -43,7 +43,7 @@ describe("built attachment parser", () => {
     s = await startStack();
     const email = mailbox("built-attach");
     const [account] = (await s.bootstrap({ accounts: [{ email }] })) as [Account];
-    const { apiKey } = await s.createAgent("built-reader", [grant(account.id, { capabilities: ["read"] })]);
+    const { apiKey } = await s.createAgent("built-reader", [grant(account.id, { level: "read" })]);
     const msg = s.fake.deliver(email, {
       from: "files@vendor.test",
       subject: "Built",
@@ -62,11 +62,7 @@ describe("built attachment parser", () => {
       env: {
         PATH: process.env.PATH ?? "",
         HOME: home,
-        XAQ_GOOGLE_OAUTH_BASE: g.oauthBase,
-        XAQ_GOOGLE_AUTH_BASE: g.authBase,
-        XAQ_GOOGLE_GMAIL_BASE: g.gmailBase,
-        XAQ_GOOGLE_PUBSUB_BASE: g.pubsubBase,
-        XAQ_GOOGLE_CALENDAR_BASE: g.calendarBase,
+        XAQ_GOOGLE_BASE: g.oauthBase,
       },
       stdio: ["ignore", "pipe", "pipe"],
     });

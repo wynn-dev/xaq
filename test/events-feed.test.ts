@@ -3,7 +3,6 @@ import type { MailEvent, MessageSummary } from "../shared/types.ts";
 import type { AppContext } from "../server/context.ts";
 import type { NewEvent } from "../server/events/types.ts";
 import type { PolicyService } from "../server/policy/types.ts";
-import type { WebhooksService } from "../server/webhooks/types.ts";
 import { testContext } from "./helpers.ts";
 
 let dispose: (() => Promise<void>) | undefined;
@@ -74,22 +73,6 @@ describe("events.emit", () => {
     const ev = emit(ctx, { type: "label.added", accountId: "acc_1", message: message("m2", ["Label_ok"]), labelIds: ["Label_ok"], dedupeKey: "k" });
     expect(ev.labelIds).toEqual(["Label_ok"]);
     expect(ctx.events.get(ev.id)?.threadLabelIds).toEqual(["Label_ok"]);
-  });
-
-  it("writes nothing when enqueueing deliveries fails (outbox atomicity)", () => {
-    const ctx = setup({
-      webhooks: () =>
-        ({
-          enqueue: () => {
-            throw new Error("boom");
-          },
-        }) as unknown as WebhooksService,
-    });
-    const seen: MailEvent[] = [];
-    ctx.bus.on("event", (e) => seen.push(e));
-    expect(() => ctx.events.emit(received("m1"))).toThrow("boom");
-    expect(ctx.db.get<{ n: number }>("SELECT COUNT(*) AS n FROM events")!.n).toBe(0);
-    expect(seen).toHaveLength(0);
   });
 
   it("falls back to detail.email when the account is gone", () => {
@@ -268,16 +251,13 @@ describe("emit inside a transaction", () => {
 });
 
 describe("events.prune", () => {
-  it("deletes old events but keeps ones still referenced by a delivery", () => {
+  it("deletes old events", () => {
     const ctx = setup();
     const old = emit(ctx, received("old"));
-    const pending = emit(ctx, received("pending"));
-    emit(ctx, received("new"));
-    ctx.db.run("UPDATE events SET created_at = '2000-01-01T00:00:00.000Z' WHERE seq IN (?, ?)", old.seq, pending.seq);
-    ctx.db.run("INSERT INTO webhooks (id, agent_id, name, url, secret_enc, secret_prefix, event_types, created_at) VALUES ('whk_1', 'agt_all', 'w', 'http://x', 'x', 'x', '[]', ?)", new Date().toISOString());
-    ctx.db.run("INSERT INTO deliveries (id, webhook_id, event_seq, status, created_at, updated_at) VALUES ('dlv_1', 'whk_1', ?, 'succeeded', 'x', 'x')", pending.seq);
+    const kept = emit(ctx, received("new"));
+    ctx.db.run("UPDATE events SET created_at = '2000-01-01T00:00:00.000Z' WHERE seq = ?", old.seq);
     expect(ctx.events.prune("2001-01-01T00:00:00.000Z")).toBe(1);
     expect(ctx.events.get(old.id)).toBeNull();
-    expect(ctx.events.get(pending.id)).not.toBeNull();
+    expect(ctx.events.get(kept.id)).not.toBeNull();
   });
 });

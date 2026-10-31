@@ -1,10 +1,9 @@
-import { isCalendarCapability, type SetupWarning } from "../../shared/types.ts";
+import type { SetupWarning } from "../../shared/types.ts";
 import { setupState } from "../calendar/setup.ts";
 import type { AppContext } from "../context.ts";
-import { json } from "../db/index.ts";
 import { type AccountRow, accountScopes, allRows } from "./accounts.ts";
 import { clientWarnings, redirectWarning } from "./client.ts";
-import { CALENDAR_SCOPES, describeScopes, missingScopes } from "./scopes.ts";
+import { CALENDAR_SCOPES, describeScopes, missingScopes } from "../../shared/google-scopes.ts";
 
 type Ctx = Pick<AppContext, "db" | "settings" | "config" | "crypto">;
 
@@ -113,27 +112,14 @@ export function setupWarnings(ctx: Ctx): SetupWarning[] {
     }
   }
 
-  if (ctx.settings.get().ingestMode === "pubsub") {
-    const error = ctx.settings.getState("pubsub")?.lastError;
-    if (error) {
-      out.push({
-        code: "pubsub_failing",
-        severity: "error",
-        message: "Pub/Sub notifications are failing, so new mail may arrive late or not at all.",
-        hint: `${error} Or switch Settings → Ingest mode to Polling, which needs no Pub/Sub.`,
-      });
-    }
-  }
-
   out.push(...calendarWarnings(ctx, rows));
 
   return out.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
 }
 
-/** Accounts some grant gives a calendar capability (their calendar problems are errors, not warnings). */
+/** Accounts some agent has a grant on (their calendar problems are errors, not warnings). */
 function calendarInUse(ctx: Ctx): Set<string> {
-  const grants = ctx.db.all<{ account_id: string; capabilities: string }>("SELECT account_id, capabilities FROM grants");
-  return new Set(grants.filter((g) => json.parse<string[]>(g.capabilities, []).some(isCalendarCapability)).map((g) => g.account_id));
+  return new Set(ctx.db.all<{ account_id: string }>("SELECT DISTINCT account_id FROM grants").map((g) => g.account_id));
 }
 
 /** calendar_* codes (see SetupWarning). Mail-only installs that haven't added Calendar see only the info notice. */

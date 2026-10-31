@@ -1,14 +1,12 @@
-// In-process fakes for the broker policy tests: a DB-backed ToolRegistry over upstream_tools + connection_grants
-// (the catalog's job in production), a scripted ToolSource and an in-memory CredentialStore.
+// In-process fakes for the broker policy tests: a DB-backed registry over upstream_tools + connection_grants
+// (the catalog's job in production), a scripted ToolSource and in-memory credentials.
 
 import type {
   AccessLevel,
-  CredentialStore,
   RegisteredTool,
   StoredTokens,
   ToolCallContext,
   ToolDef,
-  ToolRegistry,
   ToolResult,
   ToolSource,
 } from "../server/broker/types.ts";
@@ -21,7 +19,7 @@ export function addConnection(ctx: AppContext, slug: string, name = slug): strin
   const id = newId("con");
   const t = now();
   ctx.db.run(
-    "INSERT INTO connections (id, kind, slug, name, url, auth_type, level_default, status, created_at, updated_at) VALUES (?, 'remote_http', ?, ?, ?, 'header', 'ask', 'active', ?, ?)",
+    "INSERT INTO connections (id, kind, slug, name, url, auth_type, level_default, status, created_at, updated_at) VALUES (?, 'remote_http', ?, ?, ?, 'header', 'full', 'active', ?, ?)",
     id,
     slug,
     name,
@@ -76,10 +74,9 @@ export function grant(ctx: AppContext, agentId: string, connectionId: string, le
 }
 
 /** Like the catalog's registry: granted connections, read level lists read tools only. */
-export class DbRegistry implements ToolRegistry {
+export class DbRegistry {
   /** Tests flip this to see that the policy denies non-read tools at the read level on its own. */
   filterRead = true;
-  targetPaths = new Map<string, string>();
 
   constructor(private readonly ctx: AppContext) {}
 
@@ -105,13 +102,12 @@ export class DbRegistry implements ToolRegistry {
       .filter((r) => !this.filterRead || r.level !== "read" || r.read === 1)
       .map((r) => {
         const d = JSON.parse(r.definition) as Omit<ToolDef, "name">;
-        const targetPath = this.targetPaths.get(r.exposed_name);
         return {
           exposedName: r.exposed_name,
           connectionId: r.connection_id,
           slug: r.slug,
           def: { name: r.name, ...d },
-          cls: { risky: r.risky === 1, read: r.read === 1, source: "preset", ...(targetPath ? { targetPath } : {}) },
+          cls: { risky: r.risky === 1, read: r.read === 1, source: "preset" },
           level: r.level,
           pinHash: r.pin_hash,
         };
@@ -167,7 +163,7 @@ export class FakeSources {
   }
 }
 
-export class MemoryCredentials implements CredentialStore {
+export class MemoryCredentials {
   headers = new Map<string, { name: string; value: string }>();
   tokenMap = new Map<string, StoredTokens>();
   cleared: string[] = [];

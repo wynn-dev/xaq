@@ -12,7 +12,6 @@ import { StepAgent } from "@/components/setup/step-agent";
 import { StepClient } from "@/components/setup/step-client";
 import { StepConsent } from "@/components/setup/step-consent";
 import { StepProject } from "@/components/setup/step-project";
-import { StepPubsub } from "@/components/setup/step-pubsub";
 import { type StepProps, StepUrl } from "@/components/setup/step-url";
 import { StepVerify } from "@/components/setup/step-verify";
 import { WizardNav } from "@/components/setup/wizard-shell";
@@ -95,7 +94,6 @@ const STEPS: Record<StepId, (p: StepProps) => React.ReactNode> = {
   consent: StepConsent,
   client: StepClient,
   accounts: StepAccounts,
-  pubsub: StepPubsub,
   agent: StepAgent,
   verify: StepVerify,
 };

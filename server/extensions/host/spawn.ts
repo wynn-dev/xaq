@@ -1,4 +1,4 @@
-// How a code extension's child is started (docs/EXTENSIONS.md "The code-extension host"): the exact argv, the
+// How a code extension's child is started: the exact argv, the
 // environment built from nothing, and the per-connection state directory.
 //
 // The flags were checked on Node 22.13.0, 22.23.3, 24.22.0 and 26.12.0:
@@ -177,7 +177,7 @@ export const NODE_HAS_ALLOW_NET = process.allowedNodeEnvironmentFlags.has("--all
 
 /**
  * The child's whole environment, built from nothing: the four XAQ_EXT_* values, plus TZ and LANG when xaq has them.
- * No PATH, HOME, NODE_OPTIONS, XAQ_*, AGENTINBOX_* or anything else from xaq's environment.
+ * No PATH, HOME, NODE_OPTIONS, XAQ_* or anything else from xaq's environment.
  */
 export function childEnv(p: { name: string; connectionId: string; stateDir: string }, from: { TZ?: string; LANG?: string } = process.env): Record<string, string> {
   const env: Record<string, string> = {

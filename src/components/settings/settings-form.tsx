@@ -1,69 +1,48 @@
-import { useState } from "react";
-import type { IngestMode, Settings, SystemInfo } from "@shared/types";
+import type { Settings, SystemInfo } from "@shared/types";
+import { publicUrlProblem } from "@shared/public-url";
 import { useForm } from "@tanstack/react-form";
 import { useQueryClient } from "@tanstack/react-query";
-import { InfoIcon } from "lucide-react";
 import { toast } from "sonner";
-import { ChipsInput } from "@/components/chips-input";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput, InputGroupText } from "@/components/ui/input-group";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { CalendarSetupSummary } from "@/components/google/calendar-setup";
 import { RedirectNotice } from "@/components/google/redirect-notice";
 import { UrlVerdict } from "@/components/setup/step-url";
 import { api, toastError } from "@/lib/api";
-import { addressLabel, analyzeUrl, isLoopbackOrigin, publicUrlError } from "@/lib/public-url";
+import { addressLabel, analyzeUrl, isLoopbackOrigin } from "@/lib/public-url";
 import { keys } from "@/lib/queries";
 
 interface FormValues {
   publicUrl: string;
-  ingestMode: IngestMode;
   pollIntervalSeconds: string;
   calendarPollSeconds: string;
   maxBodyChars: string;
   retentionDays: string;
-  approvalTtlHours: string;
-  webhookAllowlist: string[];
-  attachmentDirs: string[];
   pairingEnabled: boolean;
-  brokerUpstreams: boolean;
-  attachmentSaveDir: string;
 }
 
 const toForm = (s: Settings): FormValues => ({
   publicUrl: s.publicUrl,
-  ingestMode: s.ingestMode,
   pollIntervalSeconds: String(s.pollIntervalSeconds),
   calendarPollSeconds: String(s.calendarPollSeconds),
   maxBodyChars: String(s.maxBodyChars),
   retentionDays: String(s.retentionDays),
-  approvalTtlHours: String(s.approvalTtlHours),
-  webhookAllowlist: s.webhookAllowlist,
-  attachmentDirs: s.attachmentDirs ?? [],
   pairingEnabled: s.pairingEnabled,
-  brokerUpstreams: s.brokerUpstreams,
-  attachmentSaveDir: s.attachmentSaveDir,
 });
 
 // The patch below only carries changed fields.
 const fromForm = (v: FormValues): Settings => ({
   publicUrl: v.publicUrl.trim().replace(/\/+$/, ""),
-  ingestMode: v.ingestMode,
   pollIntervalSeconds: Number(v.pollIntervalSeconds),
   calendarPollSeconds: Number(v.calendarPollSeconds),
   maxBodyChars: Number(v.maxBodyChars),
   retentionDays: Number(v.retentionDays),
-  approvalTtlHours: Number(v.approvalTtlHours),
-  webhookAllowlist: v.webhookAllowlist,
-  attachmentDirs: v.attachmentDirs,
   pairingEnabled: v.pairingEnabled,
-  brokerUpstreams: v.brokerUpstreams,
-  attachmentSaveDir: v.attachmentSaveDir.trim(),
 });
 
 const intError = (label: string, min: number, max: number) => (v: string) => {
@@ -73,9 +52,6 @@ const intError = (label: string, min: number, max: number) => (v: string) => {
   return undefined;
 };
 
-const allowlistError = (v: string) => (v.length > 253 ? "too long" : /[/]/.test(v) && !/^[\d.:a-f]+\/\d{1,3}$/i.test(v) ? "use a hostname, IP or CIDR like 10.0.0.0/8" : null);
-
-const dirError = (v: string) => (!v.startsWith("/") && !/^[a-z]:[\\/]/i.test(v) ? "use an absolute path, like /home/me/Documents" : v.length > 4096 ? "too long" : null);
 
 export function SettingsForm({ settings, system }: { settings: Settings; system: SystemInfo | undefined }) {
   const qc = useQueryClient();
@@ -99,8 +75,6 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
   });
 
   const initial = JSON.stringify(toForm(settings));
-  const [allowTyping, setAllowTyping] = useState(false);
-  const [dirTyping, setDirTyping] = useState(false);
 
   return (
     <form
@@ -120,7 +94,7 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <form.Field name="publicUrl" validators={{ onChange: ({ value }) => publicUrlError(value) }}>
+          <form.Field name="publicUrl" validators={{ onChange: ({ value }) => publicUrlProblem(value) }}>
             {(field) => (
               <Field data-invalid={!field.state.meta.isValid}>
                 <FieldLabel htmlFor={field.name}>Public URL</FieldLabel>
@@ -169,37 +143,12 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
       <Card>
         <CardHeader>
           <CardTitle>Mail sync</CardTitle>
-          <CardDescription>How xaq learns about new mail.</CardDescription>
+          <CardDescription>How often xaq checks every account for new mail.</CardDescription>
         </CardHeader>
         <CardContent>
-          <FieldGroup>
-            <form.Field name="ingestMode">
-              {(field) => (
-                <Field>
-                  <FieldLabel htmlFor={field.name}>Mode</FieldLabel>
-                  <Select value={field.state.value} onValueChange={(v) => field.handleChange(v as IngestMode)}>
-                    <SelectTrigger id={field.name} className="w-full sm:w-80">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="pubsub">Real-time (Gmail push via Pub/Sub)</SelectItem>
-                      <SelectItem value="poll">Polling</SelectItem>
-                    </SelectContent>
-                  </Select>
-                  <FieldDescription>
-                    {field.state.value === "pubsub"
-                      ? "Needs Pub/Sub provisioned (see below). Gmail notifies within seconds."
-                      : "Checks every account's history on an interval. No extra Google setup."}
-                  </FieldDescription>
-                </Field>
-              )}
-            </form.Field>
-            <form.Field name="pollIntervalSeconds" validators={{ onChange: ({ value }) => intError("Poll interval", 5, 3600)(value) }}>
-              {(field) => (
-                <NumberField field={field} label="Poll interval" unit="seconds" description="How often polling checks each account. Real-time mode also polls at this interval while Pub/Sub isn't set up or is failing; otherwise it re-checks every 5 minutes." />
-              )}
-            </form.Field>
-          </FieldGroup>
+          <form.Field name="pollIntervalSeconds" validators={{ onChange: ({ value }) => intError("Poll interval", 5, 3600)(value) }}>
+            {(field) => <NumberField field={field} label="Poll interval" unit="seconds" description="How often each account's mail history is checked." />}
+          </form.Field>
         </CardContent>
       </Card>
 
@@ -217,7 +166,7 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
                   field={field}
                   label="Calendar poll interval"
                   unit="seconds"
-                  description="How often synced calendars are checked for changes and new invitations. Calendars with a verified Google push channel are re-checked every 15 minutes instead."
+                  description="How often synced calendars are checked for changes and new invitations."
                 />
               )}
             </form.Field>
@@ -241,41 +190,9 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
                 />
               )}
             </form.Field>
-            <form.Field name="approvalTtlHours" validators={{ onChange: ({ value }) => intError("Approval expiry", 1, 720)(value) }}>
-              {(field) => (
-                <NumberField field={field} label="Approvals expire after" unit="hours" description="Unanswered requests are rejected and their drafts deleted." />
-              )}
-            </form.Field>
             <form.Field name="retentionDays" validators={{ onChange: ({ value }) => intError("Retention", 1, 3650)(value) }}>
               {(field) => (
-                <NumberField field={field} label="Keep history for" unit="days" description="Events, webhook deliveries, audit entries and decided approvals older than this are deleted." />
-              )}
-            </form.Field>
-            <form.Field
-              name="attachmentSaveDir"
-              validators={{ onChange: ({ value }) => (value.trim() && !value.trim().startsWith("/") ? "Use an absolute path, or leave it empty." : undefined) }}
-            >
-              {(field) => (
-                <Field data-invalid={!field.state.meta.isValid} className="sm:col-span-2">
-                  <FieldLabel htmlFor={field.name}>Attachment folder</FieldLabel>
-                  <Input
-                    id={field.name}
-                    className="font-mono"
-                    spellCheck={false}
-                    placeholder="attachments/ in the data directory"
-                    value={field.state.value}
-                    onBlur={field.handleBlur}
-                    onChange={(e) => field.handleChange(e.target.value)}
-                    aria-invalid={!field.state.meta.isValid}
-                  />
-                  {!field.state.meta.isValid ? (
-                    <FieldError>{field.state.meta.errors.join(" ")}</FieldError>
-                  ) : (
-                    <FieldDescription>
-                      Where get_attachment saves files it can't show as text, on this server. Only files xaq saved there are ever deleted: after 7 days, or oldest first past 1 GB in total. It must be yours and not writable by everyone.
-                    </FieldDescription>
-                  )}
-                </Field>
+                <NumberField field={field} label="Keep history for" unit="days" description="Events and audit entries older than this are deleted." />
               )}
             </form.Field>
           </FieldGroup>
@@ -299,100 +216,10 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
                   <FieldLabel htmlFor={field.name}>Accept pairing requests</FieldLabel>
                   <FieldDescription>
                     {field.state.value
-                      ? "Requests wait under Approvals → Agent access. Nothing gets access until you approve the matching code and choose its permissions; the key goes straight to the agent's terminal."
+                      ? "Requests wait under Approvals. Nothing gets access until you approve the matching code and choose its permissions; the key goes straight to the agent's terminal."
                       : "Off: connect is refused. You can still create agents under Agents and paste their key yourself."}
                   </FieldDescription>
                 </div>
-              </Field>
-            )}
-          </form.Field>
-        </CardContent>
-      </Card>
-
-      <Card id="mcp-broker" className="scroll-mt-20">
-        <CardHeader>
-          <CardTitle>Connections (MCP broker)</CardTitle>
-          <CardDescription>
-            Lets your agents use other MCP servers and apps, like Notion, through xaq. xaq holds every sign-in and asks you before risky
-            actions.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form.Field name="brokerUpstreams">
-            {(field) => (
-              <Field orientation="horizontal" className="items-start">
-                <Switch id={field.name} checked={field.state.value} onCheckedChange={(v) => field.handleChange(v)} className="mt-0.5" />
-                <div className="space-y-1">
-                  <FieldLabel htmlFor={field.name}>Use connections</FieldLabel>
-                  <FieldDescription>
-                    {field.state.value
-                      ? "On: the Connections page is in the sidebar, and agents see the tools of the connections you give them."
-                      : "Off: no connection's tools reach any agent and the Connections page is hidden. Your connections and their settings are kept."}
-                  </FieldDescription>
-                </div>
-              </Field>
-            )}
-          </form.Field>
-        </CardContent>
-      </Card>
-
-      <Card id="webhook-allowlist" className="scroll-mt-20">
-        <CardHeader>
-          <CardTitle>Webhook allowlist</CardTitle>
-          <CardDescription>
-            Webhooks may not target private, loopback or link-local addresses (this stops a webhook URL from probing your network), except hosts
-            listed here.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form.Field name="webhookAllowlist">
-            {(field) => (
-              <Field>
-                <FieldLabel htmlFor="allowlist">Allowed private hosts</FieldLabel>
-                <ChipsInput id="allowlist" value={field.state.value} onChange={field.handleChange} placeholder="e.g. 10.0.0.0/8, n8n.internal" validate={allowlistError} onPendingChange={setAllowTyping} />
-                <FieldDescription className="flex items-start gap-1.5">
-                  <InfoIcon className="mt-0.5 size-3.5 shrink-0" />
-                  <span>
-                    Hostnames, IPs or CIDR ranges, e.g. <code className="font-mono">127.0.0.0/8</code>, <code className="font-mono">192.168.1.0/24</code>,{" "}
-                    <code className="font-mono">n8n.internal</code>. Public hosts don't need to be listed.
-                  </span>
-                </FieldDescription>
-              </Field>
-            )}
-          </form.Field>
-        </CardContent>
-      </Card>
-
-      <Card id="attachment-dirs" className="scroll-mt-20">
-        <CardHeader>
-          <CardTitle>Attachments from files</CardTitle>
-          <CardDescription>
-            Directories on this machine whose files agents may attach to mail by path. Empty: agents can't attach files by path (they can still send
-            bytes they have, another message's attachment or a Drive file).
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form.Field name="attachmentDirs">
-            {(field) => (
-              <Field>
-                <FieldLabel htmlFor="attachment-dirs-input">Allowed directories</FieldLabel>
-                <ChipsInput
-                  id="attachment-dirs-input"
-                  lines
-                  value={field.state.value}
-                  onChange={field.handleChange}
-                  placeholder="e.g. /home/me/Documents/outgoing (Enter to add)"
-                  validate={dirError}
-                  onPendingChange={setDirTyping}
-                />
-                <FieldDescription className="flex items-start gap-1.5">
-                  <InfoIcon className="mt-0.5 size-3.5 shrink-0" />
-                  <span>
-                    Absolute paths, one per entry; files in subdirectories count. Symlinks are followed only when they stay inside an allowed directory.
-                    xaq's own data and configuration and files named like keys, databases or <code className="font-mono">.env</code> are always refused.
-                    Also: <code className="font-mono">npx xaq-cli settings attachment-dirs add &lt;dir&gt;</code>.
-                  </span>
-                </FieldDescription>
               </Field>
             )}
           </form.Field>
@@ -404,17 +231,13 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
           changed ? (
             <div className="sticky bottom-4 z-10 flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-background/95 p-3 shadow-lg backdrop-blur">
               <span className="text-sm">
-                {allowTyping
-                  ? "Add or clear the host you're typing in the allowlist first."
-                  : dirTyping
-                    ? "Add or clear the directory you're typing first."
-                    : "You have unsaved changes."}
+                You have unsaved changes.
               </span>
               <div className="flex gap-2">
                 <Button type="button" variant="ghost" onClick={() => form.reset()}>
                   Discard
                 </Button>
-                <Button type="submit" disabled={!canSubmit || submitting || allowTyping || dirTyping}>
+                <Button type="submit" disabled={!canSubmit || submitting}>
                   {submitting && <Spinner />} Save settings
                 </Button>
               </div>

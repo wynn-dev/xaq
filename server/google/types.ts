@@ -16,8 +16,6 @@ import type {
   GoogleClientImportResult,
   GoogleClientView,
   MessageSummary,
-  PubsubState,
-  PubsubTestResult,
   SetupWarning,
   TestEmailResult,
 } from "../../shared/types.ts";
@@ -200,8 +198,6 @@ export interface GmailClient {
     nextPageToken: string | null;
     historyId: string;
   }>;
-  watch(p: { topicName: string; labelIds?: string[]; labelFilterBehavior?: "include" | "exclude" }): Promise<{ historyId: string; expiration: string }>;
-  stopWatch(): Promise<void>;
 }
 
 // ───────────── MIME (FROZEN) ─────────────
@@ -274,7 +270,7 @@ export interface AccountsService extends Lifecycle {
   getByEmail(email: string): Account | null;
   /** Persists and emits bus "account". */
   setStatus(id: string, status: AccountStatus, lastError?: string | null): Account;
-  /** Stops the watch, revokes the token (best effort) and deletes the account (grants cascade). */
+  /** Revokes the token (best effort) and deletes the account (grants cascade). */
   remove(id: string): Promise<void>;
 }
 
@@ -293,8 +289,7 @@ export interface GoogleService extends Lifecycle {
   // Connecting accounts (PKCE, access_type=offline, prompt=consent)
   /**
    * Accounts are connected with gmail.modify (+ openid email profile), plus CALENDAR_SCOPES while Calendar
-   * is part of the install. `scopes: ["pubsub"]` adds the Pub/Sub scope incrementally for the provisioning
-   * account (defaults to the account provisioning uses); `scopes: ["calendar"]` adds Calendar (with
+   * is part of the install. `scopes: ["calendar"]` adds Calendar (with
    * `reauthAccountId`: "Add Calendar to <email>"). `mailOnly` leaves Calendar out (for admins who block it).
    */
   startConnect(opts?: { reauthAccountId?: string; scopes?: ExtraScopeName[]; mailOnly?: boolean }): ConnectAccountResponse;
@@ -319,10 +314,4 @@ export interface GoogleService extends Lifecycle {
   revoke(accountId: string): Promise<void>;
   /** Sends a self-addressed test message from the account and kicks ingest. Rate limited (HttpError 429). */
   sendTestEmail(accountId: string): Promise<TestEmailResult>;
-
-  // Pub/Sub
-  pubsubState(): PubsubState;
-  /** `accountId` chooses (and saves) the principal account; default: the current principal. */
-  provisionPubsub(opts?: { accountId?: string }): Promise<PubsubState>;
-  testPubsub(): Promise<PubsubTestResult>;
 }

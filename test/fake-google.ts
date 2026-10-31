@@ -1,5 +1,5 @@
 /**
- * In-memory fake of every Google endpoint xaq calls (OAuth, Gmail REST, Pub/Sub REST, Calendar, Drive read-only), served by
+ * In-memory fake of every Google endpoint xaq calls (OAuth, Gmail REST, Calendar, Drive read-only), served by
  * node:http on 127.0.0.1:<random port>. Deterministic and fast; used by unit tests and the end-to-end test.
  *
  *   const g = await startFakeGoogle();
@@ -14,18 +14,17 @@
  *   await g.close();
  *
  * State helpers
- *   addAccount(email, { name?, projectAccess?, workspaceDomain? })  create a mailbox (projectAccess=false → Pub/Sub admin calls get
- *                                                  PERMISSION_DENIED; workspaceDomain → the id_token carries hd=<domain>)
+ *   addAccount(email, { name?, workspaceDomain? })  create a mailbox (workspaceDomain → the id_token carries hd=<domain>)
  *   addLabel(email, name) → id                     create a user label ("Label_N")
  *   consentAs(email, { deny?, noRefreshToken?, scopes? })  queue the next consent (otherwise the only account, if exactly one exists)
  *   deliver(email, msg) → GmailMessage             incoming mail: builds RFC 5322, adds INBOX+UNREAD (or msg.labelIds), records
- *                                                  history and publishes a Pub/Sub notification if the mailbox is watched
+ *                                                  history
  *   setLabels(email, messageId, add, remove)       label change with history (unknown user label ids are created)
  *   failRefresh(email, { rapt? })                  revoke the user's grant: refresh → 400 invalid_grant (error_subtype invalid_rapt with rapt)
  *   expireAccessTokens(email)                      make cached access tokens invalid (next API call → 401)
  *   expireHistory(email)                           history.list with any cursor obtained before this call → 404
- *   orgPolicyBlocksIam(on)                         setIamPolicy adding a non-org member → 400 FAILED_PRECONDITION (iam.allowedPolicyMemberDomains)
- *   disableApi("gmail" | "pubsub", on)             API calls → 403 SERVICE_DISABLED
+ *   disableApi("gmail", on)                    API calls → 403 SERVICE_DISABLED
+ *   delayMs                                        every request waits this long first (a slow Google); default 0
  *   failNext({ method?, path, status, reason?, message?, retryAfter?, times?, afterProcessing? })  inject errors for matching
  *                                                  requests (afterProcessing: the request takes effect, then the error is returned)
  *   accessTokenTtl                                 seconds for newly issued access tokens (default 3600)
@@ -34,13 +33,10 @@
  *   refreshTokenTtl                                null (default): long-lived refresh tokens. A number simulates an External app in
  *                                                  Testing: new refresh tokens expire after that many seconds (Google: 604800) and
  *                                                  token responses carry refresh_token_expires_in (time left, on refreshes too)
- *   pullWaitMs                                     how long an empty Pub/Sub pull is held open (default 1000;
- *                                                  returnImmediately pulls answer at once)
- *   abortedPulls                                   count of waiting pulls the client cancelled (seen server-side)
  *
  * Inspection
  *   sent(email) / drafts(email) / messages(email) / message(email, id)   format=full Gmail JSON (+ drafts as {id, message})
- *   watch(email)  topics()  subscription(name)  iamPolicy(topic)  revoked (tokens)  requests ({method, path} log)
+ *   revoked (tokens)  requests ({method, path} log)
  *
  * Consent screen like Google's for a signed-out browser: an unknown client_id or unregistered redirect URI
  * redirects to /signin/oauth/error/v2?authError=<base64 "Error 401: invalid_client" / "Error 400: redirect_uri_mismatch">;
@@ -65,9 +61,6 @@
  *   disableApi("calendar", on)                     403 SERVICE_DISABLED (accessNotConfigured, ErrorInfo metadata.activationUrl)
  *   mailsSent(email)                               emails Google would have sent for that account's API writes (sendUpdates
  *                                                  all / externalOnly = non-fake guests): { to, kind: invite|update|cancel|reply, eventId }
- *   channels() / notify(channelId, state)          events.watch channels; POST a push (X-Goog-* headers, no body) to the address.
- *                                                  autoNotify (default true) sends "sync" on creation and "exists" on each change;
- *                                                  pushTarget rewrites addresses (public https → local test server)
  * Routes check the token's scopes like Google (consentAs { scopes } simulates granular consent → 403
  * ACCESS_TOKEN_SCOPE_INSUFFICIENT): calendarList needs calendar.calendarlist(.readonly), events calendar.events,
  * freeBusy calendar.events.freebusy (or the broad calendar scopes). events.list: syncToken (400 next to timeMin/timeMax/q/
@@ -99,12 +92,35 @@ import { createHash, randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import addressparser from "nodemailer/lib/addressparser";
-import type { Account, CalendarAccessRole, CalendarResponseStatus } from "../shared/types.ts";
+import type { Account, Address, CalendarAccessRole, CalendarInfo, CalendarResponseStatus, ExtraScopeName, GmailLabel } from "../shared/types.ts";
 import type { Config } from "../server/config.ts";
 import type { AppContext } from "../server/context.ts";
 import type { EventsService, NewEvent } from "../server/events/types.ts";
-import type { CalendarAttendeeRaw, CalendarDateTimeRaw, CalendarEventRaw, CalendarListEntryRaw, FreeBusyResult } from "../server/google/calendar.ts";
-import type { GmailHeader, GmailHistoryRecord, GmailLabelRaw, GmailMessage, GmailPart } from "../server/google/types.ts";
+import type {
+  CalendarAttendeeRaw,
+  CalendarClient,
+  CalendarDateTimeRaw,
+  CalendarEventRaw,
+  CalendarListEntryRaw,
+  EventsListParams,
+  FreeBusyResult,
+  WriteOptions,
+} from "../server/google/calendar.ts";
+import {
+  type ComposeInput,
+  type GmailClient,
+  type GmailDraft,
+  type GmailHeader,
+  type GmailHistoryRecord,
+  type GmailLabelRaw,
+  type GmailMessage,
+  type GmailPart,
+  type GmailThread,
+  GoogleApiError,
+  type GoogleService,
+  type MimeTools,
+  type ParsedMessage,
+} from "../server/google/types.ts";
 
 export const FAKE_CLIENT = {
   clientId: "fake-client.apps.googleusercontent.com",
@@ -113,8 +129,6 @@ export const FAKE_CLIENT = {
 };
 
 export const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.modify";
-export const PUBSUB_SCOPE = "https://www.googleapis.com/auth/pubsub";
-const GMAIL_PUSH = "serviceAccount:gmail-api-push@system.gserviceaccount.com";
 
 export interface DeliverInput {
   from: string;
@@ -146,7 +160,7 @@ export interface FakeGoogle {
   url: string;
   google: Config["google"];
   close(): Promise<void>;
-  addAccount(email: string, opts?: { name?: string; projectAccess?: boolean; workspaceDomain?: string }): void;
+  addAccount(email: string, opts?: { name?: string; workspaceDomain?: string }): void;
   addLabel(email: string, name: string): string;
   consentAs(email: string, opts?: { deny?: boolean; noRefreshToken?: boolean; scopes?: string[] }): void;
   deliver(email: string, msg: DeliverInput): GmailMessage;
@@ -154,7 +168,6 @@ export interface FakeGoogle {
   failRefresh(email: string, opts?: { rapt?: boolean }): void;
   expireAccessTokens(email: string): void;
   expireHistory(email: string): void;
-  orgPolicyBlocksIam(on: boolean): void;
   disableApi(api: FakeApi, on: boolean): void;
   /** The scopes an access token was issued with (null: not one of ours). */
   tokenScopes(accessToken: string): { email: string; scopes: string[] } | null;
@@ -171,16 +184,10 @@ export interface FakeGoogle {
   drafts(email: string): { id: string; message: GmailMessage }[];
   messages(email: string): GmailMessage[];
   message(email: string, id: string): GmailMessage | null;
-  watch(email: string): { topic: string; expiration: number } | null;
-  topics(): string[];
-  subscription(name: string): { topic: string; ackDeadlineSeconds: number; outstanding: number; queued: number } | null;
-  iamPolicy(topic: string): { bindings: { role: string; members: string[] }[] } | null;
   accessTokenTtl: number;
+  delayMs: number;
   refreshTokenTtl: number | null;
   registeredRedirectUris: string[] | null;
-  pullWaitMs: number;
-  /** Long-poll pulls the client cancelled while they were waiting (seen by the server). */
-  abortedPulls: number;
   revoked: string[];
   requests: { method: string; path: string }[];
   /** Media uploads to messages.send / drafts.create: path, uploadType, the JSON metadata part and the message size. */
@@ -196,25 +203,14 @@ export interface FakeDriveFileInput {
   id?: string;
   name: string;
   mimeType: string;
-  /** Bytes of a regular file (alt=media). */
-  content?: Buffer;
-  /** What files.get reports as `size` (default: the content's length; null: none, like Google-native files). */
-  size?: string | null;
-  /** Export results by MIME type; other supported types get a generated stub. */
-  exports?: Record<string, Buffer>;
-  trashed?: boolean;
 }
 
 /**
- * Google Drive v3, the parts xaq reads (files.get metadata, alt=media downloads, files.export), per account. Routes
- * need drive.readonly or drive (else 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT). Unknown ids → 404 notFound; alt=media
- * on a Google-native file → 403 fileNotDownloadable; export of a regular file → 403 fileNotExportable; an export
- * over 10 MB → 403 exportSizeLimitExceeded, like Google.
+ * Google Drive v3 files.get metadata, per account (code extensions' Google access). Needs drive.readonly or drive
+ * (else 403 ACCESS_TOKEN_SCOPE_INSUFFICIENT). Unknown ids → 404 notFound, like Google.
  */
 export interface FakeDrive {
   addFile(email: string, file: FakeDriveFileInput): string;
-  /** Each alt=media / export response: how many bytes it sent (to check nothing large was fetched) and the token's scopes. */
-  served: { id: string; kind: "media" | "export"; bytes: number; scopes: string[] }[];
 }
 
 /** An email Google Calendar would have sent for a write (sendUpdates). */
@@ -222,17 +218,6 @@ export interface FakeCalendarMail {
   to: string;
   kind: "invite" | "update" | "cancel" | "reply";
   eventId: string;
-}
-
-export interface FakeChannel {
-  id: string;
-  resourceId: string;
-  token: string | null;
-  address: string;
-  email: string;
-  calendarId: string;
-  /** Epoch ms. */
-  expiration: number;
 }
 
 export interface FakeCalendar {
@@ -246,12 +231,6 @@ export interface FakeCalendar {
   event(email: string, calendarId: string, id: string): CalendarEventRaw | null;
   expireSyncTokens(email: string, calendarId?: string): void;
   mailsSent(email: string): FakeCalendarMail[];
-  channels(): FakeChannel[];
-  notify(channelId: string, state: "sync" | "exists" | "not_exists"): Promise<number>;
-  /** Send "sync" when a channel is created and "exists" on every change to a watched calendar (default true). */
-  autoNotify: boolean;
-  /** Rewrites channel addresses before posting (e.g. a public https address → the local test server). */
-  pushTarget: ((address: string) => string) | null;
 }
 
 // ───────────── MIME (fake side) ─────────────
@@ -442,8 +421,6 @@ interface Mailbox {
   history: GmailHistoryRecord[];
   labels: Map<string, GmailLabelRaw>;
   drafts: Map<string, string>;
-  watch: { topic: string; expiration: number } | null;
-  projectAccess: boolean;
   nextLabel: number;
   workspaceDomain: string | null;
 }
@@ -455,22 +432,6 @@ interface Token {
   revoked: boolean;
   /** Grant generation this token belongs to; revoking the grant bumps it. */
   gen: number;
-}
-
-interface PubsubMessage {
-  data: string;
-  messageId: string;
-  publishTime: string;
-  attributes?: Record<string, string>;
-  attempts: number;
-}
-
-interface Subscription {
-  topic: string;
-  ackDeadlineSeconds: number;
-  queue: PubsubMessage[];
-  outstanding: Map<string, { msg: PubsubMessage; deadline: number }>;
-  waiters: Set<() => void>;
 }
 
 const SYSTEM_LABELS = [
@@ -547,7 +508,6 @@ function multipartRelated(body: Buffer, contentType: string): { contentType: str
 
 const SERVICES = {
   gmail: { name: "Gmail API", host: "gmail.googleapis.com" },
-  pubsub: { name: "Cloud Pub/Sub API", host: "pubsub.googleapis.com" },
   calendar: { name: "Google Calendar API", host: "calendar-json.googleapis.com" },
   drive: { name: "Google Drive API", host: "drive.googleapis.com" },
   docs: { name: "Google Docs API", host: "docs.googleapis.com" },
@@ -606,11 +566,8 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
   const valid = (t: Token | undefined): t is Token => Boolean(t && !t.revoked && t.gen === grantOf(t.email).gen);
   const codes = new Map<string, { email: string; scopes: string[]; challenge: string; redirectUri: string; noRefreshToken: boolean }>();
   const consents: { email: string; deny?: boolean; noRefreshToken?: boolean; scopes?: string[] }[] = [];
-  const topics = new Map<string, { policy: { version: number; etag: string; bindings: { role: string; members: string[] }[] } }>();
-  const subs = new Map<string, Subscription>();
   const failRules: (FailRule & { left: number })[] = [];
   const disabled = new Set<string>();
-  let orgPolicy = false;
   let idCounter = 0x18f2a00000000000n;
   let seq = 0;
   const newMsgId = () => (idCounter++).toString(16);
@@ -717,26 +674,10 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     };
   }
 
-  function publish(topicName: string, data: string, attributes?: Record<string, string>): string {
-    const messageId = String(1_000_000 + seq++);
-    for (const sub of subs.values()) {
-      if (sub.topic !== topicName) continue;
-      sub.queue.push({ data, messageId, publishTime: new Date().toISOString(), attributes, attempts: 0 });
-      for (const w of sub.waiters) w();
-    }
-    return messageId;
-  }
-
-  const canPublish = (topic: string) =>
-    topics.get(topic)?.policy.bindings.some((b) => b.role === "roles/pubsub.publisher" && b.members.includes(GMAIL_PUSH)) ?? false;
-
   function record(mb: Mailbox, rec: Omit<GmailHistoryRecord, "id">, touched: StoredMessage[]) {
     mb.historyId++;
     for (const m of touched) m.historyId = mb.historyId;
     mb.history.push({ id: String(mb.historyId), ...rec });
-    if (mb.watch && mb.watch.expiration > Date.now() && canPublish(mb.watch.topic)) {
-      publish(mb.watch.topic, Buffer.from(JSON.stringify({ emailAddress: mb.email, historyId: mb.historyId })).toString("base64"));
-    }
   }
 
   const ref = (m: StoredMessage) => ({ id: m.id, threadId: m.threadId, labelIds: [...m.labelIds] });
@@ -922,7 +863,7 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
 
   // ───── Auth ─────
 
-  function bearer(req: IncomingMessage, scope: string, api: "gmail" | "pubsub"): Token {
+  function bearer(req: IncomingMessage, scope: string, api: "gmail"): Token {
     const t = accessTokens.get((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""));
     if (!valid(t) || t.expiresAt < Date.now()) {
       throw apiError(401, "Request had invalid authentication credentials. Expected OAuth 2 access token.", "authError");
@@ -1290,176 +1231,6 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     return { ...(items.length ? { history: items } : {}), ...(next ? { nextPageToken: next } : {}), historyId: String(mb.historyId) };
   });
 
-  gmailRoute("POST", "/watch", (mb, _u, body) => {
-    const b = json(body) as { topicName?: string };
-    const topic = b.topicName ?? "";
-    if (!topics.has(topic)) throw apiError(404, `Resource not found (resource=${topic.split("/").pop()}).`, "notFound");
-    if (!canPublish(topic)) {
-      throw apiError(403, `Error sending test message to Cloud PubSub ${topic} : User not authorized to perform this action.`, "forbidden");
-    }
-    mb.watch = { topic, expiration: Date.now() + 7 * 86400e3 };
-    return { historyId: String(mb.historyId), expiration: String(mb.watch.expiration) };
-  });
-
-  gmailRoute("POST", "/stop", (mb) => {
-    mb.watch = null;
-    return undefined;
-  });
-
-  // Pub/Sub
-  const pubsubRoute = (method: string, re: RegExp, h: (url: URL, body: Buffer, m: RegExpExecArray, res: ServerResponse) => unknown) =>
-    on(method, re, (req, url, body, m, res) => {
-      const t = bearer(req, PUBSUB_SCOPE, "pubsub");
-      if (!box(t.email).projectAccess) {
-        throw apiError(403, "User not authorized to perform this action.", undefined, { status: "PERMISSION_DENIED" });
-      }
-      return h(url, body, m, res);
-    });
-  const TOPIC = /^\/v1\/(projects\/[^/]+\/topics\/[^/:]+)$/;
-  const SUB = /^\/v1\/(projects\/[^/]+\/subscriptions\/[^/:]+)$/;
-
-  pubsubRoute("PUT", TOPIC, (_u, _b, m) => {
-    if (topics.has(m[1]!)) throw apiError(409, "Resource already exists in the project (resource=agentinbox-gmail).");
-    topics.set(m[1]!, { policy: { version: 1, etag: "BwYA", bindings: [] } });
-    return { name: m[1] };
-  });
-
-  pubsubRoute("GET", TOPIC, (_u, _b, m) => {
-    if (!topics.has(m[1]!)) throw apiError(404, "Resource not found (resource=agentinbox-gmail).");
-    return { name: m[1] };
-  });
-
-  const topicOr404 = (name: string) => {
-    const t = topics.get(name);
-    if (!t) throw apiError(404, `Resource not found (resource=${name.split("/").pop()}).`);
-    return t;
-  };
-
-  // GET only, like Google (a POST gets the HTML 404).
-  pubsubRoute("GET", /^\/v1\/(projects\/[^/]+\/topics\/[^/:]+):getIamPolicy$/, (_u, _b, m) => structuredClone(topicOr404(m[1]!).policy));
-
-  pubsubRoute("POST", /^\/v1\/(projects\/[^/]+\/topics\/[^/:]+):setIamPolicy$/, (_u, body, m) => {
-    const t = topicOr404(m[1]!);
-    const policy = (json(body).policy ?? {}) as { etag?: string; bindings?: { role: string; members: string[] }[] };
-    if (policy.etag && policy.etag !== t.policy.etag) throw apiError(409, "There were concurrent policy changes.", undefined, { status: "ABORTED" });
-    const members = (policy.bindings ?? []).flatMap((b) => b.members);
-    if (orgPolicy && members.some((x) => x.endsWith("gserviceaccount.com"))) {
-      throw apiError(400, "One or more users named in the policy do not belong to a permitted customer,  perhaps due to an organization policy.", undefined, {
-        status: "FAILED_PRECONDITION",
-        details: [
-          {
-            "@type": "type.googleapis.com/google.rpc.PreconditionFailure",
-            violations: [
-              {
-                type: "constraints/iam.allowedPolicyMemberDomains",
-                subject: "orgpolicy:projects/fake-project",
-                description: "User gmail-api-push@system.gserviceaccount.com is not in permitted organization.",
-              },
-            ],
-          },
-        ],
-      });
-    }
-    t.policy = { version: 1, etag: `BwYB${seq++}`, bindings: policy.bindings ?? [] };
-    return structuredClone(t.policy);
-  });
-
-  pubsubRoute("POST", /^\/v1\/(projects\/[^/]+\/topics\/[^/:]+):publish$/, (_u, body, m) => {
-    topicOr404(m[1]!);
-    const msgs = (json(body).messages ?? []) as { data?: string; attributes?: Record<string, string> }[];
-    return { messageIds: msgs.map((x) => publish(m[1]!, x.data ?? "", x.attributes)) };
-  });
-
-  pubsubRoute("PUT", SUB, (_u, body, m) => {
-    if (subs.has(m[1]!)) throw apiError(409, "Resource already exists in the project (resource=agentinbox-gmail-pull).");
-    const b = json(body) as { topic?: string; ackDeadlineSeconds?: number };
-    topicOr404(b.topic ?? "");
-    subs.set(m[1]!, { topic: b.topic!, ackDeadlineSeconds: b.ackDeadlineSeconds ?? 10, queue: [], outstanding: new Map(), waiters: new Set() });
-    return { name: m[1], topic: b.topic, ackDeadlineSeconds: b.ackDeadlineSeconds ?? 10 };
-  });
-
-  const subOr404 = (name: string) => {
-    const s = subs.get(name);
-    if (!s) throw apiError(404, `Resource not found (resource=${name.split("/").pop()}).`);
-    return s;
-  };
-
-  pubsubRoute("GET", SUB, (_u, _b, m) => {
-    const s = subOr404(m[1]!);
-    return { name: m[1], topic: s.topic, ackDeadlineSeconds: s.ackDeadlineSeconds };
-  });
-
-  function take(s: Subscription, max: number) {
-    const t = Date.now();
-    for (const [ackId, o] of s.outstanding) {
-      if (o.deadline <= t) {
-        s.outstanding.delete(ackId);
-        s.queue.push(o.msg);
-      }
-    }
-    return s.queue.splice(0, max).map((msg) => {
-      const ackId = token("ack-");
-      msg.attempts++;
-      s.outstanding.set(ackId, { msg, deadline: t + s.ackDeadlineSeconds * 1000 });
-      return {
-        ackId,
-        message: { data: msg.data, messageId: msg.messageId, publishTime: msg.publishTime, ...(msg.attributes ? { attributes: msg.attributes } : {}) },
-        deliveryAttempt: msg.attempts,
-      };
-    });
-  }
-
-  pubsubRoute("POST", /^\/v1\/(projects\/[^/]+\/subscriptions\/[^/:]+):pull$/, async (_u, body, m, res) => {
-    const s = subOr404(m[1]!);
-    const b = json(body);
-    const max = Number(b.maxMessages ?? 100) || 100;
-    let got = take(s, max);
-    if (!got.length && b.returnImmediately !== true) {
-      let closed = false;
-      await new Promise<void>((resolve) => {
-        const onClose = () => {
-          closed = true;
-          done();
-        };
-        const done = () => {
-          clearTimeout(timer);
-          s.waiters.delete(done);
-          res.off("close", onClose);
-          closers.delete(done);
-          resolve();
-        };
-        const timer = setTimeout(done, fake.pullWaitMs);
-        s.waiters.add(done);
-        closers.add(done);
-        res.on("close", onClose);
-      });
-      // Like Pub/Sub, never dispatch messages into a pull the client already cancelled.
-      if (closed) {
-        fake.abortedPulls++;
-        return {};
-      }
-      got = take(s, max);
-    }
-    return got.length ? { receivedMessages: got } : {};
-  });
-
-  pubsubRoute("POST", /^\/v1\/(projects\/[^/]+\/subscriptions\/[^/:]+):acknowledge$/, (_u, body, m) => {
-    const s = subOr404(m[1]!);
-    for (const id of (json(body).ackIds ?? []) as string[]) s.outstanding.delete(id);
-    return {};
-  });
-
-  pubsubRoute("POST", /^\/v1\/(projects\/[^/]+\/subscriptions\/[^/:]+):modifyAckDeadline$/, (_u, body, m) => {
-    const s = subOr404(m[1]!);
-    const b = json(body) as { ackIds?: string[]; ackDeadlineSeconds?: number };
-    for (const id of b.ackIds ?? []) {
-      const o = s.outstanding.get(id);
-      if (o) o.deadline = Date.now() + (b.ackDeadlineSeconds ?? 0) * 1000;
-    }
-    if (!b.ackDeadlineSeconds) for (const w of s.waiters) w();
-    return {};
-  });
-
   // ───── Calendar ─────
 
   const CAL = "https://www.googleapis.com/auth/calendar";
@@ -1486,7 +1257,6 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
   /** Owner email → calendar id → calendar. */
   const calendars = new Map<string, Map<string, FakeCal>>();
   const calMails = new Map<string, FakeCalendarMail[]>();
-  const channels = new Map<string, FakeChannel & { messages: number }>();
   let calSeq = 0;
   let lastStamp = 0;
 
@@ -1524,15 +1294,12 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     return t;
   }
 
-  /** Stores a new version: fresh `updated` and etag, a change-log position (what sync tokens read), then pings watch channels. */
+  /** Stores a new version: fresh `updated` and etag, a change-log position (what sync tokens read). */
   function save(cal: FakeCal, raw: CalendarEventRaw): CalendarEventRaw {
     const at = (lastStamp = Math.max(Date.now(), lastStamp + 1));
     const seq = ++calSeq;
     const stored: CalendarEventRaw = { ...structuredClone(raw), updated: new Date(at).toISOString(), etag: `"${at}${String(seq).padStart(4, "0")}"` };
     cal.events.set(raw.id, { raw: stored, seq });
-    if (fake.calendar.autoNotify) {
-      for (const ch of channels.values()) if (ch.email === cal.owner && ch.calendarId === cal.entry.id) void notify(ch.id, "exists");
-    }
     return structuredClone(stored);
   }
 
@@ -1923,69 +1690,7 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
     return { kind: "calendar#freeBusy", timeMin: b.timeMin, timeMax: b.timeMax, calendars: out };
   });
 
-  calRoute("POST", "/calendars/([^/]+)/events/watch", CAL_SCOPES.read, (t, _u, body, m) => {
-    const cal = calendarOf(t.email, calParam(m));
-    const b = json(body) as { id?: string; type?: string; address?: string; token?: string; params?: { ttl?: string } };
-    if (!b.id || !b.address || b.type !== "web_hook") throw apiError(400, "Missing id, address or type web_hook.", "required");
-    if (channels.has(b.id)) throw apiError(400, `Channel id ${b.id} not unique`, "channelIdNotUnique");
-    const ttl = Number(b.params?.ttl ?? 604_800);
-    const ch = {
-      id: b.id,
-      resourceId: randomBytes(14).toString("base64url"),
-      token: b.token ?? null,
-      address: b.address,
-      email: t.email,
-      calendarId: cal.entry.id,
-      expiration: Date.now() + Math.min(ttl, 30 * 86_400) * 1000,
-      messages: 0,
-    };
-    channels.set(ch.id, ch);
-    // Google confirms a new channel with a "sync" message right away.
-    if (fake.calendar.autoNotify) setTimeout(() => void notify(ch.id, "sync"), 0);
-    return {
-      kind: "api#channel",
-      id: ch.id,
-      resourceId: ch.resourceId,
-      resourceUri: `${url}/calendar/v3/calendars/${encodeURIComponent(cal.entry.id)}/events?alt=json`,
-      ...(ch.token ? { token: ch.token } : {}),
-      expiration: String(ch.expiration),
-    };
-  });
-
-  calRoute("POST", "/channels/stop", CAL_SCOPES.read, (t, _u, body) => {
-    const b = json(body) as { id?: string; resourceId?: string };
-    const ch = channels.get(b.id ?? "");
-    if (!ch || ch.resourceId !== b.resourceId || ch.email !== t.email) throw apiError(404, `Channel '${b.id}' not found for project '123456789'`, "notFound");
-    channels.delete(ch.id);
-    return undefined;
-  });
-
-  /** POSTs a push notification for the channel to its address (no body, X-Goog-* headers). Resolves to the HTTP status, 0 when unreachable. */
-  async function notify(channelId: string, state: "sync" | "exists" | "not_exists"): Promise<number> {
-    const ch = channels.get(channelId);
-    if (!ch) throw new Error(`fake-google: unknown channel ${channelId}`);
-    const headers: Record<string, string> = {
-      "x-goog-channel-id": ch.id,
-      "x-goog-resource-id": ch.resourceId,
-      "x-goog-resource-state": state,
-      "x-goog-message-number": String(++ch.messages),
-      "x-goog-resource-uri": `${url}/calendar/v3/calendars/${encodeURIComponent(ch.calendarId)}/events?alt=json`,
-      "x-goog-channel-expiration": new Date(ch.expiration).toUTCString(),
-      ...(ch.token ? { "x-goog-channel-token": ch.token } : {}),
-    };
-    try {
-      const target = fake.calendar.pushTarget ? fake.calendar.pushTarget(ch.address) : ch.address;
-      const res = await fetch(target, { method: "POST", headers, signal: AbortSignal.timeout(5000) });
-      await res.body?.cancel();
-      return res.status;
-    } catch {
-      return 0;
-    }
-  }
-
   const calendarApi: FakeCalendar = {
-    autoNotify: true,
-    pushTarget: null,
     addCalendar(email, opts) {
       const id = opts.id ?? `${randomBytes(16).toString("hex")}@group.calendar.google.com`;
       return addCalendarTo(email.toLowerCase(), {
@@ -2050,77 +1755,22 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
       for (const cal of calendarsOf(email).values()) if (!calendarId || cal.entry.id === calendarId || (calendarId === "primary" && cal.entry.primary)) cal.gen++;
     },
     mailsSent: (email) => [...(calMails.get(email.toLowerCase()) ?? [])],
-    channels: () => [...channels.values()].map(({ messages: _m, ...ch }) => ({ ...ch })),
-    notify,
   };
 
   // ───── Google Drive (read-only) ─────
 
   const DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive"];
-  /** Google's export formats per native type (the subset xaq uses, plus html for docs). */
-  const DRIVE_EXPORTS: Record<string, string[]> = {
-    "application/vnd.google-apps.document": [
-      "application/pdf",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      "text/plain",
-      "text/markdown",
-      "text/html",
-    ],
-    "application/vnd.google-apps.spreadsheet": ["application/pdf", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "text/csv"],
-    "application/vnd.google-apps.presentation": ["application/pdf", "application/vnd.openxmlformats-officedocument.presentationml.presentation", "text/plain"],
-    "application/vnd.google-apps.drawing": ["application/pdf", "image/png"],
-  };
   const driveFiles = new Map<string, Map<string, FakeDriveFileInput & { id: string }>>();
   let nextDriveId = 1;
-  const driveFile = (req: IncomingMessage, rawId: string) => {
+
+  on("GET", /^\/drive\/v3\/files\/([^/]+)$/, (req, _u, _b, m) => {
     const t = calendarBearer(req, DRIVE_SCOPES, "drive");
-    const f = driveFiles.get(t.email)?.get(decodeURIComponent(rawId));
-    if (!f) throw apiError(404, `File not found: ${decodeURIComponent(rawId)}.`, "notFound");
-    return f;
-  };
-  const webViewLink = (f: FakeDriveFileInput & { id: string }) =>
-    f.mimeType.startsWith("application/vnd.google-apps.")
-      ? `https://docs.google.com/${f.mimeType.slice("application/vnd.google-apps.".length)}/d/${f.id}/edit?usp=drivesdk`
-      : `https://drive.google.com/file/d/${f.id}/view?usp=drivesdk`;
-  const sendBytes = (res: ServerResponse, mimeType: string, data: Buffer) => {
-    res.writeHead(200, { "content-type": mimeType, "content-length": String(data.length) });
-    // Large bodies in chunks, so a client that stops reading early is seen (the socket closes).
-    for (let i = 0; i < data.length; i += 1 << 20) res.write(data.subarray(i, i + (1 << 20)));
-    res.end();
-  };
-
-  /** The scopes of the request's bearer token (driveFile has checked it). */
-  const bearerScopes = (req: IncomingMessage) => [...(accessTokens.get((req.headers.authorization ?? "").replace(/^Bearer\s+/i, ""))?.scopes ?? [])];
-
-  on("GET", /^\/drive\/v3\/files\/([^/]+)$/, (req, url, _b, m, res) => {
-    const f = driveFile(req, m[1]!);
-    if (url.searchParams.get("alt") === "media") {
-      if (f.mimeType.startsWith("application/vnd.google-apps.")) {
-        throw apiError(403, "Only files with binary content can be downloaded. Use Export with Docs Editors files.", "fileNotDownloadable");
-      }
-      const data = f.content ?? Buffer.alloc(0);
-      driveApi.served.push({ id: f.id, kind: "media", bytes: data.length, scopes: bearerScopes(req) });
-      sendBytes(res, f.mimeType, data);
-      return;
-    }
-    const size = f.size === undefined ? (f.content ? String(f.content.length) : undefined) : (f.size ?? undefined);
-    return { id: f.id, name: f.name, mimeType: f.mimeType, ...(size !== undefined ? { size } : {}), webViewLink: webViewLink(f), trashed: !!f.trashed };
-  });
-
-  on("GET", /^\/drive\/v3\/files\/([^/]+)\/export$/, (req, url, _b, m, res) => {
-    const f = driveFile(req, m[1]!);
-    const formats = DRIVE_EXPORTS[f.mimeType];
-    if (!formats) throw apiError(403, "Export only supports Docs Editors files.", "fileNotExportable");
-    const mime = url.searchParams.get("mimeType") ?? "";
-    if (!formats.includes(mime)) throw apiError(400, "The requested conversion is not supported.", "badRequest");
-    const data = f.exports?.[mime] ?? Buffer.from(mime === "application/pdf" ? `%PDF-1.7\n% ${f.name} exported\n%%EOF\n` : `${f.name} exported as ${mime}\n`);
-    if (data.length > 10 * 1024 * 1024) throw apiError(403, "This file is too large to be exported.", "exportSizeLimitExceeded");
-    driveApi.served.push({ id: f.id, kind: "export", bytes: data.length, scopes: bearerScopes(req) });
-    sendBytes(res, mime, data);
+    const f = driveFiles.get(t.email)?.get(decodeURIComponent(m[1]!));
+    if (!f) throw apiError(404, `File not found: ${decodeURIComponent(m[1]!)}.`, "notFound");
+    return { id: f.id, name: f.name, mimeType: f.mimeType };
   });
 
   const driveApi: FakeDrive = {
-    served: [],
     addFile(email, file) {
       const key = email.toLowerCase();
       box(key);
@@ -2152,7 +1802,7 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
   const filesOf = (email: string) => driveFiles.get(email.toLowerCase()) ?? new Map<string, FakeDriveFileInput & { id: string }>();
   const fileOr404 = (email: string, id: string, mime: string) => {
     const f = filesOf(email).get(id);
-    if (!f || f.mimeType !== mime || f.trashed) throw apiError(404, `Requested entity was not found.`, "notFound");
+    if (!f || f.mimeType !== mime) throw apiError(404, `Requested entity was not found.`, "notFound");
     return f;
   };
   on("GET", /^\/drive\/v3\/about$/, (req) => {
@@ -2181,12 +1831,11 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
 
   // ───── Server ─────
 
-  const closers = new Set<() => void>();
-
   async function handle(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? "/", "http://fake");
     const method = req.method ?? "GET";
     fake.requests.push({ method, path: url.pathname });
+    if (fake.delayMs) await new Promise((r) => setTimeout(r, fake.delayMs));
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
     const body = Buffer.concat(chunks);
@@ -2231,17 +1880,15 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
 
   const fake: FakeGoogle = {
     url,
-    google: { oauthBase: url, authBase: url, gmailBase: url, pubsubBase: url, calendarBase: url, apisBase: url },
+    google: { oauthBase: url, authBase: url, gmailBase: url, calendarBase: url, apisBase: url },
     accessTokenTtl: 3600,
+    delayMs: 0,
     refreshTokenTtl: null,
     registeredRedirectUris: null,
-    pullWaitMs: 1000,
-    abortedPulls: 0,
     revoked: [],
     requests: [],
     uploads: [],
     async close() {
-      for (const c of closers) c();
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
@@ -2258,8 +1905,6 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
         history: [],
         labels,
         drafts: new Map(),
-        watch: null,
-        projectAccess: opts.projectAccess ?? true,
         nextLabel: 1,
         workspaceDomain: opts.workspaceDomain?.toLowerCase() ?? null,
       });
@@ -2313,9 +1958,6 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
       mb.historyId++;
       mb.minHistoryId = mb.historyId;
     },
-    orgPolicyBlocksIam(on) {
-      orgPolicy = on;
-    },
     disableApi(api, on) {
       if (on) disabled.add(api);
       else disabled.delete(api);
@@ -2343,13 +1985,6 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
       const m = mb.messages.get(id);
       return m ? format(m) : null;
     },
-    watch: (email) => box(email).watch,
-    topics: () => [...topics.keys()],
-    subscription: (name) => {
-      const s = subs.get(name);
-      return s ? { topic: s.topic, ackDeadlineSeconds: s.ackDeadlineSeconds, outstanding: s.outstanding.size, queued: s.queue.length } : null;
-    },
-    iamPolicy: (topic) => (topics.has(topic) ? structuredClone(topics.get(topic)!.policy) : null),
     calendar: calendarApi,
     refreshes: [],
     ignoreRefreshScope: false,
@@ -2366,35 +2001,54 @@ export async function startFakeGoogle(): Promise<FakeGoogle> {
 
 // ───────────── Test helpers ─────────────
 
+/** Scopes a fake user grants when they untick Calendar (what Google's token response then says). */
+export const MAIL_ONLY = [GMAIL_SCOPE, "openid", "https://www.googleapis.com/auth/userinfo.email", "profile"];
+
+/** Google's enable link for the Calendar API in the fake project (in its SERVICE_DISABLED answers). */
+export const CALENDAR_ACTIVATION_URL = "https://console.developers.google.com/apis/api/calendar-json.googleapis.com/overview?project=123456789";
+
 /**
- * Configures the fake OAuth client (unless already set) and runs the whole connect flow for `email`
- * (adding the mailbox if needed): startConnect → fake consent → completeConnectFromUrl. `pubsub: true`
- * then also grants the Pub/Sub scope through the incremental-consent flow provisioning uses.
- * `scopes` overrides what the fake user grants on the consent screen.
+ * One consent round trip (adding the mailbox if needed): startConnect → the fake consent screen as `email` →
+ * completeConnectFromUrl. `screen` is what the user does there (deny, untick scopes); the scopes asked for come back
+ * in `scope`, and a refused connect in `error`.
  */
+export async function consent(
+  ctx: AppContext,
+  fake: FakeGoogle,
+  email: string,
+  start: { reauthAccountId?: string; scopes?: ExtraScopeName[] } = {},
+  screen: Parameters<FakeGoogle["consentAs"]>[1] & { name?: string } = {},
+): Promise<{ account?: Account; error?: Error; scope: string[] }> {
+  fake.addAccount(email, { name: screen.name });
+  fake.consentAs(email, screen);
+  const { authUrl } = ctx.google.startConnect(start);
+  const scope = (new URL(authUrl).searchParams.get("scope") ?? "").split(" ");
+  const res = await fetch(authUrl, { redirect: "manual" });
+  const location = res.headers.get("location");
+  if (!location) throw new Error(`fake consent failed: HTTP ${res.status} ${await res.text()}`);
+  try {
+    return { account: await ctx.google.completeConnectFromUrl(location), scope };
+  } catch (error) {
+    return { error: error as Error, scope };
+  }
+}
+
+/** consent() with the fake OAuth client configured (unless already set); throws when the connect is refused. */
 export async function connectFakeAccount(
   ctx: AppContext,
   fake: FakeGoogle,
   email: string,
-  opts: { name?: string; reauthAccountId?: string; scopes?: string[]; pubsub?: boolean } = {},
+  opts: { name?: string; reauthAccountId?: string; scopes?: string[] } = {},
 ): Promise<Account> {
   if (!ctx.google.clientView().hasSecret) ctx.google.setClient({ ...FAKE_CLIENT, appType: "internal" });
-  fake.addAccount(email, { name: opts.name });
-  const consent = async (start: { reauthAccountId?: string; scopes?: "pubsub"[] }) => {
-    fake.consentAs(email, { scopes: opts.scopes });
-    const { authUrl } = ctx.google.startConnect(start);
-    const res = await fetch(authUrl, { redirect: "manual" });
-    const location = res.headers.get("location");
-    if (!location) throw new Error(`fake consent failed: HTTP ${res.status} ${await res.text()}`);
-    return ctx.google.completeConnectFromUrl(location);
-  };
-  const account = await consent({ reauthAccountId: opts.reauthAccountId });
-  return opts.pubsub ? consent({ reauthAccountId: account.id, scopes: ["pubsub"] }) : account;
+  const { account, error } = await consent(ctx, fake, email, { reauthAccountId: opts.reauthAccountId }, { name: opts.name, scopes: opts.scopes });
+  if (error) throw error;
+  return account!;
 }
 
 /**
  * A minimal EventsService that records emits and enforces dedupe keys, for tests that don't want the
- * real events/webhooks pipeline: `testContext({ events: rec.factory })`, then inspect `rec.events`.
+ * real events pipeline: `testContext({ events: rec.factory })`, then inspect `rec.events`.
  */
 export function recordingEvents() {
   const events: (NewEvent & { seq: number })[] = [];
@@ -2434,4 +2088,481 @@ export function recordingEvents() {
     factory: () => service,
     ofType: (type: NewEvent["type"]) => events.filter((e) => e.type === type),
   };
+}
+
+// ───────────── In-process client fakes ─────────────
+// For tests that don't need HTTP: GmailClient, MimeTools and CalendarClient in memory, wired in with
+// testContext({ google: () => new FakeGoogleService().service() }). Shapes follow server/google/types.ts.
+
+export interface FakeMessage {
+  id: string;
+  threadId: string;
+  labelIds: string[];
+  from: Address;
+  to: Address[];
+  cc?: Address[];
+  replyTo?: Address[];
+  subject: string;
+  date?: string;
+  text?: string;
+  html?: string;
+  messageId?: string;
+  references?: string[];
+  authResults?: string;
+  attachments?: { id: string; filename: string; mimeType: string; data: Buffer }[];
+}
+
+const b64 = (s: string | Buffer) => Buffer.from(s).toString("base64url");
+const fmt = (a: Address) => (a.name ? `"${a.name}" <${a.email}>` : a.email);
+
+const GMAIL_SYSTEM_LABELS: GmailLabel[] = ["INBOX", "SENT", "DRAFT", "SPAM", "TRASH", "UNREAD", "STARRED", "IMPORTANT"].map((id) => ({
+  id,
+  name: id,
+  type: "system",
+}));
+
+export class FakeGmail implements GmailClient {
+  readonly messages = new Map<string, FakeMessage>();
+  readonly drafts = new Map<string, { id: string; raw: string; threadId: string | null }>();
+  readonly sent: { raw: string; threadId: string | null; id: string }[] = [];
+  readonly queries: (string | undefined)[] = [];
+  readonly searchLabelIds: (string[] | undefined)[] = [];
+  labels: GmailLabel[] = [...GMAIL_SYSTEM_LABELS];
+  /** Returned by listThreads, to test pagination. */
+  nextPageToken: string | null = null;
+  /** Errors thrown (once each) by the next sendDraft calls. */
+  sendDraftErrors: Error[] = [];
+  private seq = 0;
+
+  constructor(readonly accountId: string) {}
+
+  add(m: FakeMessage): this {
+    this.messages.set(m.id, { cc: [], ...m });
+    return this;
+  }
+
+  private toGmail(m: FakeMessage, format: string): GmailMessage {
+    const base: GmailMessage = { id: m.id, threadId: m.threadId, labelIds: [...m.labelIds], snippet: (m.text ?? m.subject).slice(0, 80) };
+    if (format === "minimal") return base;
+    const headers = [
+      { name: "From", value: fmt(m.from) },
+      { name: "To", value: m.to.map(fmt).join(", ") },
+      ...(m.cc?.length ? [{ name: "Cc", value: m.cc.map(fmt).join(", ") }] : []),
+      ...(m.replyTo?.length ? [{ name: "Reply-To", value: m.replyTo.map(fmt).join(", ") }] : []),
+      { name: "Subject", value: m.subject },
+      { name: "Date", value: m.date ?? "Tue, 14 Oct 2026 09:00:00 +0000" },
+      { name: "Message-ID", value: m.messageId ?? `<${m.id}@mail.example>` },
+      ...(m.references?.length ? [{ name: "References", value: m.references.join(" ") }] : []),
+      ...(m.authResults ? [{ name: "Authentication-Results", value: m.authResults }] : []),
+    ];
+    const alt: GmailPart[] = [];
+    if (m.text !== undefined) alt.push({ partId: "0.0", mimeType: "text/plain", body: { size: m.text.length, data: b64(m.text) } });
+    if (m.html !== undefined) alt.push({ partId: "0.1", mimeType: "text/html", body: { size: m.html.length, data: b64(m.html) } });
+    const attachments: GmailPart[] = (m.attachments ?? []).map((a, i) => ({
+      partId: String(i + 1),
+      mimeType: a.mimeType,
+      filename: a.filename,
+      body: { attachmentId: a.id, size: a.data.length },
+    }));
+    return {
+      ...base,
+      payload: {
+        mimeType: "multipart/mixed",
+        headers,
+        body: { size: 0 },
+        parts: [{ partId: "0", mimeType: "multipart/alternative", body: { size: 0 }, parts: alt }, ...attachments],
+      },
+    };
+  }
+
+  private need(id: string): FakeMessage {
+    const m = this.messages.get(id);
+    if (!m) throw new GoogleApiError(404, "Requested entity was not found.", "notFound");
+    return m;
+  }
+
+  private threadMessages(id: string): FakeMessage[] {
+    const msgs = [...this.messages.values()].filter((m) => m.threadId === id);
+    if (!msgs.length) throw new GoogleApiError(404, "Requested entity was not found.", "notFound");
+    return msgs;
+  }
+
+  async getProfile() {
+    return { emailAddress: "", messagesTotal: this.messages.size, threadsTotal: 0, historyId: "1" };
+  }
+
+  async listMessages() {
+    return { messages: [...this.messages.values()].map((m) => ({ id: m.id, threadId: m.threadId })), nextPageToken: null, resultSizeEstimate: this.messages.size };
+  }
+
+  /** Ignores the query and label filter (records them) so post-filtering is exercised. */
+  async listThreads(p: { q?: string; labelIds?: string[]; maxResults?: number; pageToken?: string }) {
+    this.queries.push(p.q);
+    this.searchLabelIds.push(p.labelIds);
+    const ids = [...new Set([...this.messages.values()].map((m) => m.threadId))].slice(0, p.maxResults ?? 100);
+    return { threads: ids.map((id) => ({ id, snippet: "", historyId: "1" })), nextPageToken: this.nextPageToken, resultSizeEstimate: ids.length };
+  }
+
+  async getMessage(id: string, format = "full") {
+    return this.toGmail(this.need(id), format);
+  }
+
+  async getThread(id: string, format: "full" | "metadata" | "minimal" = "full"): Promise<GmailThread> {
+    return { id, messages: this.threadMessages(id).map((m) => this.toGmail(m, format)) };
+  }
+
+  async getAttachment(messageId: string, attachmentId: string) {
+    const a = this.need(messageId).attachments?.find((x) => x.id === attachmentId);
+    if (!a) throw new GoogleApiError(404, "Attachment not found", "notFound");
+    return { data: a.data.toString("base64url"), size: a.data.length };
+  }
+
+  async listLabels() {
+    return this.labels.map((l) => ({ ...l }));
+  }
+
+  async modifyMessage(id: string, add: string[], remove: string[]) {
+    const m = this.need(id);
+    m.labelIds = [...new Set([...m.labelIds.filter((l) => !remove.includes(l)), ...add])];
+    return this.toGmail(m, "minimal");
+  }
+
+  async modifyThread(id: string, add: string[], remove: string[]) {
+    for (const m of this.threadMessages(id)) await this.modifyMessage(m.id, add, remove);
+    return this.getThread(id, "minimal");
+  }
+
+  async trashMessage(id: string) {
+    return this.modifyMessage(id, ["TRASH"], ["INBOX"]);
+  }
+
+  async trashThread(id: string) {
+    return this.modifyThread(id, ["TRASH"], ["INBOX"]);
+  }
+
+  async send(raw: string, threadId?: string | null) {
+    const id = `sent${++this.seq}`;
+    this.sent.push({ raw, threadId: threadId ?? null, id });
+    return { id, threadId: threadId ?? `t-${id}`, labelIds: ["SENT"] };
+  }
+
+  async createDraft(raw: string, threadId?: string | null): Promise<GmailDraft> {
+    const id = `r-${++this.seq}`;
+    this.drafts.set(id, { id, raw, threadId: threadId ?? null });
+    return { id, message: { id: `dm${this.seq}`, threadId: threadId ?? `t-dm${this.seq}`, labelIds: ["DRAFT"] } };
+  }
+
+  async getDraft(id: string): Promise<GmailDraft> {
+    const d = this.drafts.get(id);
+    if (!d) throw new GoogleApiError(404, "Draft not found", "notFound");
+    // Real drafts.get returns the full message; the body here mirrors the raw so edits change it.
+    return { id, message: { id: `dm-${id}`, threadId: d.threadId ?? "t", payload: { mimeType: "text/plain", headers: [], body: { size: d.raw.length, data: d.raw } } } };
+  }
+
+  async sendDraft(id: string) {
+    const err = this.sendDraftErrors.shift();
+    if (err) throw err;
+    const d = this.drafts.get(id);
+    if (!d) throw new GoogleApiError(404, "Draft not found", "notFound");
+    this.drafts.delete(id);
+    return this.send(d.raw, d.threadId);
+  }
+
+  async deleteDraft(id: string) {
+    if (!this.drafts.delete(id)) throw new GoogleApiError(404, "Draft not found", "notFound");
+  }
+
+  listHistory(): never {
+    throw new Error("not used");
+  }
+  watch(): never {
+    throw new Error("not used");
+  }
+  stopWatch(): never {
+    throw new Error("not used");
+  }
+}
+
+export function parseAddressList(value: string | null | undefined): Address[] {
+  if (!value) return [];
+  const out: Address[] = [];
+  for (const part of value.match(/(?:"[^"]*"|[^,])+/g) ?? []) {
+    const s = part.trim();
+    if (!s) continue;
+    const m = /^(?:"?([^"<]*?)"?\s*)?<([^>]+)>$/.exec(s);
+    out.push(m ? { name: m[1]?.trim() || null, email: m[2]!.trim() } : { name: null, email: s });
+  }
+  return out;
+}
+
+const headerMap = (msg: GmailMessage) => Object.fromEntries((msg.payload?.headers ?? []).map((h) => [h.name.toLowerCase(), h.value]));
+
+function walk(part: GmailPart | undefined, fn: (p: GmailPart) => void) {
+  if (!part) return;
+  fn(part);
+  for (const p of part.parts ?? []) walk(p, fn);
+}
+
+export class FakeMime implements MimeTools {
+  readonly composed: ComposeInput[] = [];
+
+  summarize(msg: GmailMessage) {
+    const h = headerMap(msg);
+    let hasAttachments = false;
+    walk(msg.payload, (p) => {
+      if (p.filename) hasAttachments = true;
+    });
+    return {
+      id: msg.id,
+      threadId: msg.threadId,
+      from: parseAddressList(h.from)[0] ?? null,
+      to: parseAddressList(h.to),
+      cc: parseAddressList(h.cc),
+      subject: h.subject ?? "",
+      snippet: msg.snippet ?? "",
+      date: h.date ? new Date(h.date).toISOString() : "",
+      labelIds: msg.labelIds ?? [],
+      hasAttachments,
+    };
+  }
+
+  parse(msg: GmailMessage): ParsedMessage {
+    const h = headerMap(msg);
+    let text: string | null = null;
+    let html: string | null = null;
+    const attachments: ParsedMessage["attachments"] = [];
+    walk(msg.payload, (p) => {
+      if (p.filename && p.body.attachmentId) attachments.push({ id: p.body.attachmentId, filename: p.filename, mimeType: p.mimeType, size: p.body.size });
+      else if (p.mimeType === "text/plain" && p.body.data) text = Buffer.from(p.body.data, "base64url").toString("utf8");
+      else if (p.mimeType === "text/html" && p.body.data) html = Buffer.from(p.body.data, "base64url").toString("utf8");
+    });
+    return {
+      summary: this.summarize(msg),
+      headers: h,
+      messageId: h["message-id"] ?? null,
+      inReplyTo: h["in-reply-to"] ?? null,
+      references: (h.references ?? "").split(/\s+/).filter(Boolean),
+      replyTo: parseAddressList(h["reply-to"]),
+      text,
+      html,
+      attachments,
+      authenticationResults: h["authentication-results"] ?? null,
+    };
+  }
+
+  async compose(input: ComposeInput): Promise<string> {
+    this.composed.push(input);
+    const { attachments, ...rest } = input;
+    return b64(JSON.stringify({ ...rest, attachments: (attachments ?? []).map((a) => ({ filename: a.filename, size: a.content.length })) }));
+  }
+
+  parseAddresses(value: string | null | undefined) {
+    return parseAddressList(value);
+  }
+}
+
+/** Decodes a raw message produced by FakeMime.compose. */
+export const decodeRaw = (raw: string) =>
+  JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as Omit<ComposeInput, "attachments"> & { attachments: { filename: string; size: number }[] };
+
+export class FakeGoogleService {
+  readonly mime = new FakeMime();
+  readonly clients = new Map<string, FakeGmail>();
+  /** Simulates the google label cache: served instead of the live list unless `{ fresh: true }` is passed. */
+  readonly staleLabels = new Map<string, GmailLabel[]>();
+  readonly labelCalls: ({ fresh?: boolean } | null)[] = [];
+
+  gmail(accountId: string): FakeGmail {
+    let c = this.clients.get(accountId);
+    if (!c) {
+      c = new FakeGmail(accountId);
+      this.clients.set(accountId, c);
+    }
+    return c;
+  }
+
+  service(): GoogleService {
+    return new Proxy({} as GoogleService, {
+      get: (target, prop) => {
+        if (prop === "mime") return this.mime;
+        if (prop === "gmail") return (id: string) => this.gmail(id);
+        if (prop === "labels") {
+          return async (id: string, opts?: { fresh?: boolean }) => {
+            this.labelCalls.push(opts ?? null);
+            const stale = this.staleLabels.get(id);
+            return (stale && !opts?.fresh ? stale : this.gmail(id).labels).map((l) => ({ ...l }));
+          };
+        }
+        return Reflect.get(target, prop);
+      },
+    });
+  }
+}
+
+// CalendarClient in memory. Follows Google's semantics where they matter to policy: etags and If-Match (412),
+// client-chosen event ids (409 when taken), attendeesOmitted patches, 404 for unknown ids.
+type Op = "list" | "get" | "insert" | "patch" | "delete" | "freeBusy" | "calendarList";
+
+export interface FakeWrite {
+  op: "insert" | "patch" | "delete";
+  calendarId: string;
+  eventId: string;
+  body?: Partial<CalendarEventRaw>;
+  opts: WriteOptions;
+}
+
+const notFound = () => new GoogleApiError(404, "Not Found", "notFound");
+
+export class FakeCalendarClient implements CalendarClient {
+  readonly calendars = new Map<string, { entry: CalendarListEntryRaw; events: Map<string, CalendarEventRaw> }>();
+  readonly writes: FakeWrite[] = [];
+  readonly calls: Op[] = [];
+  readonly freeBusyItems: string[][] = [];
+  /** Errors thrown (once each, in order) by the next calls of an operation. */
+  readonly fail: Partial<Record<Op, Error[]>> = {};
+  private n = 0;
+
+  constructor(
+    readonly accountId: string,
+    readonly email: string,
+  ) {
+    this.addCalendar(email, "Me", "owner", true);
+  }
+
+  addCalendar(id: string, summary: string, accessRole: CalendarListEntryRaw["accessRole"] = "owner", primary = false): string {
+    this.calendars.set(id, { entry: { id, summary, accessRole, primary, timeZone: "Europe/Berlin" }, events: new Map() });
+    return id;
+  }
+
+  /** Stores an event as Google would have it (fresh etag and `updated`). */
+  put(calendarId: string, ev: Partial<CalendarEventRaw> & { id: string }): CalendarEventRaw {
+    const stored: CalendarEventRaw = { status: "confirmed", ...ev, etag: `"e${++this.n}"`, updated: new Date(Date.now() + this.n).toISOString() };
+    this.cal(calendarId).events.set(ev.id, stored);
+    return structuredClone(stored);
+  }
+
+  event(calendarId: string, eventId: string): CalendarEventRaw | undefined {
+    return this.calendars.get(calendarId)?.events.get(eventId);
+  }
+
+  private step(op: Op): void {
+    this.calls.push(op);
+    const err = this.fail[op]?.shift();
+    if (err) throw err;
+  }
+
+  private cal(id: string) {
+    const c = this.calendars.get(id);
+    if (!c) throw notFound();
+    return c;
+  }
+
+  private ifMatch(current: CalendarEventRaw, opts: WriteOptions) {
+    if (opts.ifMatchEtag && opts.ifMatchEtag !== current.etag) throw new GoogleApiError(412, "Precondition Failed", "conditionNotMet");
+  }
+
+  async listCalendars() {
+    this.step("calendarList");
+    return [...this.calendars.values()].map((c) => ({ ...c.entry }));
+  }
+
+  async listEvents(calendarId: string, p: EventsListParams) {
+    this.step("list");
+    const items = [...this.cal(calendarId).events.values()].filter((e) => {
+      const start = e.start?.dateTime ?? e.start?.date ?? "";
+      const end = e.end?.dateTime ?? e.end?.date ?? "";
+      if (p.timeMax && Date.parse(start) >= Date.parse(p.timeMax)) return false;
+      if (p.timeMin && Date.parse(end) <= Date.parse(p.timeMin)) return false;
+      return !p.q || (e.summary ?? "").toLowerCase().includes(p.q.toLowerCase());
+    });
+    return { items: items.map((e) => structuredClone(e)), nextPageToken: null, nextSyncToken: null, timeZone: "Europe/Berlin" };
+  }
+
+  async getEvent(calendarId: string, eventId: string) {
+    this.step("get");
+    const e = this.cal(calendarId).events.get(eventId);
+    if (!e) throw notFound();
+    return structuredClone(e);
+  }
+
+  async insertEvent(calendarId: string, event: Partial<CalendarEventRaw>, opts: WriteOptions) {
+    this.step("insert");
+    const cal = this.cal(calendarId);
+    const id = event.id ?? `gen${++this.n}`;
+    if (cal.events.has(id)) throw new GoogleApiError(409, "The requested identifier already exists.", "duplicate");
+    this.writes.push({ op: "insert", calendarId, eventId: id, body: structuredClone(event), opts });
+    return this.put(calendarId, { ...event, id, organizer: { email: this.email, self: true } });
+  }
+
+  async patchEvent(calendarId: string, eventId: string, patch: Partial<CalendarEventRaw>, opts: WriteOptions) {
+    this.step("patch");
+    const current = this.cal(calendarId).events.get(eventId);
+    if (!current) throw notFound();
+    this.ifMatch(current, opts);
+    this.writes.push({ op: "patch", calendarId, eventId, body: structuredClone(patch), opts });
+    const { attendeesOmitted, ...rest } = patch;
+    let attendees = rest.attendees ?? current.attendees;
+    if (attendeesOmitted && rest.attendees) {
+      // Only the listed attendees change; the rest of the list stays.
+      const byEmail = new Map(rest.attendees.map((a) => [a.email, a]));
+      attendees = (current.attendees ?? []).map((a): CalendarAttendeeRaw => ({ ...a, ...byEmail.get(a.email) }));
+    }
+    return this.put(calendarId, { ...current, ...rest, attendees, id: eventId });
+  }
+
+  async deleteEvent(calendarId: string, eventId: string, opts: WriteOptions) {
+    this.step("delete");
+    const current = this.cal(calendarId).events.get(eventId);
+    if (!current || current.status === "cancelled") throw new GoogleApiError(410, "Resource has been deleted", "deleted");
+    this.ifMatch(current, opts);
+    this.writes.push({ op: "delete", calendarId, eventId, opts });
+    this.put(calendarId, { id: eventId, status: "cancelled" });
+  }
+
+  async freeBusy(p: { timeMin: string; timeMax: string; items: string[] }) {
+    this.step("freeBusy");
+    this.freeBusyItems.push(p.items);
+    const calendars: Record<string, { busy: { start: string; end: string }[]; errors?: { domain: string; reason: string }[] }> = {};
+    for (const id of p.items) {
+      const c = this.calendars.get(id);
+      calendars[id] = c
+        ? { busy: [...c.events.values()].filter((e) => e.status !== "cancelled" && e.start?.dateTime).map((e) => ({ start: e.start!.dateTime!, end: e.end!.dateTime! })) }
+        : { busy: [], errors: [{ domain: "global", reason: "notFound" }] };
+    }
+    return { calendars };
+  }
+
+  watchEvents(): never {
+    throw new Error("not used");
+  }
+
+  stopChannel(): never {
+    throw new Error("not used");
+  }
+}
+
+/** The calendar list as ctx.calendar.calendars returns it (workstream D's shape). */
+export const calendarInfoOf = (c: CalendarListEntryRaw): CalendarInfo => ({
+  id: c.id,
+  name: c.summaryOverride ?? c.summary ?? c.id,
+  primary: !!c.primary,
+  accessRole: c.accessRole,
+  timeZone: c.timeZone ?? null,
+  color: null,
+  synced: c.accessRole === "owner" || c.accessRole === "writer",
+});
+
+/** The smallest GoogleService: only the client view the platform routes read (no Google calls at all). */
+export function fakeGoogle(view: { clientId?: string | null; hasSecret?: boolean; projectId?: string | null } = {}): () => GoogleService {
+  return () =>
+    ({
+      clientView: () => ({
+        clientId: view.clientId ?? null,
+        hasSecret: view.hasSecret ?? false,
+        projectId: view.projectId ?? null,
+        appType: view.clientId ? "external" : null,
+        redirectUri: "http://localhost:8425/oauth/callback",
+        callbackMode: "direct",
+      }),
+    }) as unknown as GoogleService;
 }

@@ -1,4 +1,4 @@
-// Console decisions for broker connections (docs/MCP-BROKER.md) as pure functions, so they can be tested directly:
+// Console decisions for broker connections as pure functions, so they can be tested directly:
 // a connection's status in plain words, the Add connection draft and the request sequence it turns into, what a
 // probe found and access levels. Built on the /api/connections DTOs in shared/types.ts.
 // No React and relative imports only: vitest and the server typecheck load this module too.
@@ -14,6 +14,7 @@ import type {
   SetupStepView,
   StartConnectInput,
 } from "../../../shared/types.ts";
+import { presetServerSlug, withServerPath } from "../../../shared/user-server.ts";
 import type { AgentConnection, AgentLevel } from "../../lib/broker-dto.ts";
 
 /** A subset of the console's Tone (src/lib/labels.ts). */
@@ -23,20 +24,16 @@ const DAY = 86_400_000;
 
 // ───────────── Access levels ─────────────
 
-export const ACCESS_LEVELS = ["full", "ask", "read"] as const satisfies readonly AccessLevel[];
-export const DEFAULT_LEVEL: AccessLevel = "ask";
+export const ACCESS_LEVELS = ["full", "read"] as const satisfies readonly AccessLevel[];
+export const DEFAULT_LEVEL: AccessLevel = "full";
 
 export const LEVEL_INFO: Record<AgentLevel, { label: string; description: string }> = {
-  full: { label: "Full access", description: "Agents use every tool without asking you." },
-  ask: {
-    label: "Ask before risky actions",
-    description: "Reading, creating and editing go straight through. Deleting, sending, sharing outside and payments wait for your approval.",
-  },
+  full: { label: "Full access", description: "Agents use every tool." },
   read: { label: "Read only", description: "Agents can only look things up. Tools that change anything are hidden." },
   none: { label: "No access", description: "This agent doesn't see this connection's tools." },
 };
 
-export const AGENT_LEVELS = ["full", "ask", "read", "none"] as const satisfies readonly AgentLevel[];
+export const AGENT_LEVELS = ["full", "read", "none"] as const satisfies readonly AgentLevel[];
 
 // ───────────── Status ─────────────
 
@@ -229,31 +226,14 @@ export function suggestSlug(url: string): string {
   return base.slice(0, 24);
 }
 
-/**
- * The MCP URL for a preset whose server the user names (T3 Code): as typed, with the preset's path when only an origin
- * was given (http://100.104.249.49:3773 → http://100.104.249.49:3773/mcp). Same rule as the server's presetServerUrl.
- */
+/** The MCP URL for a preset whose server the user names (T3 Code): as typed, with the preset's path (shared/user-server.ts). */
 export function presetServerUrl(raw: string, defaultPath: string): string {
   const text = raw.trim();
   try {
-    const u = new URL(text);
-    if (u.pathname === "/" || u.pathname === "") u.pathname = defaultPath;
-    return u.toString();
+    return withServerPath(new URL(text), defaultPath);
   } catch {
     return text;
   }
-}
-
-/** The default slug for a user-named server: `<preset slug>-<host>` (t3-forge, t3-100-104-249-49), as the server's. */
-export function presetServerSlug(presetSlug: string, url: string): string {
-  let host: string;
-  try {
-    host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  } catch {
-    return presetSlug;
-  }
-  const part = (/^[\d.]+$/.test(host) || host.includes(":") ? host : (host.split(".")[0] ?? host)).replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
-  return `${presetSlug}-${part}`.slice(0, 24).replace(/-+$/, "");
 }
 
 /** The name a connection gets when none is typed: the preset's, or the server's `host[:port]` (as the server does). */

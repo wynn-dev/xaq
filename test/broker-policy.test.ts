@@ -1,22 +1,16 @@
-// Broker policy, calls and mcp.call approvals (docs/MCP-BROKER.md "Access and approvals"): the three levels × risk,
-// "always allow" rules (with and without a target, array targets), caps, exact-bytes approvals with the TOCTOU
-// re-checks, get_call_status, expiry, output wrapping and delimiter escaping, token scrubbing, SourceError
-// mapping and the kill switch. Offline: an in-process registry, source and credential store.
+// Broker policy and calls: the two levels × risk, output wrapping and delimiter escaping, token scrubbing,
+// SourceError mapping and the kill switch. Offline: an in-process registry, source and credential store.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { McpCallApproval } from "../shared/types.ts";
-import { type ApprovalRequestedEvent, approvalEventVisible, type BrokerPolicyRuntime, canonicalJson, createBrokerPolicyRuntime } from "../server/broker/policy/index.ts";
-import { atPointer } from "../server/broker/policy/canonical.ts";
+import { type BrokerPolicyRuntime, createBrokerPolicyRuntime } from "../server/broker/policy/index.ts";
 import { makeScrubber, processResult } from "../server/broker/policy/output.ts";
 import { SourceError, type ToolResult } from "../server/broker/types.ts";
 import { escapeDelimiters, wrapUntrusted } from "../server/mail/content.ts";
-import { Approvals } from "../server/mail/approvals.ts";
 import { addConnection, addTool, DbRegistry, FakeSource, FakeSources, grant, MemoryCredentials } from "./broker-policy-fakes.ts";
-import { CSRF, type Harness, harness, json } from "./platform-helpers.ts";
+import { CSRF, type Harness, harness } from "./helpers.ts";
 
 const signal = () => new AbortController().signal;
 const textOf = (r: ToolResult) => r.content.map((b) => (b.type === "text" ? String(b.text) : `[${b.type}]`)).join("\n");
-const approvalIdOf = (r: ToolResult) => /approval_id: (apr_\w+)/.exec(textOf(r))?.[1] ?? null;
 
 interface World {
   h: Harness;
@@ -24,7 +18,6 @@ interface World {
   registry: DbRegistry;
   sources: FakeSources;
   credentials: MemoryCredentials;
-  requested: ApprovalRequestedEvent[];
   agent: string;
   other: string;
   con: string;
@@ -36,12 +29,10 @@ let w: World;
 beforeEach(() => {
   const h = harness();
   const { ctx } = h;
-  ctx.settings.update({ brokerUpstreams: true });
   const registry = new DbRegistry(ctx);
   const sources = new FakeSources();
   const credentials = new MemoryCredentials();
-  const requested: ApprovalRequestedEvent[] = [];
-  const rt = createBrokerPolicyRuntime(ctx, { registry, sources, credentials, onApprovalRequested: (e) => requested.push(e) });
+  const rt = createBrokerPolicyRuntime(ctx, { registry, sources, credentials });
   const agent = ctx.policy.createAgent({ name: "Hermes" }).agent.id;
   const other = ctx.policy.createAgent({ name: "Codex" }).agent.id;
   const con = addConnection(ctx, "notion", "Notion");
@@ -53,9 +44,8 @@ beforeEach(() => {
     inputSchema: { type: "object", properties: { page_ids: { type: "array", items: { type: "string" } }, reason: { type: "string" } }, required: ["page_ids"] },
   });
   addTool(ctx, con, "notion", { name: "send_message", risky: true, inputSchema: { type: "object", properties: { to: { type: "string" }, body: { type: "string" } } } });
-  registry.targetPaths.set("notion__delete_pages", "/page_ids");
   const src = sources.add(con);
-  w = { h, rt, registry, sources, credentials, requested, agent, other, con, src };
+  w = { h, rt, registry, sources, credentials, agent, other, con, src };
 });
 
 afterEach(async () => {
@@ -70,19 +60,6 @@ describe("levels × risk", () => {
     expect(textOf(await w.rt.call(w.agent, "notion__update_page", {}, signal()))).toContain("ran update_page");
     expect(textOf(await w.rt.call(w.agent, "notion__delete_pages", { page_ids: ["p1"] }, signal()))).toContain("ran delete_pages");
     expect(w.src.calls.map((c) => c.name)).toEqual(["update_page", "delete_pages"]);
-  });
-
-  it("ask: non-risky runs; risky returns pending_approval at once without running", async () => {
-    grant(w.h.ctx, w.agent, w.con, "ask");
-    expect(textOf(await w.rt.call(w.agent, "notion__update_page", {}, signal()))).toContain("ran update_page");
-    const r = await w.rt.call(w.agent, "notion__delete_pages", { page_ids: ["p1"] }, signal());
-    expect(r.isError).toBeFalsy();
-    expect(textOf(r)).toMatch(/^pending_approval: /);
-    expect(textOf(r)).toContain("get_call_status");
-    expect(approvalIdOf(r)).toMatch(/^apr_/);
-    expect(w.src.calls.map((c) => c.name)).toEqual(["update_page"]);
-    const [entry] = audits("notion__delete_pages");
-    expect(entry!.detail).toMatchObject({ decision: "ask", risky: true, connectionId: w.con, riskyCounted: true });
   });
 
   it("read: read tools run; a non-read tool is denied even if the registry let it through", async () => {
@@ -119,358 +96,6 @@ describe("levels × risk", () => {
     expect(r.isError).toBe(true);
     expect(textOf(r)).toContain("Invalid arguments");
     expect(w.src.calls).toHaveLength(0);
-  });
-
-  it("brokerUpstreams off: nothing runs", async () => {
-    grant(w.h.ctx, w.agent, w.con, "full");
-    w.h.ctx.settings.update({ brokerUpstreams: false });
-    expect((await w.rt.call(w.agent, "notion__search", {}, signal())).isError).toBe(true);
-    expect(w.src.calls).toHaveLength(0);
-  });
-});
-
-describe("always allow rules", () => {
-  beforeEach(() => grant(w.h.ctx, w.agent, w.con, "ask"));
-
-  it("without a target: approving once with alwaysAllow means the next call doesn't ask", async () => {
-    const id = approvalIdOf(await w.rt.call(w.agent, "notion__send_message", { to: "bob@example.com", body: "hi" }, signal()))!;
-    await w.rt.approve(id, { alwaysAllow: {} });
-    const again = await w.rt.call(w.agent, "notion__send_message", { to: "eve@example.com", body: "yo" }, signal());
-    expect(textOf(again)).toContain("ran send_message");
-    expect(audits("notion__send_message")[0]!.detail).toMatchObject({ decision: "allow", ruleId: expect.stringMatching(/^rul_/) });
-    // Another agent's calls still ask.
-    grant(w.h.ctx, w.other, w.con, "ask");
-    expect(textOf(await w.rt.call(w.other, "notion__send_message", { to: "x@example.com" }, signal()))).toMatch(/^pending_approval/);
-  });
-
-  it("with a target: only that target goes through", async () => {
-    const id = approvalIdOf(await w.rt.call(w.agent, "notion__send_message", { to: "bob@example.com" }, signal()))!;
-    await w.rt.approve(id, { alwaysAllow: { target: true, targetPath: "/to" } });
-    expect(textOf(await w.rt.call(w.agent, "notion__send_message", { to: "bob@example.com", body: "again" }, signal()))).toContain("ran");
-    expect(textOf(await w.rt.call(w.agent, "notion__send_message", { to: "eve@example.com" }, signal()))).toMatch(/^pending_approval/);
-  });
-
-  it("array targets: allowed only when every id is covered", async () => {
-    const id = approvalIdOf(await w.rt.call(w.agent, "notion__delete_pages", { page_ids: ["p1", "p2"] }, signal()))!;
-    // The tool's own targetPath (/page_ids) is used: one rule per id.
-    await w.rt.approve(id, { alwaysAllow: { target: true } });
-    expect(w.rt.listRules({ agentId: w.agent }).map((r) => r.targetValue).sort()).toEqual(['"p1"', '"p2"']);
-    expect(textOf(await w.rt.call(w.agent, "notion__delete_pages", { page_ids: ["p2"] }, signal()))).toContain("ran");
-    expect(textOf(await w.rt.call(w.agent, "notion__delete_pages", { page_ids: ["p1", "p2"] }, signal()))).toContain("ran");
-    expect(textOf(await w.rt.call(w.agent, "notion__delete_pages", { page_ids: ["p1", "p3"] }, signal()))).toMatch(/^pending_approval/);
-    expect(textOf(await w.rt.call(w.agent, "notion__delete_pages", { page_ids: [] }, signal()))).toMatch(/^pending_approval/);
-  });
-
-  it("JSON Pointers, not dot paths: {\"a.b\"} and {a:{b}} are different targets", () => {
-    const args = { "a.b": "x", a: { b: "y" }, "c/d": "z", "e~f": "t" };
-    expect(atPointer(args, "/a.b")).toBe("x");
-    expect(atPointer(args, "/a/b")).toBe("y");
-    expect(atPointer(args, "/c~1d")).toBe("z");
-    expect(atPointer(args, "/e~0f")).toBe("t");
-    expect(atPointer(args, "a.b")).toBeUndefined();
-  });
-
-  it("revoking the grant deletes the rules; a re-granted connection or a returning tool doesn't inherit old ones", async () => {
-    const id = approvalIdOf(await w.rt.call(w.agent, "notion__send_message", { to: "bob@example.com" }, signal()))!;
-    await w.rt.approve(id, { alwaysAllow: {} });
-    expect(w.rt.onGrantRemoved(w.agent, w.con).rulesDeleted).toBe(1);
-
-    // A rule older than the current grant (a missed delete) is ignored.
-    const id2 = approvalIdOf(await w.rt.call(w.agent, "notion__send_message", { to: "bob@example.com" }, signal()))!;
-    await w.rt.approve(id2, { alwaysAllow: {} });
-    w.h.ctx.db.run("UPDATE approval_rules SET created_at = '2000-01-01T00:00:00.000Z'");
-    expect(textOf(await w.rt.call(w.agent, "notion__send_message", { to: "bob@example.com" }, signal()))).toMatch(/^pending_approval/);
-
-    // A removed tool loses its rules.
-    w.h.ctx.db.run("UPDATE approval_rules SET created_at = ?", new Date().toISOString());
-    expect(w.rt.onToolRemoved(w.con, "send_message").rulesDeleted).toBe(1);
-  });
-
-  it("rules are listed and deleted through the admin API", async () => {
-    const cookie = await w.h.claim();
-    const id = approvalIdOf(await w.rt.call(w.agent, "notion__send_message", { to: "bob@example.com" }, signal()))!;
-    await w.rt.approve(id, { alwaysAllow: {} });
-    const list = await json(await w.h.request(`/api/approval-rules?agentId=${w.agent}`, { cookie }));
-    expect(list).toHaveLength(1);
-    const del = await w.h.request(`/api/approval-rules/${list[0].id}`, { method: "DELETE", cookie, headers: CSRF });
-    expect(del.status).toBe(204);
-    expect(w.rt.listRules()).toHaveLength(0);
-  });
-});
-
-describe("caps on risky calls", () => {
-  it("count runs, queued calls and unknown outcomes; not denials or calls that never left", async () => {
-    w.h.ctx.settings.setState("broker.policy", { riskyPerHour: 3, riskyPerDay: null });
-    grant(w.h.ctx, w.agent, w.con, "full");
-    await w.rt.call(w.agent, "notion__delete_pages", { page_ids: ["a"] }, signal()); // ran: 1
-    w.src.handler = () => {
-      throw new SourceError("needs_reauth", "expired");
-    };
-    await w.rt.call(w.agent, "notion__delete_pages", { page_ids: ["b"] }, signal()); // never left: 1
-    w.src.handler = () => {
-      throw new SourceError("timeout", "slow");
-    };
-    await w.rt.call(w.agent, "notion__delete_pages", { page_ids: ["c"] }, signal()); // unknown outcome: 2
-    grant(w.h.ctx, w.agent, w.con, "ask");
-    expect(textOf(await w.rt.call(w.agent, "notion__delete_pages", { page_ids: ["d"] }, signal()))).toMatch(/^pending_approval/); // queued: 3
-    const r = await w.rt.call(w.agent, "notion__delete_pages", { page_ids: ["e"] }, signal());
-    expect(r.isError).toBe(true);
-    expect(textOf(r)).toContain("Limit reached: 3 of 3 risky tool calls");
-    // Non-risky calls aren't capped.
-    w.src.handler = () => ({ content: [{ type: "text", text: "ok" }] });
-    expect(textOf(await w.rt.call(w.agent, "notion__update_page", {}, signal()))).toContain("ok");
-    // Per agent.
-    grant(w.h.ctx, w.other, w.con, "full");
-    expect(textOf(await w.rt.call(w.other, "notion__delete_pages", { page_ids: ["f"] }, signal()))).toContain("ok");
-  });
-
-  it("concurrent risky calls can't all pass the check before any is recorded", async () => {
-    w.h.ctx.settings.setState("broker.policy", { riskyPerHour: 2 });
-    grant(w.h.ctx, w.agent, w.con, "full");
-    let release!: () => void;
-    const gate = new Promise<void>((r) => (release = r));
-    w.src.handler = async () => {
-      await gate;
-      return { content: [{ type: "text", text: "done" }] };
-    };
-    const calls = [1, 2, 3].map((i) => w.rt.call(w.agent, "notion__delete_pages", { page_ids: [`p${i}`] }, signal()));
-    release();
-    const results = await Promise.all(calls);
-    expect(results.filter((r) => r.isError).length).toBe(1);
-  });
-});
-
-describe("mcp.call approvals", () => {
-  beforeEach(() => grant(w.h.ctx, w.agent, w.con, "ask"));
-
-  const queue = async (args: Record<string, unknown> = { reason: "cleanup", page_ids: ["p1"] }) => {
-    const id = approvalIdOf(await w.rt.call(w.agent, "notion__delete_pages", args, signal()))!;
-    return { id, approval: w.h.ctx.mail.getApproval(id) as McpCallApproval };
-  };
-
-  it("stores the canonical bytes, their sha256, the pin and the agent; approve forwards exactly those bytes", async () => {
-    const { id, approval } = await queue({ reason: "cleanup", page_ids: ["p1"] });
-    expect(approval).toMatchObject({ kind: "mcp.call", status: "pending", agentId: w.agent, connectionId: w.con, accountId: null });
-    expect(approval.call.args).toBe(canonicalJson({ page_ids: ["p1"], reason: "cleanup" }));
-    expect(approval.call.args).toBe('{"page_ids":["p1"],"reason":"cleanup"}');
-    expect(Date.parse(approval.expiresAt) - Date.parse(approval.createdAt)).toBe(24 * 3_600_000);
-
-    // Pending at once; get_call_status says so.
-    expect(textOf(w.rt.getCallStatus(w.agent, id))).toMatch(/^pending: /);
-
-    w.src.handler = () => ({ content: [{ type: "text", text: "deleted p1" }] });
-    const done = await w.rt.approve(id);
-    expect(done.status).toBe("sent");
-    expect(w.src.calls).toHaveLength(1);
-    expect(w.src.calls[0]!.json).toBe(approval.call.args);
-
-    const status = w.rt.getCallStatus(w.agent, id);
-    expect(status.isError).toBeFalsy();
-    expect(textOf(status)).toMatch(/^done: /);
-    expect(textOf(status)).toMatch(/<tool_output source="notion\/delete_pages" nonce="\w+" untrusted>\ndeleted p1\n<\/tool_output>/);
-  });
-
-  it("approval.requested carries ids and the link, never the arguments", async () => {
-    const { id } = await queue({ page_ids: ["secret-page"] });
-    expect(w.requested).toHaveLength(1);
-    const ev = w.requested[0]!;
-    expect(ev).toMatchObject({ type: "approval.requested", approvalId: id, agentId: w.agent, agentName: "Hermes", connectionId: w.con, tool: "delete_pages", exposedName: "notion__delete_pages" });
-    expect(ev.url).toBe(`${w.h.ctx.settings.publicUrl()}/approve/${id}`);
-    expect(JSON.stringify(ev)).not.toContain("secret-page");
-    expect(approvalEventVisible(w.agent, ev, "listener")).toBe(true);
-    expect(approvalEventVisible(w.other, ev, "listener")).toBe(false);
-    expect(approvalEventVisible(w.other, ev, "webhook")).toBe(true);
-  });
-
-  it("TOCTOU: a changed pin cancels the approval and nothing runs", async () => {
-    const { id } = await queue();
-    w.h.ctx.db.run("UPDATE upstream_tools SET pin_hash = 'changed' WHERE name = 'delete_pages'");
-    await expect(w.rt.approve(id)).rejects.toThrow(/definition changed/);
-    expect(w.h.ctx.mail.getApproval(id)!.status).toBe("rejected");
-    expect(w.src.calls).toHaveLength(0);
-  });
-
-  it("TOCTOU: tampered stored arguments fail the hash check and nothing runs", async () => {
-    const { id } = await queue();
-    w.h.ctx.db.run(`UPDATE approvals SET tool_call = json_set(tool_call, '$.args', '{"page_ids":["everything"]}') WHERE id = ?`, id);
-    await expect(w.rt.approve(id)).rejects.toThrow(/fingerprint/);
-    expect(w.src.calls).toHaveLength(0);
-  });
-
-  it("re-checks the agent and its level", async () => {
-    const { id } = await queue();
-    grant(w.h.ctx, w.agent, w.con, "read");
-    await expect(w.rt.approve(id)).rejects.toThrow(/can no longer use|read-only/);
-    const { id: id2 } = await (async () => {
-      grant(w.h.ctx, w.agent, w.con, "ask");
-      return queue();
-    })();
-    w.h.ctx.policy.updateAgent(w.agent, { disabled: true });
-    await expect(w.rt.approve(id2)).rejects.toThrow(/agent is disabled|already rejected/);
-    expect(w.src.calls).toHaveLength(0);
-  });
-
-  it("runs by the stored connection and upstream tool name, not the exposed name", async () => {
-    const { id } = await queue();
-    // A slug edit renames the exposed tool; another connection takes the old slug.
-    w.h.ctx.db.run("UPDATE connections SET slug = 'notion-old' WHERE id = ?", w.con);
-    w.h.ctx.db.run("UPDATE upstream_tools SET exposed_name = 'notion-old__' || name WHERE connection_id = ?", w.con);
-    const evil = addConnection(w.h.ctx, "notion", "Evil");
-    addTool(w.h.ctx, evil, "notion", { name: "delete_pages", risky: true });
-    grant(w.h.ctx, w.agent, evil, "full");
-    const evilSrc = w.sources.add(evil);
-    await w.rt.approve(id);
-    expect(evilSrc.calls).toHaveLength(0);
-    expect(w.src.calls).toHaveLength(1);
-  });
-
-  it("the W7 hook: runApprovedCall runs an already-claimed approval", async () => {
-    const { id } = await queue();
-    w.h.ctx.db.run("UPDATE approvals SET status = 'approved', decided_at = ? WHERE id = ?", new Date().toISOString(), id);
-    await w.rt.runApprovedCall(w.h.ctx.mail.getApproval(id) as McpCallApproval);
-    expect(w.h.ctx.mail.getApproval(id)!.status).toBe("sent");
-    expect(w.src.calls).toHaveLength(1);
-  });
-
-  it("runApprovedCall claims the run itself: concurrent or repeated hooks forward it once", async () => {
-    const { id } = await queue();
-    w.h.ctx.db.run("UPDATE approvals SET status = 'approved', decided_at = ? WHERE id = ?", new Date().toISOString(), id);
-    let release!: () => void;
-    const gate = new Promise<void>((r) => (release = r));
-    w.src.handler = async () => {
-      await gate;
-      return { content: [{ type: "text", text: "ok" }] };
-    };
-    const a = w.h.ctx.mail.getApproval(id) as McpCallApproval;
-    const runs = [w.rt.runApprovedCall(a), w.rt.runApprovedCall(a)];
-    release();
-    await Promise.all(runs);
-    await w.rt.runApprovedCall(a);
-    expect(w.src.calls).toHaveLength(1);
-    // Still pending (never claimed by a human): the hook doesn't run it.
-    const { id: id2 } = await queue();
-    await w.rt.runApprovedCall(w.h.ctx.mail.getApproval(id2) as McpCallApproval);
-    expect(w.src.calls).toHaveLength(1);
-  });
-
-  it("pending_approval tells the agent not to call again", async () => {
-    const r = await w.rt.call(w.agent, "notion__delete_pages", { page_ids: ["p1"] }, signal());
-    expect(textOf(r)).toContain("Don't call this tool again for the same action");
-    expect(textOf(r)).toContain("check with get_call_status");
-  });
-
-  it("always allow also approves and runs the agent's other pending calls the new rule covers", async () => {
-    const { id } = await queue({ page_ids: ["p1"] });
-    const { id: covered } = await queue({ page_ids: ["p1"], reason: "again" });
-    const { id: uncovered } = await queue({ page_ids: ["p1", "p2"] });
-    grant(w.h.ctx, w.other, w.con, "ask");
-    const otherId = approvalIdOf(await w.rt.call(w.other, "notion__delete_pages", { page_ids: ["p1"] }, signal()))!;
-    await w.rt.approve(id, { alwaysAllow: { target: true } });
-    expect(w.h.ctx.mail.getApproval(covered)!.status).toBe("sent");
-    expect(w.h.ctx.mail.getApproval(uncovered)!.status).toBe("pending");
-    expect(w.h.ctx.mail.getApproval(otherId)!.status).toBe("pending");
-    expect(w.src.calls).toHaveLength(2);
-  });
-
-  it("both recoveries, in either order, leave an interrupted mcp.call failed with an unknown outcome", async () => {
-    const mail = new Approvals(w.h.ctx);
-    for (const order of [["mail", "broker"], ["broker", "mail"]]) {
-      const { id } = await queue();
-      w.h.ctx.db.run("UPDATE approvals SET status = 'approved', decided_at = '2000-01-01T00:00:00.000Z' WHERE id = ?", id);
-      for (const step of order) {
-        if (step === "mail") mail.recoverInterrupted(0);
-        else w.rt.recoverInterrupted();
-      }
-      const a = w.h.ctx.mail.getApproval(id) as McpCallApproval;
-      expect(a.status).toBe("failed");
-      expect(a.call.outcomeUnknown).toBe(true);
-      expect(textOf(w.rt.getCallStatus(w.agent, id))).toMatch(/^outcome unknown: /);
-    }
-    expect(w.src.calls).toHaveLength(0);
-  });
-
-  it("reject and expire", async () => {
-    const { id } = await queue();
-    w.rt.reject(id, "no thanks");
-    expect(textOf(w.rt.getCallStatus(w.agent, id))).toMatch(/^rejected: .*no thanks/);
-    const { id: id2 } = await queue();
-    w.h.ctx.db.run("UPDATE approvals SET expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?", id2);
-    expect(textOf(w.rt.getCallStatus(w.agent, id2))).toMatch(/^expired: /);
-    await expect(w.rt.approve(id2)).rejects.toThrow(/already expired/);
-    expect(w.src.calls).toHaveLength(0);
-  });
-
-  it("get_call_status is scoped to the calling agent", async () => {
-    const { id } = await queue();
-    const r = w.rt.getCallStatus(w.other, id);
-    expect(r.isError).toBe(true);
-    expect(textOf(r)).toContain("No tool call request");
-  });
-
-  it("an interrupted call ends with an unknown outcome and is never retried", async () => {
-    const { id } = await queue();
-    w.h.ctx.db.run("UPDATE approvals SET status = 'approved', decided_at = ? WHERE id = ?", new Date().toISOString(), id);
-    expect(w.rt.recoverInterrupted()).toBe(1);
-    expect(w.h.ctx.mail.getApproval(id)!.status).toBe("failed");
-    expect(textOf(w.rt.getCallStatus(w.agent, id))).toMatch(/^outcome unknown: /);
-
-    const { id: id2 } = await queue();
-    w.src.handler = () => {
-      throw new SourceError("timeout", "slow");
-    };
-    await w.rt.approve(id2);
-    const a = w.h.ctx.mail.getApproval(id2) as McpCallApproval;
-    expect(a.status).toBe("failed");
-    expect(a.call.outcomeUnknown).toBe(true);
-    await expect(w.rt.approve(id2)).rejects.toThrow(/already failed/);
-    expect(w.src.calls).toHaveLength(1);
-  });
-
-  it("a call that never left (re-auth) goes back to pending with the fix", async () => {
-    const { id } = await queue();
-    w.src.handler = () => {
-      throw new SourceError("needs_reauth", "invalid_grant");
-    };
-    await w.rt.approve(id);
-    const a = w.h.ctx.mail.getApproval(id)!;
-    expect(a.status).toBe("pending");
-    expect(a.error).toContain("Connections → Reconnect");
-  });
-
-  it("losing the grant cancels pending approvals; the mail sweep leaves mcp.call alone", async () => {
-    const { id } = await queue();
-    new Approvals(w.h.ctx).cancelForAgent(w.agent, null, "send removed", "mail");
-    expect(w.h.ctx.mail.getApproval(id)!.status).toBe("pending");
-    grant(w.h.ctx, w.agent, w.con, "read");
-    expect(w.rt.onGrantChanged(w.agent, w.con)).toBe(1);
-    expect(textOf(w.rt.getCallStatus(w.agent, id))).toMatch(/^cancelled: /);
-  });
-
-  it("admin API: the card, approve with always allow, reject; other ids fall through to the mail handlers", async () => {
-    const cookie = await w.h.claim();
-    const { id } = await queue({ page_ids: ["p1"], reason: "mail bob@example.com about https://example.com/x \u200B" });
-    const card = await json(await w.h.request(`/api/approvals/${id}`, { cookie }));
-    expect(card.approval.call.args).toContain("\u200B");
-    expect(card.argsDisplay).toContain("\\u200B");
-    expect(card.argsDisplay).not.toContain("\u200B");
-    expect(card.recipients).toEqual(["bob@example.com"]);
-    expect(card.urls).toEqual(["https://example.com/x"]);
-    expect(card.target).toEqual({ path: "/page_ids", value: ["p1"] });
-    expect(card.argsIntact).toBe(true);
-    expect(card.tool).toMatchObject({ risky: true, pinMatches: true, targetPath: "/page_ids" });
-
-    const res = await w.h.request(`/api/approvals/${id}/approve`, { method: "POST", cookie, headers: CSRF, json: { alwaysAllow: { target: true } } });
-    expect(res.status).toBe(200);
-    expect((await json(res)).status).toBe("sent");
-    expect(w.rt.listRules()).toHaveLength(1);
-
-    // CSRF is enforced like the rest of /api.
-    const { id: id2 } = await queue({ page_ids: ["p9"] });
-    expect((await w.h.request(`/api/approvals/${id2}/reject`, { method: "POST", cookie, json: {} })).status).toBe(403);
-    expect((await w.h.request(`/api/approvals/${id2}/reject`, { method: "POST", cookie, headers: CSRF, json: { note: "no" } })).status).toBe(200);
-
-    // Not an mcp.call: the mail handler answers.
-    expect((await w.h.request("/api/approvals/apr_nope", { cookie })).status).toBe(404);
   });
 });
 
@@ -553,20 +178,13 @@ describe("token scrubbing", () => {
     expect(t).toContain("public-client-id");
   });
 
-  it("redacts in error messages, and in what's stored for get_call_status", async () => {
+  it("redacts in error messages", async () => {
     w.src.handler = () => {
       throw new SourceError("unavailable", `upstream said ${ACCESS} is bad`);
     };
     const r = await w.rt.call(w.agent, "notion__search", {}, signal());
     expect(textOf(r)).not.toContain(ACCESS);
     expect(textOf(r)).toContain("[redacted]");
-
-    grant(w.h.ctx, w.agent, w.con, "ask");
-    const id = approvalIdOf(await w.rt.call(w.agent, "notion__delete_pages", { page_ids: ["p"] }, signal()))!;
-    w.src.handler = () => ({ content: [{ type: "text", text: `leak ${REFRESH}` }] });
-    await w.rt.approve(id);
-    const row = w.h.ctx.db.get<{ tool_call: string }>("SELECT tool_call FROM approvals WHERE id = ?", id)!;
-    expect(row.tool_call).not.toContain(REFRESH);
   });
 
   it("risky calls keep full arguments in the audit log, with secret-like keys redacted", async () => {
@@ -697,20 +315,17 @@ describe("scrubber and kill races", () => {
     expect(textOf(r)).toContain("turned off");
     expect(w.src.calls).toHaveLength(0);
     expect(audits("notion__delete_pages")[0]).toMatchObject({ reason: "connection_disabled" });
-    expect(audits("notion__delete_pages")[0]!.detail).not.toHaveProperty("riskyCounted");
   });
 });
 
 describe("kill switch", () => {
-  it("disables the connection, cancels pending approvals, clears credentials and closes the source", async () => {
-    grant(w.h.ctx, w.agent, w.con, "ask");
+  it("disables the connection, clears credentials and closes the source", async () => {
+    grant(w.h.ctx, w.agent, w.con, "full");
     w.credentials.setHeader(w.con, "Authorization", "Bearer something-long-enough");
-    const id = approvalIdOf(await w.rt.call(w.agent, "notion__delete_pages", { page_ids: ["p"] }, signal()))!;
     const cookie = await w.h.claim();
     const res = await w.h.request(`/api/connections/${w.con}/kill`, { method: "POST", cookie, headers: CSRF });
     expect(res.status).toBe(204);
     expect(w.h.ctx.db.get<{ status: string }>("SELECT status FROM connections WHERE id = ?", w.con)!.status).toBe("disabled");
-    expect(w.h.ctx.mail.getApproval(id)!.status).toBe("rejected");
     expect(w.credentials.cleared).toEqual([w.con]);
     expect(w.credentials.header(w.con)).toBeNull();
     expect(w.sources.closed).toEqual([w.con]);

@@ -13,7 +13,7 @@ import { api } from "@/lib/api";
 import { useApiMutation } from "@/lib/mutations";
 import { keys, queries } from "@/lib/queries";
 
-/** "Change short name": PATCH /api/connections/:id {slug}. Exposed tool names follow; approval rules carry over. */
+/** "Change short name": PATCH /api/connections/:id {slug}. Exposed tool names follow. */
 export function RenameSlugDialog({ connection: c, open, onOpenChange }: { connection: ConnectionView; open: boolean; onOpenChange: (open: boolean) => void }) {
   const [slug, setSlug] = useState(c.slug);
   const all = useQuery(queries.connections());
@@ -21,7 +21,7 @@ export function RenameSlugDialog({ connection: c, open, onOpenChange }: { connec
   const problem = next === c.slug ? null : slugProblem(next, c, all.data ?? []);
   const save = useApiMutation({
     mutationFn: (s: string) => api<ConnectionView>(`/api/connections/${encodeURIComponent(c.id)}`, { method: "PATCH", body: { slug: s } }),
-    invalidate: [keys.connections, ["agent-connections"], keys.approvalRules],
+    invalidate: [keys.connections, ["agent-connections"]],
     success: (v) => `Its tools are now ${v.slug}__…`,
     errorTitle: "Couldn't change the short name",
     onSuccess: () => onOpenChange(false),

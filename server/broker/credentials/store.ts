@@ -4,7 +4,7 @@ import { sha256 } from "../../crypto.ts";
 import type { Db } from "../../db/index.ts";
 import type { Logger } from "../../util/log.ts";
 import { errorMessage } from "../../util/errors.ts";
-import type { CredentialStore, StoredTokens } from "../types.ts";
+import type { StoredTokens } from "../types.ts";
 import { scrubText } from "./scrub.ts";
 
 /**
@@ -90,7 +90,7 @@ const ms = (s: string | null): number | null => (s ? Date.parse(s) : null);
  * Encrypted per-connection credentials in `connection_credentials` (migration 8/9), AES-GCM via
  * server/crypto.ts. Nothing here is ever logged, audited or returned by the API.
  */
-export class SqliteCredentialStore implements CredentialStore {
+export class CredentialStore {
   private readonly now: () => number;
 
   constructor(private readonly deps: CredentialStoreDeps) {

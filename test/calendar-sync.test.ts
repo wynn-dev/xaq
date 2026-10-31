@@ -3,12 +3,12 @@
 // pruning, and that mail-only installs never call the Calendar API.
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Capability, GrantInput } from "../shared/types.ts";
+import type { GrantInput } from "../shared/types.ts";
 import { summarizeEvent } from "../server/calendar/summary.ts";
 import { createCalendarSync, MAX_POLL_BACKOFF_MS, pollBackoffMs } from "../server/calendar/sync.ts";
 import { endsAt, syncRows } from "../server/calendar/state.ts";
 import type { AppContext } from "../server/context.ts";
-import { CALENDAR_SCOPES, GMAIL_SCOPE } from "../server/google/scopes.ts";
+import { CALENDAR_SCOPES, GMAIL_SCOPE } from "../shared/google-scopes.ts";
 import { runMaintenance } from "../server/maintenance.ts";
 import { connectFakeAccount, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";
 import { testContext } from "./helpers.ts";
@@ -30,19 +30,9 @@ let dispose: (() => Promise<void>) | undefined;
 let accountId: string;
 let agentId: string;
 
-const grant = (account: string, capabilities: Capability[], patch: Partial<GrantInput> = {}): GrantInput => ({
-  accountId: account,
-  capabilities,
-  labelScope: null,
-  sendMode: "draft_only",
-  allowTo: [],
-  replyOnly: false,
-  maxSendsPerHour: null,
-  maxSendsPerDay: null,
-  ...patch,
-});
+const grant = (account: string, patch: Partial<GrantInput> = {}): GrantInput => ({ accountId: account, level: "read", allowTo: [], ...patch });
 
-async function setup(opts: { scopes?: string[]; capabilities?: Capability[]; events?: "recording" | "real" } = {}) {
+async function setup(opts: { scopes?: string[]; grant?: boolean; events?: "recording" | "real" } = {}) {
   fake = await startFakeGoogle();
   rec = recordingEvents();
   const t = testContext(opts.events === "real" ? {} : { events: rec.factory }, { google: fake.google });
@@ -50,7 +40,7 @@ async function setup(opts: { scopes?: string[]; capabilities?: Capability[]; eve
   dispose = t.dispose;
   fake.addAccount(BOB, { name: "Bob" });
   accountId = (await connectFakeAccount(ctx, fake, ME, { name: "Me", scopes: opts.scopes ?? [...MAIL, ...CALENDAR_SCOPES] })).id;
-  agentId = ctx.policy.createAgent({ name: "Hermes", grants: [grant(accountId, opts.capabilities ?? ["read", "calendar.read"])] }).agent.id;
+  agentId = ctx.policy.createAgent({ name: "Hermes", grants: opts.grant === false ? [] : [grant(accountId)] }).agent.id;
   markCalls();
 }
 
@@ -325,7 +315,7 @@ describe("edge cases", () => {
 });
 
 describe("what syncs", () => {
-  it("syncs owner and writer calendars in the grants' calendar scope, not read-only subscriptions", async () => {
+  it("syncs owner and writer calendars, not read-only subscriptions", async () => {
     await setup();
     const team = fake.calendar.addCalendar(ME, { name: "Team", accessRole: "writer" });
     const other = fake.calendar.addCalendar(ME, { name: "Side project" });
@@ -335,83 +325,27 @@ describe("what syncs", () => {
     expect(rows[0]!.calendar_id).toBe(ME);
     expect(rows.map((r) => r.calendar_id).sort()).toEqual([ME, team, other].sort());
     expect(rows.map((r) => r.name).sort()).toEqual([ME, "Side project", "Team"].sort());
-
-    ctx.policy.upsertGrant(agentId, accountId, grant(accountId, ["calendar.read"], { calendarScope: [team] }));
-    await sync();
-    expect(syncRows(ctx.db, accountId).map((r) => r.calendar_id)).toEqual([team]);
-    fake.calendar.putEvent(ME, other, { summary: "Not synced", ...slot(1) });
-    fake.calendar.putEvent(ME, team, { summary: "Synced", ...slot(1) });
-    await sync();
-    expect(rec.events.map((e) => e.calendarEvent!.summary)).toEqual(["Synced"]);
-    // Calendar ids in grants match whatever their case.
-    ctx.policy.upsertGrant(agentId, accountId, grant(accountId, ["calendar.read"], { calendarScope: [other.toUpperCase()] }));
-    await sync();
-    expect(syncRows(ctx.db, accountId).map((r) => r.calendar_id)).toEqual([other]);
   });
 
-  it("tells push about changes to the set of synced calendars", async () => {
-    await setup();
-    const changed: string[] = [];
-    const sync2 = createCalendarSync(ctx, {
-      onSyncSetChanged: (id) => {
-        changed.push(id);
-      },
-    });
-    await sync2.syncAccount(accountId);
-    await sync2.syncAccount(accountId);
-    expect(changed).toEqual([accountId]);
-    fake.calendar.addCalendar(ME, { name: "Team" });
-    await sync2.syncAccount(accountId);
-    expect(changed).toEqual([accountId, accountId]);
-  });
-
-  it("survives a push hook that throws or rejects", async () => {
-    await setup();
-    const calls: string[] = [];
-    const throwing = createCalendarSync(ctx, {
-      onSyncSetChanged: (id) => {
-        calls.push(id);
-        throw new Error("push down");
-      },
-    });
-    await throwing.syncAccount(accountId);
-    fake.calendar.addCalendar(ME, { name: "Team" });
-    const rejecting = createCalendarSync(ctx, {
-      onSyncSetChanged: async (id) => {
-        calls.push(id);
-        throw new Error("push down");
-      },
-    });
-    await rejecting.syncAccount(accountId);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(calls).toEqual([accountId, accountId]);
-    expect(account().calendar!.status).toBe("active");
-  });
-
-  it("forgets an account's calendars once no grant reads them, stopping their push channels", async () => {
+  it("forgets an account's calendars once no grant reads them", async () => {
     await setup();
     await sync();
-    const client = ctx.google.calendar(accountId);
-    fake.calendar.autoNotify = false;
-    const ch = await client.watchEvents(ME, { id: "chn_x", address: "https://inbox.example.com/google/calendar/push", token: "t" });
-    ctx.db.run("UPDATE calendar_sync SET channel_id = ?, channel_resource_id = ?", ch.id, ch.resourceId);
-    ctx.policy.upsertGrant(agentId, accountId, grant(accountId, ["read"]));
+    ctx.policy.deleteGrant(agentId, accountId);
     await sync();
     expect(syncRows(ctx.db, accountId)).toEqual([]);
     expect(ctx.db.get("SELECT 1 FROM calendar_event_state")).toBeUndefined();
-    expect(fake.calendar.channels()).toEqual([]);
     // Granted again later: a fresh baseline, so nothing that happened meanwhile floods the agent.
     fake.calendar.putEvent(ME, ME, { summary: "Meanwhile", ...slot(1) });
-    ctx.policy.upsertGrant(agentId, accountId, grant(accountId, ["calendar.read"]));
+    ctx.policy.upsertGrant(agentId, accountId, grant(accountId));
     await sync();
     expect(rec.events).toEqual([]);
   });
 
-  it("makes no Calendar calls without a calendar.read grant, for disabled agents, or without the scopes", async () => {
-    await setup({ capabilities: ["read", "draft", "send", "calendar.write"] });
+  it("makes no Calendar calls without a grant, for disabled agents, or without the scopes", async () => {
+    await setup({ grant: false });
     await sync();
     expect(calendarCalls()).toBe(0);
-    ctx.policy.upsertGrant(agentId, accountId, grant(accountId, ["calendar.read"]));
+    ctx.policy.upsertGrant(agentId, accountId, grant(accountId));
     ctx.policy.updateAgent(agentId, { disabled: true });
     await sync();
     expect(calendarCalls()).toBe(0);
@@ -421,7 +355,7 @@ describe("what syncs", () => {
 
     const mailOnly = (await connectFakeAccount(ctx, fake, BOB, { scopes: MAIL })).id;
     markCalls();
-    ctx.policy.upsertGrant(agentId, mailOnly, grant(mailOnly, ["read", "calendar.read"]));
+    ctx.policy.upsertGrant(agentId, mailOnly, grant(mailOnly));
     await ctx.calendar.syncAccount(mailOnly);
     expect(calendarCalls()).toBe(0);
   });
@@ -439,7 +373,7 @@ describe("what syncs", () => {
 
 describe("mail-only installs", () => {
   it("never call the Calendar API, while mail ingest runs as before", async () => {
-    await setup({ scopes: MAIL, capabilities: ["read", "draft"], events: "real" });
+    await setup({ scopes: MAIL, events: "real" });
     await ctx.calendar.start?.();
     ctx.calendar.kick();
     ctx.calendar.kick(accountId);
@@ -495,7 +429,7 @@ describe("service", () => {
   it("backs off a failing account exponentially without holding up the others", async () => {
     await setup();
     const bob = (await connectFakeAccount(ctx, fake, BOB, { scopes: [...MAIL, ...CALENDAR_SCOPES] })).id;
-    ctx.policy.upsertGrant(agentId, bob, grant(bob, ["calendar.read"]));
+    ctx.policy.upsertGrant(agentId, bob, grant(bob));
     fake.failNext({ path: eventsPath(BOB), status: 429, retryAfter: 0, times: 100_000 });
     const loop = createCalendarSync(ctx, { timing: { pollMs: 40, tickMs: 5 } });
     loop.start?.();
@@ -541,9 +475,9 @@ describe("service", () => {
     expect(rec.events[0]!.calendarEvent!.summary).toBe("Kicked");
   });
 
-  it("stores calendar events through the real events pipeline, visible to calendar.read only", async () => {
+  it("stores calendar events through the real events pipeline, visible to agents with a grant", async () => {
     await setup({ events: "real" });
-    const mailOnly = ctx.policy.createAgent({ name: "Mail", grants: [grant(accountId, ["read"])] }).agent.id;
+    const mailOnly = ctx.policy.createAgent({ name: "None" }).agent.id;
     await sync();
     fake.calendar.invite(BOB, [ME], { summary: "Sync", ...slot(3) });
     await sync();

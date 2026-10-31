@@ -8,12 +8,11 @@ import { loadConfig } from "../server/config.ts";
 import { printStatus } from "../server/listen/admin.ts";
 import { approveLinks, CONNECT_EXIT, runConnect } from "../server/listen/connect.ts";
 import { describeGrant, describeGrants } from "../server/listen/grants.ts";
-import { backfillCommand, EXIT, runListener, type RunListenerOptions } from "../server/listen/listen.ts";
+import { EXIT, runListener, type RunListenerOptions } from "../server/listen/listen.ts";
 import { backfillLockPath, lockPath } from "../server/listen/lock.ts";
 import { helperScriptPath } from "../server/listen/mcpheader.ts";
 import { setupMcp } from "../server/listen/mcpsetup.ts";
-import { resolveListen, throwawayConsumer, validConsumer } from "../server/listen/options.ts";
-import { recipe } from "../server/listen/recipes.ts";
+import { throwawayConsumer } from "../server/listen/options.ts";
 import { readStatus } from "../server/listen/state.ts";
 import { saveProfile } from "../server/listen/profile.ts";
 import { checkTransport } from "../server/listen/transport.ts";
@@ -53,41 +52,28 @@ function start(extra: Partial<RunListenerOptions> = {}) {
 }
 
 describe("grants in plain words", () => {
-  const g = (capabilities: string[], sendMode: "draft_only" | "approval" | "direct", labelScope: string[] | null = null) =>
-    ({ accountId: "a", accountEmail: "ops@acme.dev", capabilities, labelScope, sendMode }) as Parameters<typeof describeGrant>[0];
+  const g = (level: "full" | "read", allowTo: string[] = []) => ({ accountId: "a", accountEmail: "ops@acme.dev", level, allowTo });
 
-  it("matches the console's choices", () => {
-    expect(describeGrant(g(["read"], "draft_only"))).toBe("ops@acme.dev: read only (can't draft or send)");
-    expect(describeGrant(g(["read", "draft", "send"], "draft_only"))).toBe("ops@acme.dev: read, draft, send; sends become Gmail drafts for you to send");
-    expect(describeGrant(g(["read", "draft", "send", "organize"], "approval"))).toBe("ops@acme.dev: read, draft, send, organize; sends need your approval in the console");
-    expect(describeGrant(g(["read", "draft", "send"], "direct"))).toBe("ops@acme.dev: read, draft, send; sends go out directly");
-    expect(describeGrant(g(["read", "draft"], "draft_only"))).toBe("ops@acme.dev: read, draft; can't send");
-    expect(describeGrant(g(["read"], "draft_only", ["INBOX"]))).toContain("only label INBOX");
-    expect(describeGrant({ ...g(["read", "send"], "direct"), allowTo: ["*@acme.dev"], replyOnly: true, maxSendsPerHour: 5, maxSendsPerDay: null })).toBe(
-      "ops@acme.dev: read, send; sends go out directly to allowed recipients; only to *@acme.dev; replies in existing threads only; at most 5/hour",
-    );
+  it("says full or read, and the allowlist", () => {
+    expect(describeGrant(g("read"))).toBe("ops@acme.dev: read only (mail and calendar)");
+    expect(describeGrant(g("full"))).toBe("ops@acme.dev: full access (mail and calendar)");
+    expect(describeGrant(g("full", ["*@acme.dev"]))).toBe("ops@acme.dev: full access (mail and calendar); only to *@acme.dev");
     expect(describeGrants([])[0]).toMatch(/no mailbox or calendar access yet/);
     expect(describeGrants([], [{ name: "WHOOP", slug: "whoop", level: "read" }])).toEqual(["WHOOP (whoop__… tools): read only"]);
-    expect(describeGrants([g(["read"], "draft_only")], [{ name: "Notion", slug: "notion", level: "full" }])).toEqual([
-      "ops@acme.dev: read only (can't draft or send)",
+    expect(describeGrants([g("read")], [{ name: "Notion", slug: "notion", level: "full" }])).toEqual([
+      "ops@acme.dev: read only (mail and calendar)",
       "Notion (notion__… tools): full access",
     ]);
-    expect(describeGrant(g(["calendar.read"], "draft_only"))).toBe("ops@acme.dev: calendar.read");
-    expect(describeGrant(g(["read", "calendar.read"], "draft_only"))).toBe("ops@acme.dev: read, calendar.read; mail read only (can't draft or send)");
-    expect(describeGrant({ ...g(["read", "calendar.read", "calendar.write"], "draft_only"), calendarScope: ["team@group.calendar.google.com"] })).toBe(
-      "ops@acme.dev: read, calendar.read, calendar.write; mail read only (can't draft or send); calendar changes need your approval in the console; only calendar team@group.calendar.google.com",
-    );
-    expect(describeGrant({ ...g(["read", "calendar.write"], "draft_only"), calendarWriteMode: "direct" })).toBe("ops@acme.dev: read, calendar.write; mail read only (can't draft or send); calendar changes apply directly");
   });
 });
 
 describe("connect", () => {
   it("prints the grant the approver actually chose (not a draft-only boilerplate)", async () => {
-    api.grants = [{ accountId: "acc_1", accountEmail: "ops@acme.dev", capabilities: ["read", "draft", "send", "organize"], labelScope: null, sendMode: "approval" }];
+    api.grants = [{ accountId: "acc_1", accountEmail: "ops@acme.dev", level: "full", allowTo: [] }];
     api.pollScript = [approved()];
     expect(await runConnect(api.url, { tool: "claude-code" }, { pollIntervalMs: 10 })).toBe(CONNECT_EXIT.approved);
     expect(plain()).toContain("Access granted");
-    expect(plain()).toContain("ops@acme.dev: read, draft, send, organize; sends need your approval in the console");
+    expect(plain()).toContain("ops@acme.dev: full access (mail and calendar)");
     expect(plain()).not.toMatch(/New grants are draft-only/);
     expect(output).not.toContain(FAKE_KEY);
   });
@@ -101,15 +87,15 @@ describe("connect", () => {
 
   it("lists connection access, and drops the mail-only next steps without a mailbox", async () => {
     api.grants = [];
-    api.connections = [{ name: "Notion", slug: "notion", level: "ask" }];
+    api.connections = [{ name: "Notion", slug: "notion", level: "full" }];
     api.pollScript = [approved()];
     expect(await runConnect(api.url, { tool: "hermes" }, { pollIntervalMs: 10 })).toBe(CONNECT_EXIT.approved);
     const text = plain();
-    expect(text).toContain("Notion (notion__… tools): ask before risky actions");
+    expect(text).toContain("Notion (notion__… tools): full access");
     expect(text).not.toContain("no mailbox or calendar access yet");
     expect(text).not.toContain("sends a test email");
     expect(text).not.toContain("when mail arrives");
-    expect(text).toContain("--types approval.requested,connection.auth_failed,connection.expiring");
+    expect(text).toContain("--types connection.auth_failed,connection.expiring");
   });
 
   it("uses the address the CLI connected to for the approve link when the public URL differs", async () => {
@@ -142,19 +128,18 @@ describe("connect", () => {
     expect(check).toBeGreaterThan(fg);
     expect(svc).toBeGreaterThan(check);
     expect(text).toContain("test email");
-    expect(text).toContain("listen --save --recipe claude-code");
+    expect(text).toContain("listen --recipe claude-code");
+    expect(text).toContain("listen service install --recipe claude-code");
   });
 });
 
 describe("setup-mcp", () => {
-  const saved = { HOME: process.env.HOME, PATH: process.env.PATH, CODEX_HOME: process.env.CODEX_HOME, HERMES_HOME: process.env.HERMES_HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
+  const saved = { HOME: process.env.HOME, PATH: process.env.PATH, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR };
   let home: string;
   beforeEach(() => {
     home = join(env.root, "home");
     mkdirSync(home, { recursive: true });
     process.env.HOME = home;
-    delete process.env.CODEX_HOME;
-    delete process.env.HERMES_HOME;
     delete process.env.CLAUDE_CONFIG_DIR;
   });
   afterEach(() => {
@@ -163,7 +148,7 @@ describe("setup-mcp", () => {
       else process.env[k] = v;
     }
   });
-  const target = { name: "xaq", url: "https://mail.example.com/mcp", key: FAKE_KEY, profile: "default" };
+  const target = { url: "https://mail.example.com", apiKey: FAKE_KEY, agentId: "agt_1", agentName: "t", consumer: "c" };
 
   it("--dry-run lists the exact Claude Code commands and changes nothing", () => {
     const bin = join(env.root, "bin");
@@ -188,39 +173,22 @@ describe("setup-mcp", () => {
     expect(readdirSync(home).filter((f) => f.includes("backup"))).toEqual([]);
   });
 
-  it("--dry-run for Codex, Cursor and Hermes shows the file, the entry (key redacted) and writes nothing", () => {
-    const codex = setupMcp("codex", target, "/p.json", { dryRun: true });
-    expect(codex.changes!.join("\n")).toContain(join(home, ".codex", "config.toml"));
-    expect(codex.changes!.join("\n")).toContain("[mcp_servers.xaq]");
-    expect(codex.verify!.join(" ")).toContain("codex mcp list");
-    const cursor = setupMcp("cursor", target, "/p.json", { dryRun: true });
-    expect(cursor.changes!.join("\n")).toContain(join(home, ".cursor", "mcp.json"));
-    const hermes = setupMcp("hermes", target, "/p.json", { dryRun: true });
-    expect(hermes.changes!.join("\n")).toContain("XAQ_API_KEY=<the key from your xaq profile>");
-    expect(hermes.verify!.join(" ")).toContain("hermes mcp test xaq");
-    for (const r of [codex, cursor, hermes]) {
-      expect(r.dryRun).toBe(true);
-      expect(JSON.stringify(r)).not.toContain(FAKE_KEY);
-    }
-    expect(readdirSync(home)).toEqual([]);
-  });
-
-  it("a real run says how to verify", () => {
+  it("other tools get the manual steps, without the key", () => {
     const r = setupMcp("codex", target, "/p.json");
-    expect(r.ok).toBe(true);
-    expect(r.verify).toEqual([expect.stringContaining("codex mcp list")]);
+    expect(r).toMatchObject({ ok: false, message: "Automatic MCP setup is for Claude Code only." });
+    expect(r.manual).toEqual(["MCP endpoint (streamable HTTP): https://mail.example.com/mcp", 'Header: Authorization: Bearer <key>. The key is the "apiKey" field in /p.json.']);
+    expect(readdirSync(home)).toEqual([]);
   });
 });
 
 describe("listen", () => {
   it("shows the access in plain words and logs a grant change", async () => {
-    saveProfile("default", baseProfile());
+    saveProfile(baseProfile());
     const l = start({ grantsRefreshMs: 100 });
-    await waitFor(() => plain().includes("me@example.com: read, draft; can't send"), 5000, "initial grants");
-    expect(plain()).not.toContain("draft_only");
-    api.grants = [{ accountId: "acc_1", accountEmail: "me@example.com", capabilities: ["read", "draft", "send"], labelScope: null, sendMode: "approval" }];
+    await waitFor(() => plain().includes("me@example.com: read only (mail and calendar)"), 5000, "initial grants");
+    api.grants = [{ accountId: "acc_1", accountEmail: "me@example.com", level: "full", allowTo: [] }];
     await waitFor(() => plain().includes("Access changed in the console"), 5000, "grant change");
-    expect(plain()).toContain("me@example.com: read, draft, send; sends need your approval in the console");
+    expect(plain()).toContain("me@example.com: full access (mail and calendar)");
     const changes = plain().match(/Access changed/g)!.length;
     await new Promise((r) => setTimeout(r, 300));
     expect(plain().match(/Access changed/g)!.length).toBe(changes); // only on a change
@@ -229,9 +197,9 @@ describe("listen", () => {
   });
 
   it("listen status reports the access in plain words", async () => {
-    saveProfile("default", baseProfile());
-    await printStatus("default");
-    expect(plain()).toMatch(/Access\s+me@example.com: read, draft; can't send/);
+    saveProfile(baseProfile());
+    await printStatus();
+    expect(plain()).toMatch(/Access\s+me@example.com: read only \(mail and calendar\)/);
   });
 
   // The seqs the handler ran for, sorted: events run two at a time (default --concurrency 2), each `echo >>` its own
@@ -240,7 +208,7 @@ describe("listen", () => {
     (existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").filter(Boolean) : []).sort((a, b) => Number(a) - Number(b));
 
   it("--backfill replays only the mail from before the listener started, next to the running listener", async () => {
-    saveProfile("default", baseProfile());
+    saveProfile(baseProfile());
     for (const s of [1, 2, 3]) api.events.push(makeEvent(s));
     const listenerRuns = join(env.root, "listener.txt");
     const runs = join(env.root, "backfill.txt");
@@ -265,42 +233,26 @@ describe("listen", () => {
     expect(plain()).toContain("mail from before the listener started (events up to #3)");
     expect(plain()).toContain("Backfill done: 3 events handled");
     // The listener's lock and status are untouched; the backfill's own lock is gone.
-    expect(existsSync(lockPath("default"))).toBe(true);
-    expect(existsSync(backfillLockPath("default"))).toBe(false);
-    expect(readStatus("default")?.consumer).toBe("c");
+    expect(existsSync(lockPath())).toBe(true);
+    expect(existsSync(backfillLockPath())).toBe(false);
+    expect(readStatus()?.consumer).toBe("c");
     listener.stop();
     await listener.done;
   });
 
-  it("--backfill refuses when it can't know where the listener started; --until overrides", async () => {
-    saveProfile("default", baseProfile());
+  it("--backfill refuses when it can't know where the listener started, or when the replay cursor has moved", async () => {
+    saveProfile(baseProfile());
     for (const s of [1, 2, 3]) api.events.push(makeEvent(s));
-    await expect(start({ flags: { backfill: true } }).done).rejects.toThrow(/hasn't connected yet[\s\S]*--from-start/);
+    await expect(start({ flags: { backfill: true } }).done).rejects.toThrow(/hasn't connected yet[\s\S]*Start it first/);
     api.consumers.set("c", { startSeq: null, acked: 3 });
-    await expect(start({ flags: { backfill: true } }).done).rejects.toThrow(/doesn't know where consumer "c" started[\s\S]*--until/);
-    api.reportConsumers = false;
-    await expect(start({ flags: { backfill: true } }).done).rejects.toThrow(/older than this CLI/);
-    const runs = join(env.root, "until.txt");
-    expect(await start({ flags: { backfill: true, until: 2, exec: `echo "$XAQ_EVENT_SEQ" >> ${runs}` } }).done).toBe(EXIT.ok);
-    expect(lines(runs)).toEqual(["1", "2"]);
-  });
-
-  it("--backfill refuses a replay cursor that has moved; warns when --until runs past the listener's start", async () => {
-    saveProfile("default", baseProfile());
-    for (const s of [1, 2, 3, 4]) api.events.push(makeEvent(s));
-    api.consumers.set("c", { startSeq: 2, acked: 4 });
+    await expect(start({ flags: { backfill: true } }).done).rejects.toThrow(/doesn't know where consumer "c" started/);
+    api.consumers.set("c", { startSeq: 2, acked: 3 });
     api.consumers.set("c-replay", { startSeq: 0, acked: 3 }); // e.g. an older daemon let something ack it
     await expect(start({ flags: { backfill: true } }).done).rejects.toThrow(/"c-replay" on the daemon has been moved to #3/);
-
-    api.consumers.delete("c-replay");
-    const runs = join(env.root, "past.txt");
-    expect(await start({ flags: { backfill: true, until: 3, exec: `echo "$XAQ_EVENT_SEQ" >> ${runs}` } }).done).toBe(EXIT.ok);
-    expect(plain()).toContain("--until #3 is past where the listener started (#2): event #3 was (or will be) handled by the listener too, so it runs twice");
-    expect(lines(runs)).toEqual(["1", "2", "3"]);
   });
 
   it("--backfill: nothing to do when the listener started at the oldest event", async () => {
-    saveProfile("default", baseProfile());
+    saveProfile(baseProfile());
     api.events.push(makeEvent(1));
     api.consumers.set("c", { startSeq: 0, acked: 1 });
     expect(await start({ flags: { backfill: true } }).done).toBe(EXIT.ok);
@@ -308,7 +260,7 @@ describe("listen", () => {
   });
 
   it("--backfill --dry-run previews the backfill range on the replay cursor and runs nothing", async () => {
-    saveProfile("default", baseProfile());
+    saveProfile(baseProfile());
     for (const s of [1, 2, 3, 4]) api.events.push(makeEvent(s));
     api.consumers.set("c", { startSeq: 2, acked: 4 });
     const runs = join(env.root, "dry.txt");
@@ -321,7 +273,7 @@ describe("listen", () => {
   });
 
   it("--backfill: the safety net ends it when the rest isn't visible; gives up when the daemon stays unreachable", async () => {
-    saveProfile("default", baseProfile());
+    saveProfile(baseProfile());
     for (const s of [1, 2, 3]) api.events.push(makeEvent(s));
     api.consumers.set("c", { startSeq: 3, acked: 3 });
     api.hidden.add(3); // e.g. filtered out: the stream never sends it
@@ -334,31 +286,10 @@ describe("listen", () => {
     expect(await start({ flags: { backfill: true }, backfillUnreachableMs: 300 }).done).toBe(EXIT.error);
     expect(plain()).toContain("Gave up: the daemon was unreachable");
   });
-
-  it("the backfill hint names a command that works, with targets that weren't saved", async () => {
-    saveProfile("default", { ...baseProfile(), exec: undefined });
-    const l = start({ flags: { exec: "my-handler --x" } });
-    await waitFor(() => api.live.size === 1, 5000, "stream");
-    expect(plain()).toContain("npx xaq-cli listen --backfill --exec 'my-handler --x'");
-    l.stop();
-    await l.done;
-  });
-
-  it("the backfill hint gives a recipe back as --recipe <tool>", () => {
-    const profile = { ...baseProfile(), exec: undefined };
-    const hint = (flags: { recipe?: string; exec?: string }, name = "default") => backfillCommand(name, profile, resolveListen(name, profile, flags).config);
-    expect(hint({ recipe: "hermes" })).toBe("npx xaq-cli listen --backfill --recipe hermes");
-    expect(hint({ recipe: "claude-code" }, "work")).toBe("npx xaq-cli listen --profile work --backfill --recipe claude-code");
-    // An edited recipe is no longer the recipe: it is printed as the command it is.
-    expect(hint({ exec: `${recipe("codex").exec} --x` })).toContain("--backfill --exec 'codex exec");
-  });
 });
 
 describe("throwaway consumer names", () => {
-  it("reserves the suffixes and never lets two consumers share a throwaway cursor", () => {
-    expect(() => validConsumer("laptop-replay")).toThrow(/reserved/);
-    expect(() => validConsumer("laptop-dry-run")).toThrow(/reserved/);
-    expect(validConsumer("laptop-replayed")).toBe("laptop-replayed");
+  it("never lets two consumers share a throwaway cursor", () => {
     expect(throwawayConsumer("laptop-default", "-replay")).toBe("laptop-default-replay");
     const a = `${"h".repeat(95)}-aaaa`;
     const b = `${"h".repeat(95)}-bbbb`;
@@ -370,11 +301,6 @@ describe("throwaway consumer names", () => {
       expect(/^[A-Za-z0-9._-]{1,100}$/.test(ra)).toBe(true);
       expect(throwawayConsumer(a, suffix)).toBe(ra); // stable
     }
-  });
-
-  it("listen refuses a reserved --consumer", async () => {
-    saveProfile("default", baseProfile());
-    await expect(start({ flags: { consumer: "c-replay" } }).done).rejects.toThrow(/reserved/);
   });
 });
 

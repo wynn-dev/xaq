@@ -6,7 +6,7 @@ import type { AppContext } from "../context.ts";
 import { json } from "../db/index.ts";
 import type { StoredEvent } from "../events/types.ts";
 import { badRequest, errorMessage, HttpError } from "../util/errors.ts";
-import { buildPayload, scopeBodyCheck } from "../webhooks/payload.ts";
+import { buildPayload, scopeBodyCheck } from "../events/payload.ts";
 import type { AgentApiEnv } from "./auth.ts";
 import { cleanText } from "./pairing.ts";
 import { accessProblem, ackedSeq, ensureConsumerSlot, isThrowawayConsumer, newestGrantedSeq, parseConsumer, type RevokeReason } from "./listeners.ts";
@@ -40,8 +40,7 @@ function clientInfo(c: Context): ListenerInfo["client"] {
   } catch {
     // Ignore a malformed header: it's informational.
   }
-  // xaq/<version>, or agentinbox/<version> from a listener older than the rename.
-  const ua = /(?:xaq|agentinbox)[\w-]*\/(\S+)/i.exec(c.req.header("user-agent") ?? "")?.[1];
+  const ua = /xaq[\w-]*\/(\S+)/i.exec(c.req.header("user-agent") ?? "")?.[1];
   const info: ListenerInfo["client"] = {
     hostname: short(raw.hostname) ?? short(c.req.query("hostname")),
     platform: short(raw.platform, 50) ?? short(c.req.query("platform"), 50),
@@ -70,7 +69,7 @@ const OPEN_REFUSALS: Record<RevokeReason, [string, string]> = {
   agent_deleted: ["This agent no longer exists", "Pair again with `npx xaq-cli connect`."],
   agent_disabled: ["This agent is disabled", "Enable it in the xaq console under Agents."],
   key_rotated: ["This API key was replaced", "Pair again with `npx xaq-cli connect`, or use the new key."],
-  no_read_grant: ["This agent has no read access to any account or connection", "Grant it read or calendar.read on an account (or access to a connection) in the xaq console."],
+  no_read_grant: ["This agent has no read access to any account or connection", "Give it access to an account (or a connection) in the xaq console."],
 };
 
 /** Destroys the underlying socket (a stalled client never drains, so a graceful end would hang). */
@@ -99,8 +98,7 @@ export function streamEvents(ctx: AppContext, c: Context<AgentApiEnv>, opts: Str
   const start = c.req.query("start");
   if (start !== undefined && start !== "now" && start !== "beginning") throw badRequest("start must be now or beginning");
   const heartbeatMs = opts.heartbeatMs ?? HEARTBEAT_MS;
-  const brokerOn = () => ctx.settings.get().brokerUpstreams;
-  const problem = accessProblem(ctx.db, agentId, keyHash, brokerOn());
+  const problem = accessProblem(ctx.db, agentId, keyHash);
   if (problem) throw new HttpError(403, problem, ...OPEN_REFUSALS[problem]);
   const maxStreams = opts.maxStreams ?? 5;
   if ((opts.open.get(agentId) ?? 0) >= maxStreams) {
@@ -184,11 +182,11 @@ export function streamEvents(ctx: AppContext, c: Context<AgentApiEnv>, opts: Str
       });
     };
     const checkAccess = () => {
-      const reason = accessProblem(db, agentId, keyHash, brokerOn());
+      const reason = accessProblem(db, agentId, keyHash);
       if (reason) revoke(reason);
       return !reason;
     };
-    const visible = (ev: StoredEvent) => ctx.policy.canSeeEvent(agentId, ev, "listener");
+    const visible = (ev: StoredEvent) => ctx.policy.canSeeEvent(agentId, ev);
 
     let pumping = false;
     let again = false;

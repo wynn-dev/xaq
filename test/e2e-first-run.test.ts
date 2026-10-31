@@ -60,7 +60,7 @@ describe("first run", () => {
     expect(await anon.json()).toEqual({ claimed: true, authenticated: false });
     const login = await fetch(`${s.url}/api/auth/login`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-agentinbox-csrf": "1" },
+      headers: { "content-type": "application/json", "x-xaq-csrf": "1" },
       body: JSON.stringify({ password: PASSWORD }),
     });
     expect(login.status).toBe(204);
@@ -77,7 +77,6 @@ describe("first run", () => {
       accountsConnected: 0,
       agentsCreated: 0,
       complete: false,
-      pubsub: { mode: "poll", topic: null, subscription: null },
     });
 
     // The redirect URI the operator must register follows publicUrl and the bound port.

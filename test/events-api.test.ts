@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Agent, ConsoleStreamMessage, Delivery, MailEvent, Page } from "../shared/types.ts";
+import type { Agent, ConsoleStreamMessage, MailEvent, Page } from "../shared/types.ts";
 import { auditApi } from "../server/api/audit.ts";
 import { eventsApi } from "../server/api/events.ts";
 import type { AppEnv } from "../server/api/util.ts";
@@ -96,15 +96,14 @@ describe("GET /api/events/stream", () => {
 
     const ev = emitGap(ctx, "a");
     ctx.audit.record({ actorType: "admin", action: "thing", outcome: "ok" });
-    ctx.bus.emit("delivery", { id: "dlv_1" } as Delivery);
     // Agent state goes out as kind "agent"; bus "agent" (access changes for listener streams) doesn't.
     ctx.bus.emit("agent", { agentId: "agt_1", reason: "updated" });
     ctx.bus.emit("agentState", { id: "agt_1", name: "Hermes" } as Agent);
-    await readUntil(() => messages.length >= 4);
-    expect(messages.map((m) => m.kind)).toEqual(["event", "audit", "delivery", "agent"]);
+    await readUntil(() => messages.length >= 3);
+    expect(messages.map((m) => m.kind)).toEqual(["event", "audit", "agent"]);
     // The console's copy carries the thread labels the bus event leaves out.
     expect(messages[0]!.data).toEqual({ ...ev, threadLabelIds: [] });
-    expect(messages[3]!.data).toEqual({ id: "agt_1", name: "Hermes" });
+    expect(messages[2]!.data).toEqual({ id: "agt_1", name: "Hermes" });
 
     // Heartbeat comments keep proxies from closing the connection.
     const chunks: string[] = [];
@@ -115,7 +114,7 @@ describe("GET /api/events/stream", () => {
 
     await reader.cancel();
     for (let i = 0; i < 50 && ctx.bus.listenerCount("event") > before; i++) await new Promise((r) => setTimeout(r, 10));
-    for (const ch of ["event", "delivery", "approval", "audit", "account", "agentState"] as const) expect(ctx.bus.listenerCount(ch)).toBe(ch === "event" ? before : 0);
+    for (const ch of ["event", "approval", "audit", "account", "agentState"] as const) expect(ctx.bus.listenerCount(ch)).toBe(ch === "event" ? before : 0);
   });
 
   it("drops a stalled client instead of buffering without bound", async () => {

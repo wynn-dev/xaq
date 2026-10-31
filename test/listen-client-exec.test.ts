@@ -71,7 +71,7 @@ describe("command mode", () => {
       .filter((l) => l.startsWith("XAQ_"))
       .map((l) => l.split("=")[0])
       .sort();
-    expect(ours).toEqual(["XAQ_ACCOUNT", "XAQ_EVENT_COUNT", "XAQ_EVENT_FILE", "XAQ_EVENT_ID", "XAQ_EVENT_SEQ", "XAQ_EVENT_TYPE", "XAQ_MESSAGE_ID", "XAQ_THREAD_ID"]);
+    expect(ours).toEqual(["XAQ_ACCOUNT", "XAQ_EVENT_FILE", "XAQ_EVENT_ID", "XAQ_EVENT_SEQ", "XAQ_EVENT_TYPE", "XAQ_MESSAGE_ID", "XAQ_THREAD_ID"]);
     expect(env).not.toContain("touch");
     expect(env).not.toContain("Hello");
     expect(env).toContain("XAQ_EVENT_ID=evt_7\n");

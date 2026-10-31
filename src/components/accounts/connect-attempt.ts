@@ -16,7 +16,7 @@ export const CHECK_NOTES: Record<CheckNote, string> = {
 };
 
 export interface AttemptContext {
-  /** The dialog asked for extra access (Pub/Sub): the retry it was asked for is the real check. */
+  /** The dialog asked for extra access (Calendar). */
   scopes: boolean;
   /** Reconnecting a specific account. */
   reauth: boolean;
@@ -28,7 +28,7 @@ export type CheckStep =
   /** connected / failed: the status answer already moved the dialog on. */
   | { kind: "stop" }
   | { kind: "note"; note: CheckNote }
-  /** Pub/Sub grant: close the dialog unconfirmed; the provisioning retry says whether the box was ticked. */
+  /** Extra access: close the dialog unconfirmed. */
   | { kind: "finish-unconfirmed" }
   /** The server doesn't know the attempt (expired, restarted): see whether the account list shows it. */
   | { kind: "check-list" };

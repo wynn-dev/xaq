@@ -58,8 +58,8 @@ describe.runIf(HAS_AGENTS)("prompt injection", () => {
   beforeAll(async () => {
     s = await startStack();
     email = mailbox("inject");
-    [account] = (await s.bootstrap({ accounts: [email], pubsub: true })) as [Account];
-    const { apiKey } = await s.createAgent("reader", [grant(account.id, { capabilities: ["read"] })]);
+    [account] = (await s.bootstrap({ accounts: [email] })) as [Account];
+    const { apiKey } = await s.createAgent("reader", [grant(account.id, { level: "read" })]);
     mcp = await s.agent(apiKey);
   });
   afterAll(async () => {

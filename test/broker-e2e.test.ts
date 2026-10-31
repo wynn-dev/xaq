@@ -1,14 +1,14 @@
 // M1 done-when #1, the core path, end to end and offline: an admin adds a connection to a fake upstream MCP server
 // with OAuth + DCR through /api/connections (connect, then the real /oauth/connections/callback), grants an agent
-// "ask", the agent sees `slug__tool` on /mcp, a read tool runs at once, a risky tool waits for approval
-// (pending → approve → get_call_status returns the result), and after the kill switch the agent can't call it.
+// "full", the agent sees `slug__tool` on /mcp, read and risky tools run at once, and after the kill switch the
+// agent can't call them.
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { upstreams } from "../server/broker/upstream/runtime.ts";
 import { type FakeMcpUpstream, startFakeMcpUpstream } from "./fake-mcp-upstream.ts";
-import { CSRF, harness, json } from "./platform-helpers.ts";
+import { CSRF, harness, json } from "./helpers.ts";
 
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -18,7 +18,7 @@ afterEach(async () => {
 const text = (r: unknown) => (r as { content: { text?: string }[] }).content.map((c) => c.text ?? "").join("\n");
 
 describe("broker end to end (fake upstream, OAuth + DCR)", () => {
-  it("connect, list, read, approve a risky call, get_call_status, kill", async () => {
+  it("connect, list, read, a risky call, kill", async () => {
     const deleted: string[] = [];
     const up: FakeMcpUpstream = await startFakeMcpUpstream({
       auth: { kind: "oauth", dcr: true },
@@ -47,11 +47,10 @@ describe("broker end to end (fake upstream, OAuth + DCR)", () => {
     const { ctx } = h;
     const cookie = await h.claim();
     const api = (path: string, init: RequestInit & { json?: unknown } = {}) => h.request(`/api${path}`, { cookie, ...init, headers: { ...CSRF, ...(init.headers as object) } });
-    ctx.settings.update({ brokerUpstreams: true });
     const { agent, apiKey } = ctx.policy.createAgent({ name: "Hermes" });
 
-    // Add the connection (the agent at "ask"), allow its loopback host, connect: probe → OAuth (DCR) → authorize URL.
-    const con = await json(await api("/connections", { method: "POST", json: { url: up.url, slug: "fake", name: "Fake", agentIds: [agent.id], levelDefault: "ask" } }));
+    // Add the connection (the agent at "full"), allow its loopback host, connect: probe → OAuth (DCR) → authorize URL.
+    const con = await json(await api("/connections", { method: "POST", json: { url: up.url, slug: "fake", name: "Fake", agentIds: [agent.id], levelDefault: "full" } }));
     expect(await json(await api(`/connections/${con.id}/private-target`, { method: "PUT", json: { allow: true } }))).toMatchObject({ privateTarget: up.origin });
     const started = await json(await api(`/connections/${con.id}/connect`, { method: "POST", json: {} }));
     expect(started).toMatchObject({ status: "authorize", callbackMode: "direct" });
@@ -81,7 +80,7 @@ describe("broker end to end (fake upstream, OAuth + DCR)", () => {
     );
     cleanup.push(() => client.close());
     const names = (await client.listTools()).tools.map((t) => t.name);
-    expect(names).toEqual(expect.arrayContaining(["list_accounts", "get_call_status", "fake__get_page", "fake__delete_page"]));
+    expect(names).toEqual(expect.arrayContaining(["list_accounts", "fake__get_page", "fake__delete_page"]));
 
     // A read tool runs at once; its output comes wrapped as untrusted.
     const read = await client.callTool({ name: "fake__get_page", arguments: { id: "p1" } });
@@ -89,20 +88,10 @@ describe("broker end to end (fake upstream, OAuth + DCR)", () => {
     expect(text(read)).toContain("Page p1: hello");
     expect(text(read)).toContain("<tool_output");
 
-    // A risky tool at "ask": pending at once, nothing sent upstream yet.
-    const pending = await client.callTool({ name: "fake__delete_page", arguments: { id: "p2" } });
-    expect(text(pending)).toContain("pending_approval");
-    const approvalId = /apr_[a-z0-9]+/.exec(text(pending))![0];
-    // The link an unattended agent relays to its user (the page needs the admin session).
-    expect(text(pending)).toContain(`Ask your user to approve: ${ctx.settings.publicUrl()}/approve/${approvalId}`);
-    expect(deleted).toEqual([]);
-    expect(text(await client.callTool({ name: "get_call_status", arguments: { approval_id: approvalId } }))).toMatch(/pending/);
-
-    // The owner approves in the console: the exact stored call runs once.
-    const approved = await json(await api(`/approvals/${approvalId}/approve`, { method: "POST", json: {} }));
-    expect(approved).toMatchObject({ status: "sent" });
+    // A risky tool at "full" runs at once, exactly once.
+    const risky = await client.callTool({ name: "fake__delete_page", arguments: { id: "p2" } });
+    expect(text(risky)).toContain("Deleted p2");
     expect(deleted).toEqual(["p2"]);
-    expect(text(await client.callTool({ name: "get_call_status", arguments: { approval_id: approvalId } }))).toContain("Deleted p2");
 
     // Reconnect while the agent keeps working: the sign-in replaces the pooled session, and calls after it still
     // work (nothing holds on to the closed one).

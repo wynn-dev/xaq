@@ -17,17 +17,7 @@ import type { AppContext } from "../context.ts";
 import { verifyPasswordAsync } from "../crypto.ts";
 import { serviceInstallCommand } from "../instance.ts";
 import { systemOps } from "../service.ts";
-import {
-  claimUpdateLock,
-  launchUpdateJob,
-  newUpdateId,
-  previousVersion,
-  readUpdateStatus,
-  releaseUpdateLock,
-  selfUpdateSupport,
-  type UpdateJobRequest,
-  writeUpdateStatus,
-} from "../update.ts";
+import { launchUpdateJob, newUpdateId, readUpdateStatus, selfUpdateSupport, type UpdateJobRequest, updateRunning, writeUpdateStatus } from "../update.ts";
 import { consoleUrls } from "../urls.ts";
 import { conflict, errorMessage, HttpError } from "../util/errors.ts";
 import { compareVersions } from "../util/semver.ts";
@@ -94,8 +84,7 @@ export const selfUpdateHost = (ctx: AppContext): SelfUpdateHost => ({
 
 const SelfUpdateBody = z.object({
   password: z.string().min(1, "Password is required").max(MAX_PASSWORD_LENGTH),
-  action: z.enum(["update", "rollback"]),
-  version: z.string().max(100).optional(),
+  version: z.string().max(100),
 });
 
 /** Authenticated: instance facts, the update notice, and the console's one-click update (service mode). */
@@ -106,7 +95,7 @@ export function systemApi(ctx: AppContext, host: SelfUpdateHost = selfUpdateHost
       try {
         ingest = ctx.ingest.status();
       } catch (err) {
-        ingest = { mode: ctx.settings.get().ingestMode, running: false, lastPullAt: null, lastError: errorMessage(err) };
+        ingest = { running: false, lastPullAt: null, lastError: errorMessage(err) };
       }
       return c.json<SystemInfo>({
         version: ctx.config.version,
@@ -134,12 +123,10 @@ export function systemApi(ctx: AppContext, host: SelfUpdateHost = selfUpdateHost
       return c.json<SelfUpdateInfo>({
         supported,
         reason,
-        previous: supported ? previousVersion(ctx.config.dataDir, ctx.config.version) : null,
         status: readUpdateStatus(ctx.config.dataDir),
       });
     })
-    // Admin session plus the password again; every attempt is audited (system.update), and the job audits
-    // its outcome (system.update.result). One job at a time: the update lock is taken here and the job keeps it.
+    // Admin session plus the password again; every attempt is audited (system.update). One job at a time.
     .post("/system/update", async (c) => {
       const ip = clientIp(c, ctx.config.trustProxy);
       const { dataDir, version: current } = ctx.config;
@@ -161,60 +148,39 @@ export function systemApi(ctx: AppContext, host: SelfUpdateHost = selfUpdateHost
       const hash = ctx.settings.getState("admin.passwordHash");
       const check = await checkSecret(ctx, ip, body.password, async () => !!hash && (await verifyPasswordAsync(body.password, hash)));
       if (!check.ok) {
-        audit("denied", check.busy ? "busy" : check.nowBanned || check.lockedMinutes ? "lockout" : "bad_password", { action: body.action });
+        audit("denied", check.busy ? "busy" : check.nowBanned || check.lockedMinutes ? "lockout" : "bad_password");
         const rejected = rejection(c, check);
         if (rejected) return rejected;
         // 400, not 401: a wrong password here is a form error, not an expired session.
         throw new HttpError(400, "invalid_password", "Wrong password");
       }
       const refuse = (reason: string, message: string, detail: Record<string, unknown> = {}): never => {
-        audit("denied", reason, { action: body.action, ...detail });
+        audit("denied", reason, detail);
         throw conflict(message);
       };
       const support = host.support();
       if (!support.supported) refuse("unsupported", support.reason ?? "This instance can't update itself.");
+      const running = readUpdateStatus(dataDir);
+      if (updateRunning(running)) refuse("in_progress", `An update to ${running!.to} is already running. Wait for it to finish.`, { running: running!.id });
+      // Only ever the npm `latest` the console showed, and only forward.
+      const latest = await host.latest();
+      if (!latest) refuse("no_latest", "Couldn't reach npm to check the latest version. Try again in a few minutes.");
+      if (body.version !== latest || compareVersions(latest!, current) <= 0) {
+        refuse("not_latest", `${body.version} isn't the latest release newer than ${current}${latest ? ` (${latest} is)` : ""}. Reload and try again.`, { version: body.version });
+      }
       const id = newUpdateId();
-      const lock = claimUpdateLock(dataDir, id);
-      if (!lock.ok) {
-        const running = readUpdateStatus(dataDir);
-        const what = running?.id === lock.holder.id && running.state === "running" ? (running.kind === "update" ? `An update to ${running.to}` : `Going back to ${running.to}`) : "An update";
-        refuse("in_progress", `${what} is already running. Wait for it to finish.`, { running: lock.holder.id });
-      }
-
-      let status: SelfUpdateStatus;
+      const status: SelfUpdateStatus = { id, from: current, to: latest!, state: "running", message: null, startedAt: new Date().toISOString(), finishedAt: null };
+      const detail = { id, from: current, to: latest! };
+      writeUpdateStatus(dataDir, status);
       try {
-        let to: string;
-        if (body.action === "update") {
-          // Only ever the npm `latest` the console showed, and only forward.
-          const latest = await host.latest();
-          if (!latest) refuse("no_latest", "Couldn't reach npm to check the latest version. Try again in a few minutes.");
-          if (body.version !== latest || compareVersions(latest!, current) <= 0) {
-            refuse("not_latest", `${body.version ?? "That version"} isn't the latest release newer than ${current}${latest ? ` (${latest} is)` : ""}. Reload and try again.`, { version: body.version ?? null });
-          }
-          to = latest!;
-        } else {
-          const previous = previousVersion(dataDir, current);
-          if (!previous) refuse("no_previous", "There is no older install to go back to.");
-          to = previous!;
-        }
-
-        status = { id, kind: body.action, from: current, to, state: "running", step: "starting", message: null, startedAt: new Date().toISOString(), finishedAt: null };
-        const detail = { action: body.action, id, from: current, to };
-        writeUpdateStatus(dataDir, status);
-        try {
-          await host.launch({ dataDir, id, kind: status.kind, version: to });
-        } catch (err) {
-          const message = `Couldn't start the update job: ${errorMessage(err)}`;
-          writeUpdateStatus(dataDir, { ...status, state: "failed", message, finishedAt: new Date().toISOString() });
-          audit("error", "launch_failed", { ...detail, message });
-          throw new HttpError(500, "update_failed", message);
-        }
+        await host.launch({ dataDir, id, version: latest! });
       } catch (err) {
-        // Refused or not started: no job will release it.
-        releaseUpdateLock(dataDir, id);
-        throw err;
+        const message = `Couldn't start the update job: ${errorMessage(err)}`;
+        writeUpdateStatus(dataDir, { ...status, state: "failed", message, finishedAt: new Date().toISOString() });
+        audit("error", "launch_failed", { ...detail, message });
+        throw new HttpError(500, "update_failed", message);
       }
-      audit("ok", null, { action: body.action, id, from: current, to: status.to });
+      audit("ok", null, detail);
       return c.json<SelfUpdateStatus>(status, 202);
     });
 }
@@ -239,19 +205,14 @@ async function latestVersion(ctx: AppContext): Promise<string | null> {
 }
 
 /** Runs, or reinstalls as a service, the latest version with this instance's options. */
-export function upgradeCommand(config: Pick<Config, "service" | "dataDir" | "port" | "host" | "trustProxy">, env: NodeJS.ProcessEnv = process.env): string {
-  // A service keeps these from its previous install (service.env), but a foreground run needs them again.
-  const proxyEnv = config.trustProxy
-    ? ["TRUST_PROXY=1", ...(["TRUST_PROXY_HOPS", "TRUST_PROXY_FROM"] as const).filter((k) => env[k]?.trim()).map((k) => `${k}=${shellQuote(env[k]!.trim())}`)]
-    : [];
-  // Assignments are quoted per value above: quoting the whole `KEY=value` word would turn it into a command.
+export function upgradeCommand(config: Pick<Config, "service" | "dataDir" | "port" | "host" | "trustProxy">): string {
   const args = ["npx", "-y", NPM_PACKAGE];
   if (config.service) args.push("service", "install");
-  // An install from before the rename on ~/.agentinbox needs no --data: it stays the default unless ~/.xaq holds our files (rename-xaq: keep).
   if (resolve(config.dataDir) !== defaultDataDir()) args.push("--data", config.dataDir);
   if (config.port !== DEFAULT_PORT) args.push("--port", String(config.port));
   if (config.host !== DEFAULT_HOST) args.push("--host", config.host);
-  return [...proxyEnv, ...args.map(shellQuote)].join(" ");
+  // A service keeps TRUST_PROXY from its previous install (service.env), but a foreground run needs it again.
+  return [...(config.trustProxy ? ["TRUST_PROXY=1"] : []), ...args.map(shellQuote)].join(" ");
 }
 
 export const shellQuote = (a: string) => (/^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`);

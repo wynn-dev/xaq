@@ -9,8 +9,8 @@ import { agentApi } from "../server/agentapi/index.ts";
 import type { AppContext } from "../server/context.ts";
 import { buildMcpServer } from "../server/mcp/server.ts";
 import { pairingConnectionDefault } from "../src/components/approvals/pairing-grant.ts";
-import { addAccount, readGrant } from "./listen-server-helpers.ts";
-import { CSRF, type Harness, harness, json } from "./platform-helpers.ts";
+import { addAccount } from "./listen-server-helpers.ts";
+import { CSRF, grantInput, type Harness, harness, json } from "./helpers.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {
@@ -22,7 +22,6 @@ async function setup() {
   h = harness();
   agentApi(h.ctx, {});
   const cookie = await h.claim();
-  h.ctx.settings.update({ brokerUpstreams: true });
   const api = (path: string, init: RequestInit & { json?: unknown } = {}) => h!.request(`/api${path}`, { cookie, ...init, headers: { ...CSRF, ...(init.headers as object) } });
   return { h, ctx: h.ctx, api };
 }
@@ -31,7 +30,7 @@ async function setup() {
 async function notion(s: Awaited<ReturnType<typeof setup>>, body: Record<string, unknown> = {}) {
   // Names are unique per owner: a second connection (another slug) gets its own name.
   const name = typeof body.slug === "string" ? body.slug : "Notion";
-  const res = await s.api("/connections", { method: "POST", json: { url: "http://127.0.0.1:9/mcp", slug: "notion", name, levelDefault: "ask", ...body } });
+  const res = await s.api("/connections", { method: "POST", json: { url: "http://127.0.0.1:9/mcp", slug: "notion", name, levelDefault: "full", ...body } });
   expect(res.status).toBe(201);
   const con = await json(res);
   s.ctx.broker.catalog.applyListing(con.id, {
@@ -62,7 +61,7 @@ describe("All agents", () => {
     expect(con.allAgents).toBe(true);
 
     const { agent } = s.ctx.policy.createAgent({ name: "Hermes" });
-    expect(s.ctx.db.get("SELECT level FROM connection_grants WHERE agent_id = ? AND connection_id = ?", agent.id, con.id)).toEqual({ level: "ask" });
+    expect(s.ctx.db.get("SELECT level FROM connection_grants WHERE agent_id = ? AND connection_id = ?", agent.id, con.id)).toEqual({ level: "full" });
     expect(await toolNames(s.ctx, agent.id)).toEqual(expect.arrayContaining(["notion__notion-search", "notion__notion-update-page"]));
 
     // Per agent: read only for this one.
@@ -78,7 +77,7 @@ describe("All agents", () => {
     const later = s.ctx.policy.createAgent({ name: "Later" }).agent;
     expect(s.ctx.db.get("SELECT 1 AS x FROM connection_grants WHERE agent_id = ? AND connection_id = ?", later.id, picked.id)).toBeUndefined();
     expect(await json(await s.api(`/connections/${picked.id}`, { method: "PATCH", json: { allAgents: true } }))).toMatchObject({ allAgents: true, agents: 2 });
-    expect(s.ctx.db.get("SELECT level FROM connection_grants WHERE agent_id = ? AND connection_id = ?", later.id, picked.id)).toEqual({ level: "ask" });
+    expect(s.ctx.db.get("SELECT level FROM connection_grants WHERE agent_id = ? AND connection_id = ?", later.id, picked.id)).toEqual({ level: "full" });
   });
 });
 
@@ -135,7 +134,7 @@ describe("pairing grants only what the card showed", () => {
 
   it("never inherits All agents connections; omitted connections grant none; nothing chosen is refused", async () => {
     const s = await setup();
-    const notionCon = await notion(s); // All agents, ask
+    const notionCon = await notion(s); // All agents, full
     // A disabled "All agents" T3 at full: hidden from tools, still never granted behind the card.
     const t3 = await notion(s, { slug: "t3", levelDefault: "full" });
     expect((await s.api(`/connections/${t3.id}/kill`, { method: "POST" })).status).toBe(204);
@@ -155,19 +154,21 @@ describe("pairing grants only what the card showed", () => {
     // A Gmail grant and connections omitted: no connection at all (not every "All agents" one).
     addAccount(s.ctx, "acc_a", "me@acme.com");
     const p2 = await pending(s, "Mail only");
-    const a2 = await json(await s.api(`/pairings/${p2.id}/approve`, { method: "POST", json: { userCode: p2.userCode, grants: [readGrant("acc_a")] } }));
+    const a2 = await json(await s.api(`/pairings/${p2.id}/approve`, { method: "POST", json: { userCode: p2.userCode, grants: [grantInput("acc_a")] } }));
     expect(s.ctx.db.all("SELECT connection_id FROM connection_grants WHERE agent_id = ?", a2.id)).toEqual([]);
 
     // Console create still inherits "All agents" (both connections, at their defaults).
     const { agent } = s.ctx.policy.createAgent({ name: "Console" });
-    expect(s.ctx.db.all("SELECT connection_id, level FROM connection_grants WHERE agent_id = ? ORDER BY level", agent.id)).toEqual([
-      { connection_id: notionCon.id, level: "ask" },
-      { connection_id: t3.id, level: "full" },
-    ]);
+    expect(s.ctx.db.all("SELECT connection_id, level FROM connection_grants WHERE agent_id = ? ORDER BY connection_id", agent.id)).toEqual(
+      [
+        { connection_id: notionCon.id, level: "full" },
+        { connection_id: t3.id, level: "full" },
+      ].sort((x, y) => (x.connection_id < y.connection_id ? -1 : 1)),
+    );
 
     // The card's defaults: All agents at their level, the rest at No access.
     expect(pairingConnectionDefault({ allAgents: true, levelDefault: "full" })).toBe("full");
-    expect(pairingConnectionDefault({ allAgents: false, levelDefault: "ask" })).toBe("none");
+    expect(pairingConnectionDefault({ allAgents: false, levelDefault: "full" })).toBe("none");
   });
 
   it("PATCH allAgents grants others only on the off→on change, never re-granting No access", async () => {
@@ -177,7 +178,7 @@ describe("pairing grants only what the card showed", () => {
     const b = s.ctx.policy.createAgent({ name: "B" }).agent;
     expect(await json(await s.api(`/connections/${con.id}`, { method: "PATCH", json: { allAgents: true } }))).toMatchObject({ allAgents: true, agents: 2 });
     // The admin sets B to No access; repeating allAgents: true doesn't give it back.
-    await s.api(`/connections/${con.id}/grants`, { method: "PUT", json: { grants: [{ agentId: a.id, level: "ask" }] } });
+    await s.api(`/connections/${con.id}/grants`, { method: "PUT", json: { grants: [{ agentId: a.id, level: "full" }] } });
     expect(await json(await s.api(`/connections/${con.id}`, { method: "PATCH", json: { allAgents: true } }))).toMatchObject({ agents: 1 });
     expect(s.ctx.db.get("SELECT 1 AS x FROM connection_grants WHERE agent_id = ? AND connection_id = ?", b.id, con.id)).toBeUndefined();
   });

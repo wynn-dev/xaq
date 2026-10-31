@@ -51,7 +51,7 @@
     {
       "id": "reconnect",
       "title": "Reconnect every 30 days",
-      "body": "A T3 sign-in lasts 30 days and T3 can't renew it. xaq reminds you 7 days and 1 day before, in the console and through your webhooks and listener. Reconnect takes a new pairing code and keeps this connection's name, agents and access. If it does expire, agents get a message asking you to reconnect, not a failure in the middle of a task."
+      "body": "A T3 sign-in lasts 30 days and T3 can't renew it. xaq reminds you 7 days and 1 day before, in the console and through your listener. Reconnect takes a new pairing code and keeps this connection's name, agents and access. If it does expire, agents get a message asking you to reconnect, not a failure in the middle of a task."
     }
   ],
   "risk": {
@@ -131,12 +131,12 @@
       "device_close": { "class": "write" },
       "html_render": { "class": "write" },
       "html_preview": { "class": "write" },
-      "t3_project_delete": { "class": "risky", "target": "/projectId" },
-      "delete_scheduled_task": { "class": "risky", "target": "/scheduledTaskId" },
+      "t3_project_delete": { "class": "risky" },
+      "delete_scheduled_task": { "class": "risky" },
       "t3_environment_preferences_update": { "class": "risky" },
-      "t3_project_update": { "class": "risky", "target": "/projectId" },
+      "t3_project_update": { "class": "risky" },
       "schedule_task": { "class": "risky" },
-      "update_scheduled_task": { "class": "risky", "target": "/scheduledTaskId" },
+      "update_scheduled_task": { "class": "risky" },
       "preview_evaluate": { "class": "risky" },
       "preview_upload": { "class": "risky" }
     },

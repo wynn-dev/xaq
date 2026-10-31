@@ -1,17 +1,15 @@
 import { z } from "zod";
-import { type AccessLevel, type Agent, type AgentOrigin, type AgentWithKey, type CreateAgentInput, type Grant, type GrantInput, isCalendarEventType, isConnectionEventType } from "../../shared/types.ts";
+import { type AccessLevel, type Agent, type AgentOrigin, type AgentWithKey, type CreateAgentInput, type Grant, type GrantInput, isConnectionEventType } from "../../shared/types.ts";
 import { listenersOf } from "../agentapi/listeners.ts";
 import { ADMIN_ACTOR } from "../api/util.ts";
-import { canSeeConnectionEvent } from "../broker/access.ts";
+import { canSeeConnection } from "../broker/access.ts";
 import type { BusEvents } from "../bus.ts";
 import type { AppContext } from "../context.ts";
 import { sha256 } from "../crypto.ts";
 import { bool, type Db, json, now } from "../db/index.ts";
 import { badRequest, notFound } from "../util/errors.ts";
 import { newId, randomToken } from "../util/ids.ts";
-import { Approvals } from "../mail/approvals.ts";
-import { CALENDAR_GRANT_DEFAULTS, type GrantRow, parseGrantInput, toGrant } from "./grants.ts";
-import { calendarInScope } from "./calendar.ts";
+import { type GrantRow, parseGrantInput, toGrant } from "./grants.ts";
 import type { AgentPrincipal, PolicyService } from "./types.ts";
 
 export const API_KEY_PREFIX = "aib_";
@@ -28,7 +26,7 @@ function connectionGrantsFor(db: Db, explicit: { connectionId: string; level: Ac
   }
   for (const c of explicit) {
     if (!db.get("SELECT 1 AS x FROM connections WHERE id = ?", c.connectionId)) throw badRequest(`Unknown connection ${c.connectionId}`);
-    if (!["full", "ask", "read", "none"].includes(c.level)) throw badRequest(`Unknown access level ${String(c.level)}`);
+    if (!["full", "read", "none"].includes(c.level)) throw badRequest(`Unknown access level ${String(c.level)}`);
     if (c.level === "none") out.delete(c.connectionId);
     else out.set(c.connectionId, c.level);
   }
@@ -38,12 +36,6 @@ function connectionGrantsFor(db: Db, explicit: { connectionId: string; level: Ac
 const KEY_RANDOM_CHARS = 32;
 /** `last_used_at` and `last_mcp_at` are written at most this often per agent (the first write is immediate). */
 const LAST_USED_THROTTLE_MS = 60_000;
-/**
- * Account-level events, visible regardless of label or calendar scope: with `read`, or for
- * account.auth_failed also with `calendar.read` (sync.gap is about mail only).
- */
-const ACCOUNT_EVENTS = new Set(["account.auth_failed", "sync.gap"]);
-
 interface AgentRow {
   id: string;
   name: string;
@@ -73,9 +65,6 @@ export const newApiKey = (): string => API_KEY_PREFIX + randomToken(KEY_RANDOM_C
 
 export function createPolicyService(ctx: AppContext): PolicyService {
   const { db } = ctx;
-  // Pending approvals are cancelled whenever the agent loses the right to send them.
-  const approvals = new Approvals(ctx);
-
   const grantsOf = (agentId: string): Grant[] =>
     db.all<GrantRow>("SELECT * FROM grants WHERE agent_id = ? ORDER BY created_at, rowid", agentId).map(toGrant);
 
@@ -106,31 +95,14 @@ export function createPolicyService(ctx: AppContext): PolicyService {
 
   const writeGrant = (agentId: string, g: GrantInput): Grant => {
     requireAccount(g.accountId);
-    // Omitted calendar fields keep the stored values (an older client must never widen the calendar scope).
-    const prev = db.get<GrantRow>("SELECT * FROM grants WHERE agent_id = ? AND account_id = ?", agentId, g.accountId);
-    const calendarScope = g.calendarScope !== undefined ? g.calendarScope : prev ? toGrant(prev).calendarScope : CALENDAR_GRANT_DEFAULTS.calendarScope;
-    const calendarWriteMode = g.calendarWriteMode ?? (prev ? toGrant(prev).calendarWriteMode : CALENDAR_GRANT_DEFAULTS.calendarWriteMode);
     db.run(
-      `INSERT INTO grants (id, agent_id, account_id, capabilities, label_scope, send_mode, allow_to, reply_only,
-         max_sends_per_hour, max_sends_per_day, calendar_scope, calendar_write_mode, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(agent_id, account_id) DO UPDATE SET
-         capabilities = excluded.capabilities, label_scope = excluded.label_scope, send_mode = excluded.send_mode,
-         allow_to = excluded.allow_to, reply_only = excluded.reply_only,
-         max_sends_per_hour = excluded.max_sends_per_hour, max_sends_per_day = excluded.max_sends_per_day,
-         calendar_scope = excluded.calendar_scope, calendar_write_mode = excluded.calendar_write_mode`,
+      `INSERT INTO grants (id, agent_id, account_id, level, allow_to, created_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(agent_id, account_id) DO UPDATE SET level = excluded.level, allow_to = excluded.allow_to`,
       newId("grt"),
       agentId,
       g.accountId,
-      json.str(g.capabilities),
-      g.labelScope === null ? null : json.str(g.labelScope),
-      g.sendMode,
+      g.level,
       json.str(g.allowTo),
-      g.replyOnly ? 1 : 0,
-      g.maxSendsPerHour,
-      g.maxSendsPerDay,
-      calendarScope === null ? null : json.str(calendarScope),
-      calendarWriteMode,
       now(),
     );
     return toGrant(db.get<GrantRow>("SELECT * FROM grants WHERE agent_id = ? AND account_id = ?", agentId, g.accountId)!);
@@ -144,25 +116,6 @@ export function createPolicyService(ctx: AppContext): PolicyService {
       ctx.log.debug("Calendar kick failed", { error: err instanceof Error ? err.message : String(err) });
     }
   };
-
-  /** The grant reads calendars it didn't before (calendar.read added, or the calendar scope widened). */
-  const readsMore = (prev: Grant | null, next: Grant) => {
-    if (!prev?.capabilities.includes("calendar.read")) return true;
-    if (prev.calendarScope === null) return false;
-    return next.calendarScope === null || next.calendarScope.some((id) => !prev.calendarScope!.includes(id));
-  };
-
-  const grantSummary = (g: GrantInput) => ({
-    capabilities: g.capabilities,
-    sendMode: g.sendMode,
-    ...(g.calendarWriteMode !== undefined ? { calendarWriteMode: g.calendarWriteMode } : {}),
-    ...(g.calendarScope !== undefined ? { calendarScope: g.calendarScope === null ? null : g.calendarScope.length } : {}),
-    labelScope: g.labelScope,
-    allowTo: g.allowTo.length,
-    replyOnly: g.replyOnly,
-    maxSendsPerHour: g.maxSendsPerHour,
-    maxSendsPerDay: g.maxSendsPerDay,
-  });
 
   /** Live listener streams re-check access on this (after the change is committed). */
   const changed = (agentId: string, reason: BusEvents["agent"][0]["reason"]) => {
@@ -288,7 +241,7 @@ export function createPolicyService(ctx: AppContext): PolicyService {
       });
       // A brand-new agent has no cached tool view or pending calls; the registry is told anyway.
       if (connections.length) ctx.broker?.invalidate({ agentId: id });
-      for (const g of grants) if (g.capabilities.includes("calendar.read")) kickCalendar(g.accountId);
+      for (const g of grants) kickCalendar(g.accountId);
       ctx.audit.record({
         ...ADMIN_ACTOR,
         action: "agent.create",
@@ -317,7 +270,6 @@ export function createPolicyService(ctx: AppContext): PolicyService {
         params.push(fields.disabled ? 1 : 0);
       }
       if (sets.length) db.run(`UPDATE agents SET ${sets.join(", ")} WHERE id = ?`, ...params, id);
-      if (fields.disabled) approvals.cancelForAgent(id, null, "the agent was disabled");
       ctx.audit.record({ ...ADMIN_ACTOR, action: "agent.update", target: id, outcome: "ok", detail: { fields: Object.keys(fields) } });
       changed(id, "updated");
       return toAgent(requireRow(id));
@@ -334,10 +286,7 @@ export function createPolicyService(ctx: AppContext): PolicyService {
 
     deleteAgent(id) {
       const r = requireRow(id);
-      approvals.cancelForAgent(id, null, "the agent was deleted");
       db.run("DELETE FROM agents WHERE id = ?", id);
-      // Its tool-mode setting (server/broker/search/mode.ts) lives in the settings table, outside the cascade.
-      db.run("DELETE FROM settings WHERE key = ?", `broker.search:${id}`);
       ctx.audit.record({ ...ADMIN_ACTOR, action: "agent.delete", target: id, outcome: "ok", detail: { name: r.name } });
       changed(id, "deleted");
     },
@@ -349,13 +298,10 @@ export function createPolicyService(ctx: AppContext): PolicyService {
         throw badRequest("The grant's accountId does not match the URL");
       }
       const g = parseGrantInput(raw);
-      const row = db.get<GrantRow>("SELECT * FROM grants WHERE agent_id = ? AND account_id = ?", agentId, accountId);
-      const prev = row ? toGrant(row) : null;
+      const isNew = !db.get("SELECT 1 FROM grants WHERE agent_id = ? AND account_id = ?", agentId, accountId);
       const grant = writeGrant(agentId, g);
-      if (grant.capabilities.includes("calendar.read") && readsMore(prev, grant)) kickCalendar(accountId);
-      if (!g.capabilities.includes("send")) approvals.cancelForAgent(agentId, accountId, "the agent's send permission was removed", "mail");
-      if (!g.capabilities.includes("calendar.write")) approvals.cancelForAgent(agentId, accountId, "the agent's calendar.write permission was removed", "calendar");
-      ctx.audit.record({ ...ADMIN_ACTOR, action: "grant.upsert", accountId, target: agentId, outcome: "ok", detail: grantSummary(g) });
+      if (isNew) kickCalendar(accountId);
+      ctx.audit.record({ ...ADMIN_ACTOR, action: "grant.upsert", accountId, target: agentId, outcome: "ok", detail: { level: g.level, allowTo: g.allowTo.length } });
       changed(agentId, "grant_changed");
       return grant;
     },
@@ -364,7 +310,6 @@ export function createPolicyService(ctx: AppContext): PolicyService {
       requireRow(agentId);
       const { changes } = db.run("DELETE FROM grants WHERE agent_id = ? AND account_id = ?", agentId, accountId);
       if (!changes) throw notFound("Grant");
-      approvals.cancelForAgent(agentId, accountId, "the agent's access to this account was removed");
       ctx.audit.record({ ...ADMIN_ACTOR, action: "grant.delete", accountId, target: agentId, outcome: "ok" });
       changed(agentId, "grant_changed");
     },
@@ -376,23 +321,14 @@ export function createPolicyService(ctx: AppContext): PolicyService {
 
     grants: grantsOf,
 
-    canSeeEvent(agentId, ev, via = "feed") {
-      if (isConnectionEventType(ev.type)) return !!ev.connectionId && canSeeConnectionEvent(db, ctx.settings.get().brokerUpstreams, agentId, ev, via);
-      const r = db.get<GrantRow & { disabled: number }>(
-        "SELECT g.*, a.disabled FROM grants g JOIN agents a ON a.id = g.agent_id WHERE g.agent_id = ? AND g.account_id = ?",
+    canSeeEvent(agentId, ev) {
+      if (isConnectionEventType(ev.type)) return !!ev.connectionId && canSeeConnection(db, agentId, ev.connectionId);
+      const r = db.get<{ disabled: number }>(
+        "SELECT a.disabled FROM grants g JOIN agents a ON a.id = g.agent_id WHERE g.agent_id = ? AND g.account_id = ?",
         agentId,
         ev.accountId,
       );
-      if (!r || bool(r.disabled)) return false;
-      const g = toGrant(r);
-      if (ACCOUNT_EVENTS.has(ev.type)) return g.capabilities.includes("read") || (ev.type === "account.auth_failed" && g.capabilities.includes("calendar.read"));
-      if (isCalendarEventType(ev.type)) {
-        const calendarId = ev.calendarEvent?.calendarId;
-        return g.capabilities.includes("calendar.read") && !!calendarId && calendarInScope(g, calendarId);
-      }
-      if (!g.capabilities.includes("read")) return false;
-      if (g.labelScope === null) return true;
-      return ev.threadLabelIds.some((id) => g.labelScope!.includes(id));
+      return !!r && !bool(r.disabled);
     },
   };
 }

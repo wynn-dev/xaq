@@ -5,17 +5,15 @@ import type { AppContext } from "../server/context.ts";
 import { getRow } from "../server/google/accounts.ts";
 import { storedFailure } from "../server/google/oauth.ts";
 import { googleRuntime } from "../server/google/runtime.ts";
-import { CALENDAR_SCOPES, GMAIL_SCOPE, PUBSUB_SCOPE } from "../server/google/scopes.ts";
+import { CALENDAR_SCOPES, GMAIL_SCOPE } from "../shared/google-scopes.ts";
 import { HttpError } from "../server/util/errors.ts";
-import { consent, fakeCalendar, MAIL_ONLY } from "./calendar-setup-fakes.ts";
-import { connectFakeAccount, FAKE_CLIENT, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";
+import { connectFakeAccount, consent, FAKE_CLIENT, type FakeGoogle, MAIL_ONLY, recordingEvents, startFakeGoogle } from "./fake-google.ts";
 import { testContext } from "./helpers.ts";
 
 const ME = "me@example.com";
 
 let fake: FakeGoogle;
 let ctx: AppContext;
-let cal: ReturnType<typeof fakeCalendar>;
 let dispose: () => Promise<void>;
 
 beforeEach(async () => {
@@ -23,7 +21,6 @@ beforeEach(async () => {
   const t = testContext({ events: recordingEvents().factory }, { google: fake.google });
   ctx = t.ctx;
   dispose = t.dispose;
-  cal = fakeCalendar(ctx);
   ctx.google.setClient({ ...FAKE_CLIENT, appType: "internal" });
   fake.addAccount(ME);
 });
@@ -42,6 +39,7 @@ const requested = (start: Parameters<AppContext["google"]["startConnect"]>[0] = 
   return { scopes: (q.get("scope") ?? "").split(" "), incremental: q.get("include_granted_scopes") };
 };
 
+const calendarLists = () => fake.requests.filter((r) => r.path.endsWith("/calendarList")).length;
 const scopesOf = (id: string) => JSON.parse(getRow(ctx, id)!.scopes) as string[];
 
 describe("which scopes a consent asks for", () => {
@@ -51,7 +49,7 @@ describe("which scopes a consent asks for", () => {
     expect(scope).toEqual(expect.arrayContaining([...CALENDAR_SCOPES]));
     expect(account!.calendar).toEqual({ status: "active", missingScopes: [], lastSyncAt: null, error: null });
     // The probe right after the consent saw the API working.
-    expect(cal.calls).toEqual([{ accountId: account!.id, method: "listCalendars" }]);
+    expect(calendarLists()).toBe(1);
     expect(ctx.calendar.setupState()).toMatchObject({ enabled: true, api: "enabled", step: "done" });
   });
 
@@ -69,20 +67,20 @@ describe("which scopes a consent asks for", () => {
     expect(requested().scopes).toEqual([GMAIL_SCOPE, "openid", "email", "profile"]);
     const { account } = await consent(ctx, fake, ME);
     expect(account!.calendar).toBeNull();
-    expect(cal.calls).toEqual([]);
+    expect(calendarLists()).toBe(0);
   });
 
   it("a reconnect asks again for calendar scopes the account had only while Calendar is on and not mail-only", async () => {
-    const { account } = await connectFakeAccount(ctx, fake, ME, { pubsub: true }).then((a) => ({ account: a }));
+    const account = await connectFakeAccount(ctx, fake, ME);
     const reauthAccountId = account.id;
-    expect(scopesOf(reauthAccountId)).toEqual(expect.arrayContaining([...CALENDAR_SCOPES, PUBSUB_SCOPE]));
-    expect(requested({ reauthAccountId }).scopes).toEqual(expect.arrayContaining([...CALENDAR_SCOPES, PUBSUB_SCOPE]));
-    // An admin blocks Calendar: a mail-only reconnect leaves it out (Pub/Sub stays).
+    expect(scopesOf(reauthAccountId)).toEqual(expect.arrayContaining([...CALENDAR_SCOPES]));
+    expect(requested({ reauthAccountId }).scopes).toEqual(expect.arrayContaining([...CALENDAR_SCOPES]));
+    // An admin blocks Calendar: a mail-only reconnect leaves it out.
     const mailOnly = requested({ reauthAccountId, mailOnly: true }).scopes;
-    expect(mailOnly).toEqual([GMAIL_SCOPE, "openid", "email", "profile", PUBSUB_SCOPE]);
+    expect(mailOnly).toEqual([GMAIL_SCOPE, "openid", "email", "profile"]);
     // So does any reconnect once Calendar is turned off; include_granted_scopes keeps what Google still grants.
     ctx.calendar.updateSetup({ enabled: false });
-    expect(requested({ reauthAccountId }).scopes).toEqual([GMAIL_SCOPE, "openid", "email", "profile", PUBSUB_SCOPE]);
+    expect(requested({ reauthAccountId }).scopes).toEqual([GMAIL_SCOPE, "openid", "email", "profile"]);
     expect(requested({ reauthAccountId }).incremental).toBe("true");
     expect(() => ctx.google.startConnect({ reauthAccountId, mailOnly: true, scopes: ["calendar"] })).toThrow(/mail-only connection can't add Google Calendar/);
   });
@@ -118,8 +116,8 @@ describe("Add Calendar to an existing account", () => {
   let id: string;
   beforeEach(async () => {
     preCalendarInstall();
-    id = (await connectFakeAccount(ctx, fake, ME, { pubsub: true })).id;
-    expect(scopesOf(id)).toEqual(expect.arrayContaining([GMAIL_SCOPE, PUBSUB_SCOPE]));
+    id = (await connectFakeAccount(ctx, fake, ME)).id;
+    expect(scopesOf(id)).toEqual(expect.arrayContaining([GMAIL_SCOPE]));
   });
 
   it("swaps in the new refresh token in one update, never revokes the old one, and keeps the history cursor", async () => {
@@ -129,7 +127,7 @@ describe("Add Calendar to an existing account", () => {
     expect(account!.calendar).toMatchObject({ status: "active", missingScopes: [] });
     expect(after.refresh_token_enc).not.toBe(before.refresh_token_enc);
     expect(after.history_id).toBe(before.history_id);
-    expect(scopesOf(id)).toEqual(expect.arrayContaining([GMAIL_SCOPE, PUBSUB_SCOPE, ...CALENDAR_SCOPES]));
+    expect(scopesOf(id)).toEqual(expect.arrayContaining([GMAIL_SCOPE, ...CALENDAR_SCOPES]));
     expect(fake.revoked).toEqual([]);
     // The old refresh token still works at Google (a new consent doesn't revoke it).
     const res = await fetch(`${fake.url}/token`, {
@@ -146,9 +144,9 @@ describe("Add Calendar to an existing account", () => {
     expect(error!.message).toBe(`Google Calendar wasn't added to ${ME}: its Calendar permissions were unticked on Google's screen. Its mail keeps working as before.`);
     const row = getRow(ctx, id)!;
     expect(row.status).toBe("active");
-    expect(scopesOf(id)).toEqual(expect.arrayContaining([GMAIL_SCOPE, PUBSUB_SCOPE]));
+    expect(scopesOf(id)).toEqual(expect.arrayContaining([GMAIL_SCOPE]));
     expect(ctx.calendar.setupState().accounts[0]).toMatchObject({ status: "not_granted", missingScopes: [...CALENDAR_SCOPES] });
-    expect(cal.calls).toEqual([]);
+    expect(calendarLists()).toBe(0);
     expect(fake.revoked).toEqual([]);
   });
 

@@ -1,6 +1,0 @@
-[
-  { "name": "notion", "commit": "4130a3abc1b48a371df1290e6e818be0aa08ee6b", "integrity": "sha256-TwzJEkAqqLv41DlxDVOghtHxvLC9KldLAsXxEXNqCFU=" },
-  { "name": "t3code", "commit": "4130a3abc1b48a371df1290e6e818be0aa08ee6b", "integrity": "sha256-uqf721cij+o3eWwqJov4QU2xNx0POX0kaSJWYJz43As=" },
-  { "name": "whoop", "commit": "4130a3abc1b48a371df1290e6e818be0aa08ee6b", "integrity": "sha256-MR1Ctu/r85Smg5NKRgmnEyb+xX8L3BLzHIKHI98Twng=" },
-  { "name": "brightspace", "commit": "4130a3abc1b48a371df1290e6e818be0aa08ee6b", "integrity": "sha256-HuvzSso1Q2ZdClv41ZxtrhcSEjfUjtg5cKEr7KVtsOQ=" }
-]

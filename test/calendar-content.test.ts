@@ -1,4 +1,4 @@
-// Event text as untrusted content (server/calendar/content.ts, docs/calendar.md workstream C). Invitations
+// Event text as untrusted content (server/calendar/content.ts). Invitations
 // are an injection vector: anyone can put an event with any title, location, names and description on the
 // account's calendar. The description is cleaned like a mail body and wrapped in <calendar_content untrusted>.
 
@@ -13,7 +13,7 @@ import { cleanLine, escapeDelimiters, stripInvisible, wrapUntrusted } from "../s
 import { formatCalendarEvent } from "../server/mcp/format.ts";
 import type { ContentFixture } from "./fixtures/content/fixture.ts";
 import { interleave, tags, ZWSP } from "./fixtures/content/fixture.ts";
-import { mailTestContext } from "./mail-fakes.ts";
+import { mailTestContext } from "./helpers.ts";
 
 const ME = "me@acme.test";
 const ACCOUNT = { id: "acc_a", email: ME } as Parameters<typeof formatCalendarEvent>[0];

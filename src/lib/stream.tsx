@@ -16,8 +16,6 @@ const StreamContext = createContext<StreamContextValue>({ state: "connecting", s
 /** Which cached queries each kind of stream message makes stale. */
 const STALE: Record<ConsoleStreamMessage["kind"], readonly (readonly string[])[]> = {
   event: [keys.events, keys.overview],
-  delivery: [keys.deliveries, keys.webhooks, keys.overview],
-  approval: [keys.approvals, keys.overview],
   audit: [keys.audit, keys.agents, keys.overview],
   account: [keys.accounts, keys.setupState, keys.overview, keys.calendarSetup],
   pairing: [keys.pairings, keys.agents],

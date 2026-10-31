@@ -1,6 +1,6 @@
-// SourceError → plain words for the agent (docs/MCP-BROKER.md "Every failure names its fix").
+// SourceError → plain words for the agent.
 
-import { boundPreset } from "../../integrations/index.ts";
+import { presetById } from "../../integrations/index.ts";
 import { SourceError, type SourceErrorCode } from "../types.ts";
 import { connectionConsoleUrl } from "../upstream/connection.ts";
 import type { Scrubber } from "./output.ts";
@@ -31,7 +31,7 @@ export interface ConnectionLabel {
 export function connectionLabel(c: ConnectionInfo, publicUrl: string, at = Date.now()): ConnectionLabel {
   return {
     name: c.name,
-    kind: c.preset ? (boundPreset(c.preset)?.displayName ?? null) : null,
+    kind: c.preset ? (presetById(c.preset)?.displayName ?? null) : null,
     expired: isExpired(c, at),
     consoleUrl: connectionConsoleUrl(publicUrl, c.id),
   };

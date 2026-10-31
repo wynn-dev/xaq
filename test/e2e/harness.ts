@@ -1,11 +1,10 @@
 // End-to-end harness: the real server (startServer on port 0, temp data dir) wired to the in-memory
-// fake Google, driven over real HTTP the way the console (admin API), agents (MCP) and webhook
-// receivers use it. Nothing here reaches into services except `kick()` (ingest.kick, to avoid
+// fake Google, driven over real HTTP the way the console (admin API) and agents (MCP) use it. Nothing here reaches into services except `kick()` (ingest.kick, to avoid
 // waiting for the 5 s minimum poll interval) and `ctx` for diagnostics.
 //
 //   const s = await startStack();
-//   const [acc] = await s.bootstrap({ accounts: ["me@acme.test"], pubsub: true });
-//   const { apiKey } = await s.createAgent("bot", [grant(acc.id, { capabilities: ["read"] })]);
+//   const [acc] = await s.bootstrap({ accounts: ["me@acme.test"] });
+//   const { apiKey } = await s.createAgent("bot", [grant(acc.id, { level: "full" })]);
 //   const agent = await s.agent(apiKey);
 //   s.fake.deliver("me@acme.test", { from: "a@b.test", subject: "Hi", text: "Hello" });
 //   await s.waitForEvent((e) => e.message?.subject === "Hi");
@@ -29,7 +28,6 @@ import type {
   GrantInput,
   MailEvent,
   Page,
-  PubsubState,
   Settings,
 } from "../../shared/types.ts";
 import { FAKE_CLIENT, type FakeGoogle, startFakeGoogle } from "../fake-google.ts";
@@ -68,7 +66,7 @@ export interface RequestOptions {
   cookie?: boolean;
 }
 
-/** Drives /api exactly like the browser console: session cookie + `x-agentinbox-csrf: 1`. */
+/** Drives /api exactly like the browser console: session cookie + `x-xaq-csrf: 1`. */
 export class AdminClient {
   cookie: string | null = null;
 
@@ -81,7 +79,7 @@ export class AdminClient {
   /** Raw request (no status check). Captures a new session cookie when the server sets one. */
   async request(path: string, opts: RequestOptions = {}): Promise<Response> {
     const headers: Record<string, string> = { accept: "application/json", ...opts.headers };
-    if (opts.csrf !== false) headers["x-agentinbox-csrf"] = "1";
+    if (opts.csrf !== false) headers["x-xaq-csrf"] = "1";
     if (opts.cookie !== false && this.cookie) headers.cookie = this.cookie;
     if (opts.json !== undefined) headers["content-type"] = "application/json";
     const res = await resilientFetch(`${this.base()}${path}`, {
@@ -144,19 +142,9 @@ export class AdminClient {
 
 // ───────────── Grants ─────────────
 
-/** A full GrantInput with conservative defaults (read only, whole mailbox, draft_only). */
+/** A GrantInput, read only by default. */
 export function grant(accountId: string, patch: Partial<GrantInput> = {}): GrantInput {
-  return {
-    accountId,
-    capabilities: ["read"],
-    labelScope: null,
-    sendMode: "draft_only",
-    allowTo: [],
-    replyOnly: false,
-    maxSendsPerHour: null,
-    maxSendsPerDay: null,
-    ...patch,
-  };
+  return { accountId, level: "read", allowTo: [], ...patch };
 }
 
 // ───────────── Stack ─────────────
@@ -166,15 +154,13 @@ export interface StackOptions {
   fake?: FakeGoogle;
   /** Reuse a data dir (restart scenarios); otherwise a fresh temp dir that close() removes. */
   dataDir?: string;
-  /** Service overrides passed to startServer (keep them real; e.g. a webhooks retry schedule). */
+  /** Service overrides passed to startServer (keep them real). */
   overrides?: ServiceOverrides;
 }
 
 export interface BootstrapOptions {
   /** Fake mailboxes to connect through the real OAuth flow, in order. */
   accounts?: (string | { email: string; name?: string })[];
-  /** Provision Pub/Sub via the API after connecting the first account (real-time ingest). */
-  pubsub?: boolean;
   settings?: Partial<Settings>;
   /** false: connect mail-only, as installs from before Google Calendar did (PATCH /api/google/calendar first). */
   calendar?: boolean;
@@ -260,7 +246,7 @@ export class Stack {
 
   /**
    * First-run setup through the console API: claim with the setup token, configure the fake OAuth
-   * client, connect accounts, optionally provision Pub/Sub. Returns the connected accounts.
+   * client, connect accounts. Returns the connected accounts.
    */
   async bootstrap(opts: BootstrapOptions = {}): Promise<Account[]> {
     const token = this.setupToken();
@@ -275,30 +261,8 @@ export class Stack {
     for (const a of opts.accounts ?? []) {
       const spec = typeof a === "string" ? { email: a } : a;
       accounts.push(await this.connectAccount(spec.email, { name: spec.name }));
-      if (opts.pubsub && accounts.length === 1) await this.provisionPubsub();
     }
-    if (opts.pubsub && !accounts.length) throw new Error("pubsub needs at least one account");
     return accounts;
-  }
-
-  /**
-   * Provisions Pub/Sub like the console: when the server answers 409 pubsub_scope_required, run the
-   * incremental consent for the principal account (reconnect with scopes ["pubsub"]) and retry.
-   */
-  async provisionPubsub(): Promise<PubsubState> {
-    let state: PubsubState;
-    try {
-      state = await this.admin.post<PubsubState>("/api/google/pubsub/provision");
-    } catch (err) {
-      if (!(err instanceof ApiFailure) || err.code !== "pubsub_scope_required") throw err;
-      const accounts = await this.admin.get<Account[]>("/api/accounts");
-      const account = accounts.find((a) => err.body!.error.message.includes(a.email)) ?? accounts[0]!;
-      await this.connectAccount(account.email, { reauthAccountId: account.id, scopes: ["pubsub"] });
-      state = await this.admin.post<PubsubState>("/api/google/pubsub/provision");
-    }
-    // The ingest loop restarts in pubsub mode on the settings broadcast; wait until it pulls.
-    await waitFor(() => this.ctx.ingest.status().mode === "pubsub" && this.ctx.ingest.status().running, { what: "ingest in pubsub mode" });
-    return state;
   }
 
   /**
@@ -335,7 +299,7 @@ export class Stack {
     return connectAgent(this.url, apiKey);
   }
 
-  /** Processes new Gmail history now instead of waiting for the poll interval (poll mode). */
+  /** Processes new Gmail history now instead of waiting for the poll interval. */
   kick(accountId?: string): void {
     this.ctx.ingest.kick(accountId);
   }
@@ -351,7 +315,7 @@ export class Stack {
   }
 
   /**
-   * Waits until GET /api/events lists an event matching `pred`. In poll mode it kicks ingest every
+   * Waits until GET /api/events lists an event matching `pred`. It kicks ingest every
    * half second (pass `kick: false` to rely on the real poll loop); with `calendar`, it kicks the
    * calendar sync instead (calendar.* events).
    */
@@ -359,8 +323,7 @@ export class Stack {
     let lastKick = 0;
     return waitFor(
       async () => {
-        const pubsub = this.ctx.ingest.status().mode === "pubsub";
-        if (opts.kick ?? (opts.calendar || !pubsub)) {
+        if (opts.kick ?? true) {
           if (Date.now() - lastKick > 500) {
             lastKick = Date.now();
             if (opts.calendar) this.kickCalendar(opts.accountId);

@@ -7,7 +7,6 @@ import {
   CheckIcon,
   ClockIcon,
   GlobeIcon,
-  InfoIcon,
   KeyRoundIcon,
   LaptopIcon,
   MessageSquareQuoteIcon,
@@ -20,7 +19,6 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AccountAvatar, AccountStatusBadge } from "@/components/accounts/account-status";
 import { GrantFieldsForm } from "@/components/agents/grant-editor";
-import { calendarInWords } from "@/components/agents/grant-words";
 import { ErrorAlert, SectionLabel, StatusDot, TimeAgo, ToneBadge } from "@/components/common";
 import { Visible } from "@/components/hidden-chars";
 import { Badge } from "@/components/ui/badge";
@@ -33,20 +31,17 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { useNow } from "@/hooks/use-now";
-import { useBrokerEnabled } from "@/hooks/use-broker";
 import { AGENT_LEVELS, LEVEL_INFO } from "@/components/connections/connection-flow";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { AgentLevel } from "@/lib/broker-dto";
 import { api, ApiError, toastError } from "@/lib/api";
 import { TOOL_LABEL } from "@/lib/cli";
 import { fmtDuration } from "@/lib/format";
-import { GRANT_PRESETS, type GrantFields, grantInput, grantProblem, hasCalendarAccess, presetGrant } from "@/lib/grants";
-import { type Choice, ChoiceCards } from "@/components/choice-cards";
-import { CALENDAR_WRITE_MODE_INFO, CAPABILITY_INFO, SEND_MODE_INFO } from "@/lib/labels";
+import { type GrantFields, grantInput } from "@/lib/grants";
 import { keys, queries } from "@/lib/queries";
 import { cn } from "@/lib/utils";
 import { useSilencePairingToasts } from "@/components/pairing-notifier";
-import { asksForMore, PAIRING_DEFAULT, pairingConnectionDefault } from "./pairing-grant";
+import { PAIRING_DEFAULT, pairingConnectionDefault } from "./pairing-grant";
 import { deniedDescription } from "./pairing-link";
 
 const toolLabel = (t: string | undefined) => (t && t in TOOL_LABEL ? TOOL_LABEL[t as AgentTool] : t) || null;
@@ -119,9 +114,6 @@ function AskedFor({ p, accounts }: { p: PairingRequest; accounts: Account[] }) {
         </span>
       )),
     ]);
-  if (r.capabilities?.length) rows.push(["Capabilities", r.capabilities.map((c) => CAPABILITY_INFO[c].label).join(", ")]);
-  if (r.sendMode) rows.push(["Sending", SEND_MODE_INFO[r.sendMode].label]);
-  if (r.calendarWriteMode) rows.push(["Calendar writes", CALENDAR_WRITE_MODE_INFO[r.calendarWriteMode].label]);
   return (
     <div className="space-y-2 rounded-lg border bg-muted/30 p-3">
       <SectionLabel>Asked for</SectionLabel>
@@ -313,22 +305,14 @@ export function FindByCode({ pending, onFound }: { pending: PairingRequest[]; on
 
 interface AccountChoice {
   on: boolean;
-  preset: string;
   fields: GrantFields;
 }
 
-const NEW_CHOICE: AccountChoice = { on: false, preset: "read", fields: PAIRING_DEFAULT };
-const presetById = (id: string) => GRANT_PRESETS.find((p) => p.id === id);
-const PAIRING_CHOICES: Choice<string>[] = [
-  { value: "read", title: "Read only", description: "Search and read mail. Can't change or send anything. No calendar access (choose Custom to add it).", badge: <Badge variant="secondary">Default</Badge> },
-  { value: "drafts", title: "Read and draft", description: "Anything it sends becomes a Gmail draft for you to send. No calendar access (choose Custom to add it)." },
-  { value: "approval", title: "Send with my approval", description: "Each send waits in Approvals until you approve it. No calendar access (choose Custom to add it)." },
-  { value: "custom", title: "Custom", description: "Pick capabilities, labels, calendars, recipients and limits." },
-];
+const NEW_CHOICE: AccountChoice = { on: false, fields: PAIRING_DEFAULT };
 
 /**
  * Approve a pairing: the human types the code from the agent's terminal (never pre-filled from the
- * link), names the agent, and builds its grants starting from read-only + draft-only sending.
+ * link), names the agent, and builds its grants starting from read only.
  */
 export function PairingApproveDialog({
   p,
@@ -435,7 +419,7 @@ function ApproveForm({
   const usable = accounts.filter((a) => a.status !== "paused");
   const [choices, setChoices] = useState<Record<string, AccountChoice>>(() =>
     // Pre-select only when there's a single working account; never from what the agent asked for.
-    Object.fromEntries(usable.map((a) => [a.id, { on: usable.filter((x) => x.status === "active").length === 1 && a.status === "active", preset: "read", fields: { ...PAIRING_DEFAULT } }])),
+    Object.fromEntries(usable.map((a) => [a.id, { on: usable.filter((x) => x.status === "active").length === 1 && a.status === "active", fields: { ...PAIRING_DEFAULT } }])),
   );
   const [error, setError] = useState<unknown>(null);
   /** The request was decided or expired meanwhile: nothing left to approve. */
@@ -444,21 +428,19 @@ function ApproveForm({
   const [typing, setTyping] = useState<Record<string, boolean>>({});
   // MCP broker connections: every one is listed (the card's choices are all the agent gets). "All agents" ones
   // start at their default level, the rest at No access.
-  const broker = useBrokerEnabled();
-  const connectionsQuery = useQuery({ ...queries.connections(), enabled: broker });
-  const connections: ConnectionView[] = broker ? (connectionsQuery.data ?? []) : [];
+  const connectionsQuery = useQuery(queries.connections());
+  const connections: ConnectionView[] = connectionsQuery.data ?? [];
   const [levels, setLevels] = useState<Record<string, AgentLevel>>({});
   const levelOf = (c: ConnectionView): AgentLevel => levels[c.id] ?? pairingConnectionDefault(c);
   const anyConnection = connections.some((c) => levelOf(c) !== "none");
-  const more = asksForMore(p);
   const selected = usable.filter((a) => choices[a.id]?.on);
   const problem = !selected.length && !anyConnection
     ? connections.length
       ? "Choose at least one account or connection."
       : "Choose at least one account."
-    : selected.some((a) => typing[a.id] && choices[a.id]!.preset === "custom")
+    : selected.some((a) => typing[a.id])
       ? "Add or clear the recipient you're typing first."
-      : (selected.map((a) => grantProblem(choices[a.id]!.fields)).find(Boolean) ?? null);
+      : null;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -543,17 +525,6 @@ function ApproveForm({
       </Field>
 
       <AskedFor p={p} accounts={accounts} />
-      {more.length > 0 && (
-        <p className="flex items-start gap-2 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
-          <InfoIcon className="mt-0.5 size-4 shrink-0 text-warning" />
-          <span>
-            It asked for more ({more.join(", ")}). Access below starts at <span className="font-medium">Read</span> with sending as{" "}
-            <span className="font-medium">Draft only</span> and no calendar access; add more only if you trust this agent
-            {more.some((m) => m.startsWith("Calendar")) && " (Custom has the calendar settings)"}.
-          </span>
-        </p>
-      )}
-
       <div className="space-y-2">
         <SectionLabel>What it gets</SectionLabel>
         {usable.length === 0 ? (
@@ -579,30 +550,13 @@ function ApproveForm({
                 </label>
                 {c.on && (
                   <div className="space-y-4 border-t p-3">
-                    <ChoiceCards
-                      columns={2}
-                      aria-label={`Access to ${a.email}`}
-                      value={c.preset}
-                      choices={PAIRING_CHOICES}
-                      onChange={(preset) => {
-                        const pr = presetById(preset);
-                        set({ preset, fields: pr ? presetGrant(pr, c.fields) : c.fields });
-                      }}
+                    <GrantFieldsForm
+                      idPrefix={`pair-${a.id}`}
+                      accountId={a.id}
+                      value={c.fields}
+                      onChange={(patch) => set({ fields: { ...c.fields, ...patch } })}
+                      onPendingChange={(v) => setTyping((t) => ({ ...t, [a.id]: v }))}
                     />
-                    {c.preset !== "custom" && hasCalendarAccess(c.fields) && (
-                      <p className="text-xs text-muted-foreground">Plus calendar: {calendarInWords(c.fields)}. Change it under Custom.</p>
-                    )}
-                    {c.preset === "custom" && (
-                      <div className="space-y-6 rounded-lg border p-3">
-                        <GrantFieldsForm
-                          idPrefix={`pair-${a.id}`}
-                          accountId={a.id}
-                          value={c.fields}
-                          onChange={(patch) => set({ fields: { ...c.fields, ...patch } })}
-                          onPendingChange={(v) => setTyping((t) => ({ ...t, [a.id]: v }))}
-                        />
-                      </div>
-                    )}
                   </div>
                 )}
               </div>

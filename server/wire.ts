@@ -8,7 +8,6 @@ import { createAccountsService, createGoogleService } from "./google/index.ts";
 import { createIngestService } from "./ingest/index.ts";
 import { createMailService } from "./mail/index.ts";
 import { createPolicyService } from "./policy/index.ts";
-import { createWebhooksService } from "./webhooks/index.ts";
 
 /** Tests replace individual services with fakes. */
 export type ServiceOverrides = Partial<{ [K in keyof Services]: (ctx: AppContext) => Services[K] }>;
@@ -20,7 +19,6 @@ const FACTORIES: { [K in keyof Services]: (ctx: AppContext) => Services[K] } = {
   events: createEventsService,
   policy: createPolicyService,
   mail: createMailService,
-  webhooks: createWebhooksService,
   calendar: createCalendarService,
   broker: (ctx) => createBrokerService(ctx),
 };
@@ -37,7 +35,7 @@ export function createAppContext(config: Config, overrides: ServiceOverrides = {
 
 export async function startServices(ctx: AppContext): Promise<void> {
   for (const key of SERVICE_ORDER) await ctx[key].start?.();
-  // The MCP broker's upstream sweep (proactive refresh, expiry warnings): a no-op while brokerUpstreams is off.
+  // The MCP broker's upstream sweep (proactive refresh, expiry warnings).
   upstreams(ctx).start();
 }
 

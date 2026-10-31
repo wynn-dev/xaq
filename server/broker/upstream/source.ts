@@ -14,7 +14,7 @@ import {
 import { errorMessage } from "../../util/errors.ts";
 import type { Logger } from "../../util/log.ts";
 import { type Refresher, untilAborted } from "../credentials/refresher.ts";
-import type { SqliteCredentialStore } from "../credentials/store.ts";
+import type { CredentialStore } from "../credentials/store.ts";
 import {
   type PromptDef,
   type PromptResult,
@@ -34,7 +34,7 @@ import { type ConnectionRow, formatVerdict, parseVerdict, type ProtocolVerdict }
 import { parseWwwAuthenticate } from "./discovery.ts";
 import { originKey } from "./fetch.ts";
 
-/** Per-call timeout (docs/MCP-BROKER.md "Transports"). */
+/** Per-call timeout. */
 export const CALL_TIMEOUT_MS = 60_000;
 /** A cached legacy verdict is re-probed after this long (a server may have upgraded; the SDK can't tell). */
 const VERDICT_TTL_MS = 24 * 3600_000;
@@ -44,7 +44,7 @@ export interface RemoteSourceDeps {
   /** The current row; throws SourceError when the connection can't be used (disabled, needs_reauth). */
   connection: () => ConnectionRow & { url: string };
   fetch: FetchLike;
-  store: SqliteCredentialStore;
+  store: CredentialStore;
   refresher: Refresher;
   /** OAuth connections: the refresh exchange. */
   refresh: RefreshFn | null;
@@ -68,7 +68,7 @@ function findSourceError(err: unknown): SourceError | null {
 }
 
 /**
- * ToolSource for a `remote_http` connection, on @modelcontextprotocol/client v2 (docs/adr/0001-mcp-client-sdk.md):
+ * ToolSource for a `remote_http` connection, on @modelcontextprotocol/client v2:
  * - Streamable HTTP with `versionNegotiation: auto` (2026 stateless or 2025 sessions), falling back to legacy
  *   HTTP+SSE when the POST is a non-MCP 404/405; the verdict is cached on the connection row;
  * - every request through the connection's guarded fetch; credentials injected here (static header, or an
@@ -306,7 +306,7 @@ export class RemoteToolSource implements ToolSource {
     await this.drop();
   }
 
-  /** Prompts and resources (docs/EXTENSIONS.md "Prompts and resources"): empty when the server doesn't declare them. */
+  /** Prompts and resources: empty when the server doesn't declare them. */
   readonly prompts: PromptSource = {
     listPrompts: (signal) =>
       this.run(signal, async (c) => (c.getServerCapabilities()?.prompts ? ((await c.listPrompts(undefined, { signal, timeout: this.timeout, cacheMode: "refresh" })).prompts as PromptDef[]) : [])),

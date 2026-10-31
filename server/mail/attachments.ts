@@ -1,8 +1,7 @@
 // Files an agent attaches to a draft, reply, forward or new message (the `attachments` tool argument). Everything
 // is checked here, in plain words, before anything reaches Google: base64, type, size against Gmail's
 // limits, the file types Gmail refuses, and the filename (cleaned like other untrusted header text).
-// Files come from four sources (server/mail/attach-sources.ts): bytes in the call, a path on xaq's machine
-// (server/mail/local-files.ts), another message's attachment, or Google Drive (server/mail/drive-files.ts).
+// Files come from two sources (server/mail/attach-sources.ts): bytes in the call, or another message's attachment.
 
 import { createHash } from "node:crypto";
 import { detectExtension, detectMimeType } from "nodemailer/lib/mime-funcs";
@@ -11,57 +10,40 @@ import { UPLOAD_MAX_BYTES } from "../google/gmail.ts";
 import { decodeMimeWords } from "../google/mime.ts";
 import { escapeDelimiters, stripInvisible } from "./content.ts";
 
-/** What a Google Doc, Sheet, Slides deck or Drawing can be exported as (drive_file_id + export_as). */
-export const DRIVE_EXPORT_FORMATS = ["pdf", "docx", "xlsx", "pptx", "csv", "txt", "md"] as const;
-export type DriveExportFormat = (typeof DRIVE_EXPORT_FORMATS)[number];
-
 /** The bytes, in the call. Today's form. */
 export interface Base64AttachmentInput {
   filename: string;
   mime_type?: string;
   content_base64: string;
 }
-/** A file on xaq's machine, inside a directory the owner allowed (Settings.attachmentDirs). */
-export interface PathAttachmentInput {
-  path: string;
-  filename?: string;
-  mime_type?: string;
-}
 /** An attachment of another message in the same account (ids as get_message / get_thread list them). */
 export interface MessageAttachmentInput {
   message_id: string;
   attachment_id: string;
 }
-/** A Google Drive file: Google-native files are exported (PDF by default), others downloaded as they are. */
-export interface DriveAttachmentInput {
-  drive_file_id: string;
-  export_as?: DriveExportFormat;
-}
 
 /** The tool argument, one item per file: exactly one source each. */
-export type AttachmentInput = Base64AttachmentInput | PathAttachmentInput | MessageAttachmentInput | DriveAttachmentInput;
+export type AttachmentInput = Base64AttachmentInput | MessageAttachmentInput;
 
 /** A checked attachment, ready for the MIME composer. */
 export interface OutgoingAttachment {
   filename: string;
   contentType: string;
   content: Buffer;
-  /** Where it came from (approval card and audit). Absent: in the call (content_base64). */
+  /** Where it came from (audit). Absent: in the call (content_base64). */
   source?: AttachmentSource;
-  /** A Drive file's page, offered as a link when the message turns out too large. Never sent or recorded. */
-  driveLink?: string;
 }
 
-/** Audit and approval view: never the content. */
+/** Audit view: never the content. */
 export interface AttachmentMeta {
   filename: string;
   mimeType: string;
   size: number;
-  sha256?: string;
+  sha256: string;
   source?: AttachmentSource;
 }
 
-/** Files per message. Gmail itself takes far more; this keeps tool calls and approval cards readable. */
+/** Files per message. Gmail itself takes far more; this keeps tool calls and the audit log readable. */
 export const MAX_ATTACHMENTS = 10;
 /**
  * Gmail's sending limit: 25 MB for the message content and attachments together, before encoding
@@ -141,18 +123,7 @@ export class AttachmentError extends Error {
       | "invalid_attachment"
       | "too_many_attachments"
       | "too_large"
-      | "blocked_file_type"
-      /** Path attachments are off (no attachment directories) or the path is refused. */
-      | "path_attachments_off"
-      | "path_not_allowed"
-      | "not_found"
-      /** The account hasn't granted Drive read access. */
-      | "drive_not_enabled"
-      /** The agent has no grant on a Google Workspace connection for the account. */
-      | "drive_not_granted"
-      | "drive_error"
-      /** The account must be reconnected before its Drive can be read. */
-      | "needs_reauth",
+      | "blocked_file_type",
     message: string,
   ) {
     super(message);
@@ -257,7 +228,7 @@ export function decodeBase64(label: string, b64: string, size: number): Buffer {
 /**
  * The name and type a file goes out with: `mime_type` checked (or inferred from the extension, else
  * application/octet-stream), the filename cleaned, Gmail's blocked types refused. `fallbackType` is used
- * instead of inferring when there is no `given` type (a source that knows the type, such as Drive).
+ * instead of inferring when there is no `given` type (a source that knows the type, such as another message's attachment).
  */
 export function fileType(label: string, rawName: string, given: unknown, fallbackType?: string): { filename: string; contentType: string } {
   const type = typeof given === "string" ? given.trim() : "";
@@ -274,7 +245,7 @@ export function fileType(label: string, rawName: string, given: unknown, fallbac
   const contentType = (type || (inferred && !/^(multipart|message)\//i.test(inferred) ? inferred : "") || "application/octet-stream").toLowerCase();
   const filename = sanitizeFilename(rawName, contentType);
   // Still an encoded-word after the bounded unwrapping: a mail client would decode it once more, into a name
-  // nothing here has checked. Refuse rather than send a name the approval card can't show.
+  // nothing here has checked. Refuse rather than send a name the audit log can't show.
   if (ENCODED_WORD.test(filename)) {
     throw new AttachmentError("invalid_attachment", `${label}: the filename is MIME-encoded (=?…?=); pass the plain file name.`);
   }
@@ -292,8 +263,8 @@ export function fileType(label: string, rawName: string, given: unknown, fallbac
 export const SMALLER_FILES_HINT = "Send fewer or smaller files, or share large ones as a link.";
 
 /**
- * The size refusal: names the file, its size and the message's, and says what to do instead (`hint`: a Drive
- * link, sharing from Drive, smaller files). `atLeast`: the file's size isn't known exactly (it was cut off there).
+ * The size refusal: names the file, its size and the message's, and says what to do instead (`hint`). `atLeast`:
+ * the file's size isn't known exactly (it was cut off there).
  * `limit`: Gmail's 25 MB of body and attachments (`total` is that sum), or the API's 35 MB for the encoded message
  * (`total` is its estimated encoded size).
  */
@@ -344,13 +315,13 @@ export function prepareAttachments(input: Base64AttachmentInput[] | undefined, b
   });
 }
 
-/** What the audit log and the approval card record about each file: name, type, size, source and sha256, never content. */
-export function attachmentMeta(list: { filename: string; contentType?: string; content: Buffer; source?: AttachmentSource }[], withHash = true): AttachmentMeta[] {
+/** What the audit log records about each file: name, type, size, source and sha256, never content. */
+export function attachmentMeta(list: { filename: string; contentType?: string; content: Buffer; source?: AttachmentSource }[]): AttachmentMeta[] {
   return list.map((x) => ({
     filename: x.filename,
     mimeType: x.contentType ?? "application/octet-stream",
     size: x.content.length,
     ...(x.source ? { source: x.source } : {}),
-    ...(withHash ? { sha256: createHash("sha256").update(x.content).digest("hex") } : {}),
+    sha256: createHash("sha256").update(x.content).digest("hex"),
   }));
 }

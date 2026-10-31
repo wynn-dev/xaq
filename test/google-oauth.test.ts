@@ -119,8 +119,6 @@ describe("connect", () => {
       state,
     });
     expect(u.searchParams.get("scope")).toContain("https://www.googleapis.com/auth/gmail.modify");
-    // Pub/Sub is requested later, only for the provisioning account.
-    expect(u.searchParams.get("scope")).not.toContain("https://www.googleapis.com/auth/pubsub");
   });
 
   it("completes a direct-mode callback and renders a success page", async () => {

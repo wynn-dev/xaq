@@ -1,4 +1,4 @@
-// Broker M1 PRs 3/4 (docs/MCP-BROKER.md): the upstream manager and the credential store, against the fake upstream
+// Broker M1 PRs 3/4: the upstream manager and the credential store, against the fake upstream
 // (test/fake-mcp-upstream.ts). Offline and deterministic: every server listens on 127.0.0.1, DNS is a fake lookup.
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -14,7 +14,7 @@ import { HTTPS_LOCALHOST_REDIRECT, UpstreamRuntime } from "../server/broker/upst
 import { type RefreshFn, SourceError, type StoredTokens, type ToolCallContext } from "../server/broker/types.ts";
 import type { ConnectionEvent } from "../server/broker/credentials/store.ts";
 import type { AppContext } from "../server/context.ts";
-import type { LookupFn } from "../server/webhooks/ssrf.ts";
+import type { LookupFn } from "../server/util/ssrf.ts";
 import { type FakeMcpUpstream, type FakeUpstreamOptions, startFakeMcpUpstream } from "./fake-mcp-upstream.ts";
 import { testContext } from "./helpers.ts";
 
@@ -49,7 +49,6 @@ interface Env {
 
 function env(o: { lookup?: LookupFn; dial?: (url: URL) => { address: string; port: number }; callTimeoutMs?: number } = {}): Env {
   const t = testContext();
-  t.ctx.settings.update({ brokerUpstreams: true });
   let skew = 0;
   const events: ConnectionEvent[] = [];
   const rt = new UpstreamRuntime(t.ctx, {
@@ -403,7 +402,7 @@ describe("MCP OAuth connections", () => {
     expect(status(e.ctx, id).status).toBe("needs_reauth");
   });
 
-  it("the callback route 404s while brokerUpstreams is off; paste mode accepts the https://localhost landing URL", async () => {
+  it("paste mode accepts the https://localhost landing URL", async () => {
     const up = await fake({ auth: { kind: "oauth" } });
     const e = env();
     const id = addConnection(e.ctx, { url: up.url, auth: "oauth" });
@@ -411,9 +410,6 @@ describe("MCP OAuth connections", () => {
     expect(start).toMatchObject({ callbackMode: "paste", redirectUri: HTTPS_LOCALHOST_REDIRECT });
     const cb = await up.oauth!.followAuthorize(start.authUrl);
     expect(cb.origin).toBe("https://localhost");
-    e.ctx.settings.update({ brokerUpstreams: false });
-    expect((await createApp(e.ctx).request(`/oauth/connections/callback${cb.search}`)).status).toBe(404);
-    e.ctx.settings.update({ brokerUpstreams: true });
     await expect(e.rt.finishConnectFromUrl(cb.toString())).resolves.toMatchObject({ connectionId: id });
   });
 });

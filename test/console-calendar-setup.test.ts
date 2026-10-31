@@ -2,7 +2,7 @@
 // opens, what each account shows, how a per-account consent ended, and which notice Overview shows.
 import { describe, expect, it } from "vitest";
 import type { CalendarSetupState, SetupWarning } from "../shared/types.ts";
-import { CALENDAR_SCOPES } from "../server/google/scopes.ts";
+import { CALENDAR_SCOPES } from "../shared/google-scopes.ts";
 import {
   accountCalendarView,
   accountsToAdd,
@@ -22,7 +22,6 @@ const acct = (over: Partial<CalendarSetupState["accounts"][number]> = {}): Calen
   status: "not_granted",
   missingScopes: [...CALENDAR_SCOPES],
   syncedCalendars: 0,
-  push: false,
   ...over,
 });
 
@@ -85,10 +84,8 @@ describe("account Calendar badge", () => {
 
   it("says how an added calendar syncs", () => {
     expect(accountCalendarView(acct({ status: "active", missingScopes: [] }), true).description).toMatch(/once their access includes Calendar/);
-    expect(accountCalendarView(acct({ status: "active", missingScopes: [], syncedCalendars: 2, push: true }), true).description).toContain(
-      "2 calendars sync in real time",
-    );
-    expect(accountCalendarView(acct({ status: "active", missingScopes: [], syncedCalendars: 1 }), true).description).toContain("1 calendar syncs by polling");
+    expect(accountCalendarView(acct({ status: "active", missingScopes: [], syncedCalendars: 2 }), true).description).toContain("2 calendars sync.");
+    expect(accountCalendarView(acct({ status: "active", missingScopes: [], syncedCalendars: 1 }), true).description).toContain("1 calendar syncs.");
   });
 });
 

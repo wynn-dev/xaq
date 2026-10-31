@@ -1,6 +1,6 @@
-// First run with Google optional (docs/MCP-BROKER.md, "Setup UX"): the wizard first asks what to connect. Gmail &
+// First run with Google optional: the wizard first asks what to connect. Gmail &
 // Calendar enters today's Google steps unchanged; Notion or a custom MCP server go to Add connection, then the agent
-// step. WHOOP is an extension now (docs/EXTENSIONS.md), so it isn't a first-run card. Pure functions of the server's SetupState and this browser's draft. Relative imports only.
+// step. WHOOP is an extension now, so it isn't a first-run card. Pure functions of the server's SetupState and this browser's draft. Relative imports only.
 
 import type { SetupState } from "../../../shared/types.ts";
 import type { SetupDraft } from "./steps.ts";
@@ -31,8 +31,7 @@ export type FirstRunDraft = Pick<SetupDraft, "firstConnect" | "urlConfirmed" | "
  * Without the broker (setting off) it is always the Google wizard. An install already into the Google steps
  * (anything saved on the server, or answers in this browser) stays on them without being asked.
  */
-export function firstRunView(brokerOn: boolean, state: Pick<SetupState, "googleClientConfigured" | "accountsConnected" | "gcpProjectId"> | undefined, draft: FirstRunDraft): "choose" | "google" | "broker" {
-  if (!brokerOn) return "google";
+export function firstRunView(state: Pick<SetupState, "googleClientConfigured" | "accountsConnected" | "gcpProjectId"> | undefined, draft: FirstRunDraft): "choose" | "google" | "broker" {
   if (draft.firstConnect === "google") return "google";
   if (draft.firstConnect) return "broker";
   const googleStarted =

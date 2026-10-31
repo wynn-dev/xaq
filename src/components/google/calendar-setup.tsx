@@ -331,7 +331,7 @@ function AccountsPage({
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">
-        One short Google sign-in per account. Google asks only for the Calendar permissions; Gmail and real-time delivery stay as they are, and
+        One short Google sign-in per account. Google asks only for the Calendar permissions; Gmail stays as it is, and
         mail keeps arriving while you do it.
       </p>
       <ul className="divide-y rounded-lg border">
@@ -387,8 +387,7 @@ function AccountsPage({
           <AlertTitle>Google Calendar is added</AlertTitle>
           <AlertDescription>
             <p>
-              Next, choose which agents may use it: open an agent, then <Path items={["Access", "Calendar"]} />. Reading and writing are separate,
-              and writes can wait for your approval.
+              Agents with access to an account use its calendars too: read only, or full access to change them.
             </p>
             <div className="pt-1">
               <Button size="sm" variant="outline" asChild onClick={onDone}>

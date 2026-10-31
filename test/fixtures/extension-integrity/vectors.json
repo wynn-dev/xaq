@@ -1,5 +1,5 @@
 {
-  "about": "Extension integrity test vectors (docs/EXTENSIONS.md). xaq's server/extensions/integrity.ts and xaq-extensions' scripts/integrity.mjs must both produce these. Each dir is next to this file; listing is the canonical listing's entries in order.",
+  "about": "Extension integrity test vectors. xaq's server/extensions/integrity.ts and xaq-extensions' scripts/integrity.mjs must both produce these. Each dir is next to this file; listing is the canonical listing's entries in order.",
   "vectors": [
     {
       "dir": "basic",

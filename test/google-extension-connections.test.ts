@@ -1,5 +1,4 @@
-// A Google extension's connections, end to end and offline (docs/EXTENSIONS.md "Google accounts for code
-// extensions"): the echo test extension dressed as google-workspace is installed through the store from a fake
+// A Google extension's connections, end to end and offline: the echo test extension dressed as google-workspace is installed through the store from a fake
 // official registry, its setup view lists the accounts, API links, gcloud command and Check again, a connection is
 // bound to one account and connected through the fake Google consent, and its child calls `xaq/credentials/get`: the
 // token is downscoped, for that connection's account only, accepted by the fake Drive and refused by Gmail.
@@ -18,13 +17,12 @@ import { codeExtensionNodeProblem } from "../server/extensions/host/index.ts";
 import { computeIntegrity } from "../server/extensions/integrity.ts";
 import { extensionStore } from "../server/extensions/store.ts";
 import { grantedScopes } from "../server/google/scoped.ts";
-import { GMAIL_SCOPE, WORKSPACE_SCOPES } from "../server/google/scopes.ts";
+import { GMAIL_SCOPE, WORKSPACE_SCOPES } from "../shared/google-scopes.ts";
 import { presets } from "../server/integrations/index.ts";
 import { entriesFromDir, type FakeGithub, fakeSha, startFakeGithub } from "./extension-fakes.ts";
 import { connectFakeAccount, FAKE_CLIENT, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";
 import { googleEcho, WORKSPACE_APIS } from "./google-extension-fixtures.ts";
-import { testContext } from "./helpers.ts";
-import { CSRF, PASSWORD, sessionCookie } from "./platform-helpers.ts";
+import { CSRF, PASSWORD, sessionCookie, testContext } from "./helpers.ts";
 
 const ME = "me@example.com";
 const OPS = "ops@example.com";
@@ -57,14 +55,13 @@ beforeEach(async () => {
   ctx.google.setClient({ ...FAKE_CLIENT, appType: "external" });
   // The store reaches only the fake GitHub on 127.0.0.1.
   extensionStore(ctx, { urls: gh.urls });
-  ctx.settings.update({ brokerUpstreams: true });
   ctx.broker.start?.();
   const app = createApp(ctx);
   let cookie = "";
   request = (path, init = {}) => {
     const { json, ...rest } = init;
     const headers = new Headers(rest.headers);
-    headers.set("x-agentinbox-csrf", CSRF["x-agentinbox-csrf"]);
+    headers.set("x-xaq-csrf", CSRF["x-xaq-csrf"]);
     if (cookie) headers.set("cookie", cookie);
     if (json !== undefined) headers.set("content-type", "application/json");
     return Promise.resolve(app.request(path, { ...rest, headers, body: json !== undefined ? JSON.stringify(json) : rest.body }, { incoming: { socket: { remoteAddress: "127.0.0.1" } } }));

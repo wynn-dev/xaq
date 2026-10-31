@@ -3,8 +3,8 @@ import type { PairingStart } from "../shared/agent-api.ts";
 import type { ConsoleStreamMessage, PairingRequest } from "../shared/types.ts";
 import { type AgentApiOptions, agentApi, sweepPairings } from "../server/agentapi/index.ts";
 import { sha256 } from "../server/crypto.ts";
-import { addAccount, readGrant } from "./listen-server-helpers.ts";
-import { CSRF, type Harness, harness, json } from "./platform-helpers.ts";
+import { addAccount } from "./listen-server-helpers.ts";
+import { CSRF, grantInput, type Harness, harness, json } from "./helpers.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {
@@ -32,7 +32,7 @@ async function setup(opts: AgentApiOptions = {}) {
       r("/agent/v1/pairings", { method: "POST", headers: ipHeaders(ip), json: body }),
     poll: (deviceCode: string, ip = "10.0.0.1") => r("/agent/v1/pairings/poll", { method: "POST", headers: ipHeaders(ip), json: { deviceCode } }),
     /** Sends the request's real user code unless the body has one. */
-    approve: (id: string, body: Record<string, unknown> = { grants: [readGrant("acc_a")] }) => {
+    approve: (id: string, body: Record<string, unknown> = { grants: [grantInput("acc_a")] }) => {
       const userCode = h!.ctx.db.get<{ user_code: string }>("SELECT user_code FROM pairings WHERE id = ?", id)?.user_code ?? "XXXX-XXXX";
       return r(`/api/pairings/${id}/approve`, { method: "POST", cookie, headers: CSRF, json: { userCode, ...body } });
     },
@@ -80,7 +80,7 @@ describe("pairing start and console listing", () => {
   it("needs no CSRF header or session, validates input and never falls back to the console", async () => {
     const s = await setup();
     expect((await s.start("10.0.0.1", { name: "" })).status).toBe(400);
-    expect((await s.start("10.0.0.1", { name: "x", requested: { capabilities: ["root"] } })).status).toBe(400);
+    expect((await s.start("10.0.0.1", { name: "x", requested: { accounts: [""] } })).status).toBe(400);
     const missing = await s.h.request("/agent/v1/nope");
     expect(missing.status).toBe(404);
     expect((await json(missing)).error.code).toBe("not_found");
@@ -115,11 +115,11 @@ describe("pairing poll", () => {
     expect(await json(await s.poll(p.deviceCode))).toEqual({ status: "pending" });
     s.clock.advance(13_000);
 
-    const approved = await s.approve(p.id, { name: "Hermes", grants: [readGrant("acc_a")] });
+    const approved = await s.approve(p.id, { name: "Hermes", grants: [grantInput("acc_a")] });
     expect(approved.status).toBe(200);
     const agentText = await approved.text();
     const agent = JSON.parse(agentText);
-    expect(agent).toMatchObject({ name: "Hermes", origin: "paired", grants: [{ accountId: "acc_a", sendMode: "draft_only" }], listeners: [] });
+    expect(agent).toMatchObject({ name: "Hermes", origin: "paired", grants: [{ accountId: "acc_a" }], listeners: [] });
     expect(agentText).not.toMatch(/aib_[0-9a-z]{32}/);
     const row = s.h.ctx.db.get<{ api_key_enc: string | null; status: string }>("SELECT api_key_enc, status FROM pairings WHERE id = ?", p.id)!;
     expect(row.status).toBe("approved");
@@ -155,9 +155,9 @@ describe("pairing poll", () => {
     const p = await started(s);
     // No mailbox grant is fine (installs with only connections), but an unknown connection isn't.
     expect((await s.approve(p.id, { grants: [], connections: [{ connectionId: "con_nope", level: "read" }] })).status).toBe(400);
-    expect((await s.approve(p.id, { grants: [{ ...readGrant("acc_a"), capabilities: ["fly"] }] })).status).toBe(400);
-    expect((await s.approve(p.id, { grants: [readGrant("acc_missing")] })).status).toBe(404);
-    expect((await s.approve(p.id, { grants: [readGrant("acc_a"), readGrant("acc_a")] })).status).toBe(400);
+    expect((await s.approve(p.id, { grants: [{ ...grantInput("acc_a"), level: "ask" as never }] })).status).toBe(400);
+    expect((await s.approve(p.id, { grants: [grantInput("acc_missing")] })).status).toBe(404);
+    expect((await s.approve(p.id, { grants: [grantInput("acc_a"), grantInput("acc_a")] })).status).toBe(400);
     expect(s.h.ctx.policy.listAgents()).toHaveLength(0);
     expect((await s.list("pending")).map((x) => x.id)).toEqual([p.id]);
     expect((await s.approve("par_nope")).status).toBe(404);
@@ -253,13 +253,13 @@ describe("approval checks", () => {
   it("requires the user code from the terminal, ignoring case and dashes", async () => {
     const s = await setup();
     const p = await started(s);
-    expect((await s.approve(p.id, { userCode: "", grants: [readGrant("acc_a")] })).status).toBe(400);
-    const wrong = await s.approve(p.id, { userCode: "AAAA-AAAA", grants: [readGrant("acc_a")] });
+    expect((await s.approve(p.id, { userCode: "", grants: [grantInput("acc_a")] })).status).toBe(400);
+    const wrong = await s.approve(p.id, { userCode: "AAAA-AAAA", grants: [grantInput("acc_a")] });
     expect(wrong.status).toBe(409);
     expect((await json(wrong)).error).toMatchObject({ code: "user_code_mismatch", message: expect.stringMatching(/doesn't match/) });
     expect(s.actions("pairing.approved")[0]).toMatchObject({ outcome: "denied", reason: "user_code_mismatch", target: p.id });
     expect(s.h.ctx.policy.listAgents()).toHaveLength(0);
-    const ok = await s.approve(p.id, { userCode: ` ${p.userCode.replace("-", "").toLowerCase()} `, grants: [readGrant("acc_a")] });
+    const ok = await s.approve(p.id, { userCode: ` ${p.userCode.replace("-", "").toLowerCase()} `, grants: [grantInput("acc_a")] });
     expect(ok.status).toBe(200);
   });
 
@@ -268,7 +268,7 @@ describe("approval checks", () => {
     const res = await s.start("10.0.0.1", {
       name: "Claude Code on wynn-mbp\u202e\u200b\n[verified]",
       description: "\u001b[31mred\u0007",
-      requested: { sendMode: "direct", reason: "needs\u2028mail\u{E0041}" },
+      requested: { reason: "needs\u2028mail\u{E0041}" },
       client: { hostname: "wynn-mbp\u0007\u001b[31m", tool: "anything-not-in-AgentTool" },
     });
     expect(res.status).toBe(200);
@@ -276,13 +276,13 @@ describe("approval checks", () => {
     expect(p).toMatchObject({
       name: "Claude Code on wynn-mbp[verified]",
       description: "[31mred",
-      requested: { sendMode: "direct", reason: "needsmail" },
+      requested: { reason: "needsmail" },
       client: { hostname: "wynn-mbp[31m", tool: "other" },
     });
     expect((await s.start("10.0.0.2", { name: "\u200b\u0007" })).status).toBe(400);
     // `requested` is informational: approval takes only the grants the human chose.
     const agent = await json(await s.approve(p!.id));
-    expect(agent.grants.map((g: { sendMode: string }) => g.sendMode)).toEqual(["draft_only"]);
+    expect(agent.grants.map((g: { level: string }) => g.level)).toEqual(["read"]);
   });
 });
 

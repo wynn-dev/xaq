@@ -1,10 +1,8 @@
 // Persistence of the catalog: `upstream_tools` (migration 8) plus the catalog columns of `connections`
-// (tools_cached_at, instructions_hash). The catalog and the registry only talk to the CatalogStore interface;
-// SqliteCatalogStore is the real one, MemoryCatalogStore backs unit tests.
+// (tools_cached_at, instructions_hash).
 //
-// upstream_tools' hold columns (state, held_reason, candidate_definition, candidate_hash) are no longer used: the
-// owner removed the tool-change hold on 2026-10-16. Every write stores an active row; rows an older version left
-// held are read once through legacyHeld() and released by Catalog.releaseLegacyHolds() at startup.
+// upstream_tools' hold columns (state, held_reason, candidate_definition, candidate_hash) are unused since the
+// tool-change hold was removed: every write stores an active row (migration 15 deleted the held ones).
 
 import { type Db, json } from "../../db/index.ts";
 import type { ClassSource, ToolAnnotations, ToolClass, ToolDef } from "../types.ts";
@@ -16,7 +14,7 @@ export interface PinnedTool {
   name: string;
   /** `<slug>__<name>` (unique across connections; tools that can't be named aren't stored). */
   exposedName: string;
-  /** The cleaned definition in use. null only for a row an older version left held as a new tool. */
+  /** The cleaned definition in use (null only if the stored JSON can't be read). */
   def: ToolDef | null;
   /** `pinHash(def)`: compared on every listing, a difference is audited (connection.tool_changed). */
   pinHash: string | null;
@@ -24,13 +22,6 @@ export interface PinnedTool {
   cls: ToolClass;
   firstSeenAt: string;
   updatedAt: string;
-}
-
-/** A row an older version left on hold, with the definition that was waiting (null if none was stored). */
-export interface LegacyHeldTool {
-  tool: PinnedTool;
-  candidateDef: ToolDef | null;
-  candidateHash: string | null;
 }
 
 /** Per-connection catalog state. Only `refreshedAt` and `instructionsHash` are persisted (columns of `connections`). */
@@ -43,82 +34,6 @@ export interface CatalogState {
   refreshedAt: string | null;
   lastError: string | null;
   ttlMs: number | null;
-}
-
-export interface CatalogStore {
-  tools(connectionId: string): PinnedTool[];
-  allTools(): PinnedTool[];
-  get(connectionId: string, name: string): PinnedTool | null;
-  upsert(tool: PinnedTool): void;
-  remove(connectionId: string, name: string): void;
-  /** Rows an older version left on hold (state = 'held'); empty once they're released. */
-  legacyHeld(): LegacyHeldTool[];
-  state(connectionId: string): CatalogState | null;
-  setState(state: CatalogState): void;
-  /** Drops every tool and the state of a connection (URL change, delete). */
-  forget(connectionId: string): void;
-  tx<T>(fn: () => T): T;
-}
-
-const clone = <T>(v: T): T => structuredClone(v);
-
-export class MemoryCatalogStore implements CatalogStore {
-  private readonly rows = new Map<string, Map<string, PinnedTool>>();
-  private readonly states = new Map<string, CatalogState>();
-
-  tools(connectionId: string): PinnedTool[] {
-    return [...(this.rows.get(connectionId)?.values() ?? [])].map(clone);
-  }
-  allTools(): PinnedTool[] {
-    return [...this.rows.values()].flatMap((m) => [...m.values()]).map(clone);
-  }
-  get(connectionId: string, name: string): PinnedTool | null {
-    const r = this.rows.get(connectionId)?.get(name);
-    return r ? clone(r) : null;
-  }
-  upsert(tool: PinnedTool): void {
-    for (const [cid, m] of this.rows) {
-      for (const r of m.values()) {
-        if (r.exposedName === tool.exposedName && !(cid === tool.connectionId && r.name === tool.name)) {
-          throw new Error("UNIQUE constraint failed: upstream_tools.exposed_name");
-        }
-      }
-    }
-    let m = this.rows.get(tool.connectionId);
-    if (!m) this.rows.set(tool.connectionId, (m = new Map()));
-    m.set(tool.name, clone(tool));
-  }
-  remove(connectionId: string, name: string): void {
-    this.rows.get(connectionId)?.delete(name);
-  }
-  legacyHeld(): LegacyHeldTool[] {
-    return [];
-  }
-  state(connectionId: string): CatalogState | null {
-    const s = this.states.get(connectionId);
-    return s ? clone(s) : null;
-  }
-  setState(state: CatalogState): void {
-    this.states.set(state.connectionId, clone(state));
-  }
-  forget(connectionId: string): void {
-    this.rows.delete(connectionId);
-    this.states.delete(connectionId);
-  }
-  tx<T>(fn: () => T): T {
-    // Synchronous and single-threaded: snapshot and restore on throw.
-    const rows = new Map([...this.rows].map(([k, v]) => [k, new Map(v)]));
-    const states = new Map(this.states);
-    try {
-      return fn();
-    } catch (err) {
-      this.rows.clear();
-      for (const [k, v] of rows) this.rows.set(k, v);
-      this.states.clear();
-      for (const [k, v] of states) this.states.set(k, v);
-      throw err;
-    }
-  }
 }
 
 interface ToolRow {
@@ -170,7 +85,7 @@ const toTool = (r: ToolRow): PinnedTool => ({
 });
 
 /** The real store, on migration 8's tables. The in-memory parts of CatalogState live here too. Writes always store an active row. */
-export class SqliteCatalogStore implements CatalogStore {
+export class CatalogStore {
   private readonly volatile = new Map<string, Omit<CatalogState, "connectionId" | "refreshedAt" | "instructionsHash">>();
 
   constructor(private readonly db: Db) {}
@@ -212,11 +127,6 @@ export class SqliteCatalogStore implements CatalogStore {
   }
   remove(connectionId: string, name: string): void {
     this.db.run("DELETE FROM upstream_tools WHERE connection_id = ? AND name = ?", connectionId, name);
-  }
-  legacyHeld(): LegacyHeldTool[] {
-    return this.db
-      .all<ToolRow>("SELECT * FROM upstream_tools WHERE state = 'held' ORDER BY connection_id, name")
-      .map((r) => ({ tool: toTool(r), candidateDef: fromStored(r.name, r.candidate_definition), candidateHash: r.candidate_hash }));
   }
   state(connectionId: string): CatalogState | null {
     const c = this.db.get<{ tools_cached_at: string | null; instructions_hash: string | null }>(

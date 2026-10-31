@@ -1,11 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { ActivityIcon, BotIcon, MailIcon, ShieldAlertIcon, StampIcon, WebhookIcon, WrenchIcon } from "lucide-react";
+import { ActivityIcon, BotIcon, MailIcon, ShieldAlertIcon, StampIcon, WrenchIcon } from "lucide-react";
 import { PageHeader, QueryError, StatCard } from "@/components/common";
 import { ConnectionsNotice } from "@/components/connections/connections-notice";
 import { CalendarNotice } from "@/components/google/calendar-notice";
 import { ActivityChart } from "@/components/overview/activity-chart";
-import { AccountsAttention, ApprovalsCallout, PairingCallout } from "@/components/overview/attention";
+import { AccountsAttention, PairingCallout } from "@/components/overview/attention";
 import { RecentEvents } from "@/components/overview/recent-events";
 import { SetupChecklist } from "@/components/overview/setup-checklist";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,13 +32,12 @@ function Parts({ items }: { items: (string | false | null | undefined | 0)[] }) 
 function Overview() {
   const stats = useQuery(queries.overview());
   const accounts = useQuery(queries.accounts());
-  const pending = useQuery(queries.approvals("pending"));
   const pairings = useQuery(queries.pairings("pending"));
   const agents = useQuery(queries.agents());
   const listening = agents.data?.filter((a) => a.listeners.some((l) => l.connected)).length ?? 0;
   const s = stats.data;
   const pairingCount = pairings.data?.length ?? 0;
-  const waiting = (s?.pendingApprovals ?? 0) + pairingCount;
+  const waiting = pairingCount;
   const loading = stats.isPending;
   const acc = s && accountsStat(s.accounts);
 
@@ -50,12 +49,11 @@ function Overview() {
       <ConnectionsNotice />
       <CalendarNotice />
       <PairingCallout pairings={pairings.data ?? []} />
-      <ApprovalsCallout approvals={pending.data ?? []} />
 
       {stats.isError ? (
         <QueryError error={stats.error} onRetry={() => void stats.refetch()} />
       ) : (
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
           <StatCard
             label="Accounts"
             icon={MailIcon}
@@ -88,23 +86,12 @@ function Overview() {
             hint={s && (s.denied24h ? <span className="text-warning">{s.denied24h} blocked by guardrails</span> : "none blocked")}
           />
           <StatCard
-            label="Webhook deliveries"
-            icon={WebhookIcon}
-            loading={loading}
-            value={fmtNumber(s?.deliveries24h.succeeded)}
-            hint={s && (s.deliveries24h.failed ? <span className="text-critical">{s.deliveries24h.failed} failed</span> : "none failed")}
-          />
-          <StatCard
             label="Approvals"
             icon={waiting ? StampIcon : ShieldAlertIcon}
             tone={waiting ? "warn" : undefined}
             loading={loading}
             value={fmtNumber(waiting)}
-            hint={
-              waiting
-                ? <Parts items={[s?.pendingApprovals && plural(s.pendingApprovals, "message"), pairingCount && plural(pairingCount, "agent")]} />
-                : "nothing waiting"
-            }
+            hint={waiting ? plural(pairingCount, "agent") : "nothing waiting"}
           />
         </div>
       )}

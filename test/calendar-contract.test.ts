@@ -1,4 +1,4 @@
-// The Google Calendar contract (docs/calendar.md): migration 7 on existing data, grant fields, event
+// The Google Calendar contract: migration 7 on existing data, grant fields, event
 // visibility, the event store and the pure helpers every workstream builds on.
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -13,13 +13,11 @@ import { MIGRATIONS } from "../server/db/schema.ts";
 import { type AccountRow, toAccount } from "../server/google/accounts.ts";
 import { classifyCalendarError } from "../server/google/calendar.ts";
 import { googleErrorFromBody } from "../server/google/http.ts";
-import { CALENDAR_SCOPES } from "../server/google/scopes.ts";
+import { CALENDAR_SCOPES } from "../shared/google-scopes.ts";
 import { GoogleApiError } from "../server/google/types.ts";
-import { Approvals } from "../server/mail/approvals.ts";
-import { attendeeImpact, calendarInScope } from "../server/policy/calendar.ts";
+import { attendeeImpact } from "../server/policy/calendar.ts";
 import { type GrantRow, toGrant } from "../server/policy/grants.ts";
-import { testContext } from "./helpers.ts";
-import { grantInput, mailTestContext } from "./mail-fakes.ts";
+import { grantInput, mailTestContext, testContext } from "./helpers.ts";
 
 let dispose: (() => Promise<void>) | undefined;
 afterEach(async () => {
@@ -72,34 +70,29 @@ function preCalendarDb(dir: string, withAccounts = true): string {
 }
 
 describe("migration 7 (Google Calendar)", () => {
-  it("keeps accounts, grants, approvals and events intact and leaves existing grants mail-only", () => {
+  it("keeps accounts, grants and events intact; later migrations turn grants into full or read and drop approvals", () => {
     const dir = mkdtempSync(join(tmpdir(), "xaq-mig-"));
     try {
       const db = new Db(preCalendarDb(dir));
       expect(db.get<{ v: number }>("SELECT MAX(version) AS v FROM _migrations")!.v).toBe(MIGRATIONS.length);
 
       const accounts = db.all<AccountRow>("SELECT * FROM accounts ORDER BY id");
-      expect(accounts.map((a) => [a.id, a.status, a.refresh_token_enc, a.history_id, a.watch_expires_at])).toEqual([
-        ["acc_1", "active", "rt1", "12345", T],
-        ["acc_2", "active", "rt2", "12345", T],
+      expect(accounts.map((a) => [a.id, a.status, a.refresh_token_enc, a.history_id])).toEqual([
+        ["acc_1", "active", "rt1", "12345"],
+        ["acc_2", "active", "rt2", "12345"],
       ]);
       const a1 = toAccount(accounts[0]!);
       expect(a1.grantedScopes).toEqual([GMAIL, PUBSUB, "openid"]);
       expect(a1.calendar).toBeNull(); // mail-only account: the console shows nothing calendar-related
 
       const grant = toGrant(db.get<GrantRow>("SELECT * FROM grants WHERE id = 'grt_1'")!);
+      // Its sends waited for approval, so it becomes read only (full only for grants that already sent directly).
       expect(grant).toMatchObject({
-        capabilities: ["read", "send"],
-        labelScope: ["INBOX"],
-        sendMode: "approval",
+        level: "read",
         allowTo: ["*@example.com"],
-        replyOnly: true,
-        maxSendsPerHour: 5,
-        calendarScope: null,
-        calendarWriteMode: "approval",
       });
 
-      expect(db.get<{ status: string; draft_id: string }>("SELECT status, draft_id FROM approvals WHERE id = 'apr_1'")).toEqual({ status: "pending", draft_id: "r-123" });
+      expect(db.get("SELECT name FROM sqlite_master WHERE name IN ('approvals', 'approval_rules')")).toBeUndefined();
       expect(db.get<{ calendar_event: string | null; message: string }>("SELECT calendar_event, message FROM events WHERE id = 'evt_1'")).toEqual({
         calendar_event: null,
         message: '{"id":"m1"}',
@@ -142,7 +135,6 @@ describe("Account.calendar", () => {
     access_expires_at: null,
     scopes: JSON.stringify(scopes),
     history_id: null,
-    watch_expires_at: null,
     last_sync_at: null,
     created_at: T,
     refresh_expires_at: null,
@@ -168,73 +160,21 @@ describe("Account.calendar", () => {
   });
 });
 
-describe("grant calendar fields", () => {
-  it("default on create, keep stored values when omitted, change when given", () => {
-    const t = mailTestContext();
-    dispose = t.dispose;
-    t.addAccount("acc_a", "me@acme.com");
-    const { agent } = t.addAgent("a", [grantInput("acc_a")]);
-    expect(agent.grants[0]).toMatchObject({ calendarScope: null, calendarWriteMode: "approval" });
-
-    const set = t.ctx.policy.upsertGrant(agent.id, "acc_a", grantInput("acc_a", { capabilities: ["calendar.read"], calendarScope: ["me@acme.com"], calendarWriteMode: "direct" }));
-    expect(set).toMatchObject({ capabilities: ["calendar.read"], calendarScope: ["me@acme.com"], calendarWriteMode: "direct" });
-
-    // An older client that doesn't know the calendar fields must not widen the scope.
-    const kept = t.ctx.policy.upsertGrant(agent.id, "acc_a", grantInput("acc_a", { capabilities: ["read", "calendar.read"] }));
-    expect(kept).toMatchObject({ calendarScope: ["me@acme.com"], calendarWriteMode: "direct" });
-
-    expect(t.ctx.policy.upsertGrant(agent.id, "acc_a", grantInput("acc_a", { calendarScope: null })).calendarScope).toBeNull();
-    expect(() => t.ctx.policy.upsertGrant(agent.id, "acc_a", grantInput("acc_a", { calendarScope: [] }))).toThrow(/at least one calendar/);
-  });
-
-  it("cancels pending approvals by kind when send or calendar.write is removed", () => {
-    const t = mailTestContext();
-    dispose = t.dispose;
-    t.addAccount("acc_a", "me@acme.com");
-    const { agent } = t.addAgent("a", [grantInput("acc_a", { capabilities: ["send", "calendar.write"] })]);
-    const approvals = new Approvals(t.ctx);
-    const base = { to: [], cc: [], bcc: [], subject: "s", body: "b", threadId: null, attachments: [], reason: null };
-    const mail = approvals.create({ agentId: agent.id, accountId: "acc_a", kind: "send", draftId: "d1", payload: base });
-    const cal = approvals.create({
-      agentId: agent.id,
-      accountId: "acc_a",
-      kind: "calendar.create",
-      draftId: "",
-      payload: {
-        ...base,
-        calendar: { calendarId: "me@acme.com", calendarName: null, eventId: null, change: { summary: "s" }, before: null, etag: null, response: null, notifyAttendees: true, notified: [] },
-      },
-    });
-    expect(approvals.get(cal.id)!.calendar?.change.summary).toBe("s");
-
-    t.ctx.policy.upsertGrant(agent.id, "acc_a", grantInput("acc_a", { capabilities: ["send"] }));
-    expect([approvals.get(mail.id)!.status, approvals.get(cal.id)!.status]).toEqual(["pending", "rejected"]);
-  });
-});
-
 const calEvent = (calendarId: string, patch: Partial<CalendarEventSummary> = {}): CalendarEventSummary => ({
   ...summarizeEvent({ id: "ev1", summary: "Standup", start: { dateTime: "2026-10-20T09:00:00Z" }, end: { dateTime: "2026-10-20T09:15:00Z" } }, calendarId),
   ...patch,
 });
 
 describe("calendar event visibility", () => {
-  it("needs calendar.read and the calendar in scope; account events need read or calendar.read", () => {
+  it("every event of the account is visible to any grant on it", () => {
     const t = mailTestContext();
     dispose = t.dispose;
     t.addAccount("acc_a", "me@acme.com");
-    const mailOnly = t.addAgent("mail", [grantInput("acc_a")]).agent.id;
-    const calAll = t.addAgent("cal", [grantInput("acc_a", { capabilities: ["calendar.read"] })]).agent.id;
-    const calScoped = t.addAgent("scoped", [grantInput("acc_a", { capabilities: ["calendar.read"], calendarScope: ["team@group.calendar.google.com"] })]).agent.id;
-    const see = (agentId: string, type: Parameters<typeof t.ctx.policy.canSeeEvent>[1]["type"], calendarId?: string) =>
-      t.ctx.policy.canSeeEvent(agentId, { accountId: "acc_a", type, threadLabelIds: ["INBOX"], calendarEvent: calendarId ? calEvent(calendarId) : null });
-
-    expect([see(mailOnly, "calendar.event_created", "me@acme.com"), see(calAll, "calendar.event_created", "me@acme.com")]).toEqual([false, true]);
-    expect([see(calScoped, "calendar.invitation_received", "me@acme.com"), see(calScoped, "calendar.invitation_received", "team@group.calendar.google.com")]).toEqual([
-      false,
-      true,
-    ]);
-    expect([see(calAll, "message.received"), see(calAll, "account.auth_failed"), see(mailOnly, "account.auth_failed")]).toEqual([false, true, true]);
-    expect(calendarInScope({ calendarScope: null }, "x")).toBe(true);
+    const reader = t.addAgent("reader", [grantInput("acc_a")]).agent.id;
+    const none = t.addAgent("none", []).agent.id;
+    const see = (agentId: string, type: Parameters<typeof t.ctx.policy.canSeeEvent>[1]["type"]) => t.ctx.policy.canSeeEvent(agentId, { accountId: "acc_a", type });
+    expect([see(reader, "calendar.event_created"), see(reader, "message.received"), see(reader, "account.auth_failed")]).toEqual([true, true, true]);
+    expect(see(none, "calendar.event_created")).toBe(false);
   });
 
   it("stores calendarEvent with the event and leaves mail payloads unchanged", () => {

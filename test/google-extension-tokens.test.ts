@@ -1,5 +1,4 @@
-// Google access for code extensions, against the fake Google (docs/EXTENSIONS.md "Google accounts for code
-// extensions"): the incremental consent (exactly the extension's scopes, the account keeps what it had, a partial grant
+// Google access for code extensions, against the fake Google: the incremental consent (exactly the extension's scopes, the account keeps what it had, a partial grant
 // in plain words), downscoped tokens through the refresh grant's `scope` (RFC 6749 §6) with Google's answer checked,
 // the per-account-and-scope-set cache with expiry and single flight, the helper core's own Drive use takes (A1), and
 // the API-enabled probe. Tests reach only the fake on 127.0.0.1 (test/setup-no-network.ts refuses anything else).
@@ -10,8 +9,8 @@ import { getRow } from "../server/google/accounts.ts";
 import { probeGoogleApis } from "../server/google/apis.ts";
 import { extensionConsentConnection, startConnect } from "../server/google/oauth.ts";
 import { googleRuntime } from "../server/google/runtime.ts";
-import { accountHasScopes, accountMissingScopes, googleAccessToken, grantedScopes } from "../server/google/scoped.ts";
-import { DOCS_SCOPE, DRIVE_FILE_SCOPE, DRIVE_READONLY_SCOPE, GMAIL_SCOPE, SHEETS_SCOPE, SLIDES_SCOPE, WORKSPACE_SCOPES } from "../server/google/scopes.ts";
+import { accountMissingScopes, googleAccessToken, grantedScopes } from "../server/google/scoped.ts";
+import { DOCS_SCOPE, DRIVE_FILE_SCOPE, DRIVE_READONLY_SCOPE, GMAIL_SCOPE, SHEETS_SCOPE, SLIDES_SCOPE, WORKSPACE_SCOPES } from "../shared/google-scopes.ts";
 import { DownscopeError, ScopesNotGrantedError } from "../server/google/types.ts";
 import { HttpError } from "../server/util/errors.ts";
 import { connectFakeAccount, type FakeGoogle, recordingEvents, startFakeGoogle } from "./fake-google.ts";
@@ -122,7 +121,7 @@ describe("the consent: incremental, exactly the extension's scopes", () => {
 
   it("an extension consent needs one connected account, and only the extension's access", async () => {
     const account = await connectFakeAccount(ctx, fake, ME);
-    expect(() => startConnect(ctx, { reauthAccountId: account.id, scopes: ["pubsub"], extension: { connectionId: "c", displayName: "X", scopes: WORKSPACE_SCOPES } })).toThrow(
+    expect(() => startConnect(ctx, { reauthAccountId: account.id, scopes: ["calendar"], extension: { connectionId: "c", displayName: "X", scopes: WORKSPACE_SCOPES } })).toThrow(
       /one connected account/,
     );
     expect(() => startConnect(ctx, { extension: { connectionId: "c", displayName: "X", scopes: WORKSPACE_SCOPES } })).toThrow(/one connected account/);
@@ -221,7 +220,7 @@ describe("downscoped tokens (the refresh grant's scope)", () => {
     const err = await googleAccessToken(ctx, account.id, [DRIVE_READONLY_SCOPE]).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ScopesNotGrantedError);
     expect((err as ScopesNotGrantedError).missing).toEqual([DRIVE_READONLY_SCOPE]);
-    expect(accountHasScopes(ctx, account.id, [DRIVE_READONLY_SCOPE])).toBe(false);
+    expect(accountMissingScopes(ctx, account.id, [DRIVE_READONLY_SCOPE])).toEqual([DRIVE_READONLY_SCOPE]);
   });
 });
 
@@ -270,14 +269,13 @@ describe("the token cache", () => {
   });
 });
 
-describe("core's helper (Gmail's attach-from-Drive)", () => {
-  it("accountHasScopes and googleAccessToken for a scope subset", async () => {
+describe("googleAccessToken", () => {
+  it("mints a token for a scope subset", async () => {
     const account = await connectFakeAccount(ctx, fake, ME);
-    expect(accountHasScopes(ctx, account.id, [GMAIL_SCOPE])).toBe(true);
-    expect(accountHasScopes(ctx, account.id, [DRIVE_READONLY_SCOPE])).toBe(false);
-    expect(accountHasScopes(ctx, "acc_missing", [GMAIL_SCOPE])).toBe(false);
+    expect(accountMissingScopes(ctx, account.id, [GMAIL_SCOPE])).toEqual([]);
+    expect(accountMissingScopes(ctx, account.id, [DRIVE_READONLY_SCOPE])).toEqual([DRIVE_READONLY_SCOPE]);
     await (await allow(account.id, ME)).complete();
-    expect(accountHasScopes(ctx, account.id, [DRIVE_READONLY_SCOPE])).toBe(true);
+    expect(accountMissingScopes(ctx, account.id, [DRIVE_READONLY_SCOPE])).toEqual([]);
     const t = await googleAccessToken(ctx, account.id, [DRIVE_READONLY_SCOPE]);
     expect(t.scopes).toEqual([DRIVE_READONLY_SCOPE]);
     fake.drive.addFile(ME, { id: "f1", name: "Budget", mimeType: "application/vnd.google-apps.spreadsheet" });

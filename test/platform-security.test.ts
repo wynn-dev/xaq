@@ -2,15 +2,14 @@ import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { adminAuth, checkSecret, MAX_CONCURRENT_VERIFICATIONS } from "../server/auth/index.ts";
-import { isTrustedProxy, parseRange } from "../server/auth/proxy.ts";
+import { adminAuth, checkSecret, isTrustedProxy, MAX_CONCURRENT_VERIFICATIONS } from "../server/auth/index.ts";
 import { contentSecurityPolicy, inlineScriptHashes, registerInlineScript, scriptHash } from "../server/csp.ts";
 import { BAN_MS, clientKey, GLOBAL_MAX_FAILURES, LoginLimiter, MAX_ATTEMPTS, MAX_ENTRIES } from "../server/auth/lockout.ts";
 import { SESSION_MAX_AGE_MS, SESSION_TTL_MS, SessionStore } from "../server/auth/sessions.ts";
 import { acquireInstanceLock, assertMasterKeyUsable, bootId, lockPath, processStartTime, resetPasswordCommand, runningInstance } from "../server/instance.ts";
 import { startServer } from "../server/server.ts";
-import { testConfig } from "./helpers.ts";
-import { CSRF, fakeGoogle, fakeIngest, type Harness, harness, json, PASSWORD } from "./platform-helpers.ts";
+import { CSRF, fakeIngest, type Harness, harness, json, PASSWORD, testConfig } from "./helpers.ts";
+import { fakeGoogle } from "./fake-google.ts";
 
 let h: Harness | undefined;
 afterEach(async () => {
@@ -142,7 +141,7 @@ describe("M2: client identity", () => {
     expect((await login(PASSWORD)).status).toBe(429);
   });
 
-  it("trusts forwarding headers only from loopback, or peers listed in TRUST_PROXY_FROM", async () => {
+  it("trusts forwarding headers only from loopback", async () => {
     h = harness();
     await h.claim();
     h.ctx.config.trustProxy = true;
@@ -157,17 +156,9 @@ describe("M2: client identity", () => {
     for (let i = 0; i < 5; i++) await from("127.0.0.1", "198.51.100.1", `lo-${i}`);
     expect((await from("127.0.0.1", "198.51.100.1", PASSWORD)).status).toBe(429);
     expect((await from("127.0.0.1", "198.51.100.2", PASSWORD)).status).toBe(204);
-
-    // A proxy in a listed CIDR is believed.
-    process.env.TRUST_PROXY_FROM = "10.0.0.0/8, fd00::/8";
-    try {
-      for (let i = 0; i < 5; i++) await from("10.1.2.3", "198.51.100.3", `cidr-${i}`);
-      expect((await from("10.9.9.9", "198.51.100.3", PASSWORD)).status).toBe(429);
-      expect((await from("10.1.2.3", "198.51.100.4", PASSWORD)).status).toBe(204);
-      expect((await from("::ffff:10.1.2.3", "198.51.100.5", PASSWORD)).status).toBe(204);
-    } finally {
-      delete process.env.TRUST_PROXY_FROM;
-    }
+    expect((await from("::ffff:127.0.0.1", "198.51.100.3", PASSWORD)).status).toBe(204);
+    expect(["::1", "127.8.9.10"].map(isTrustedProxy)).toEqual([true, true]);
+    expect(["10.1.2.3", "fd12::1", "::ffff:10.0.0.1", "not-an-ip"].map(isTrustedProxy)).toEqual([false, false, false, false]);
   });
 
   it("marks the session cookie Secure from X-Forwarded-Proto only behind a trusted proxy", async () => {
@@ -181,46 +172,6 @@ describe("M2: client identity", () => {
     };
     expect(await cookieFrom("192.168.1.60")).not.toMatch(/;\s*Secure/i);
     expect(await cookieFrom("127.0.0.1")).toMatch(/;\s*Secure/i);
-  });
-
-  it("matches proxy addresses and ranges", () => {
-    expect(isTrustedProxy("127.0.0.1", "")).toBe(true);
-    expect(isTrustedProxy("127.8.9.10", "")).toBe(true);
-    expect(isTrustedProxy("::1", "")).toBe(true);
-    expect(isTrustedProxy("::ffff:127.0.0.1", "")).toBe(true);
-    expect(isTrustedProxy("10.1.2.3", "")).toBe(false);
-    expect(isTrustedProxy("100.100.1.1", "")).toBe(false);
-    expect(isTrustedProxy("fd12::1", "")).toBe(false);
-    const list = "10.0.0.0/8,100.64.0.0/10 192.168.1.7 fd00::/8 2001:db8:1::/48 ::ffff:172.16.0.0/108";
-    expect(isTrustedProxy("10.255.0.1", list)).toBe(true);
-    expect(isTrustedProxy("::ffff:10.0.0.1", list)).toBe(true);
-    expect(isTrustedProxy("100.127.255.255", list)).toBe(true);
-    expect(isTrustedProxy("100.128.0.1", list)).toBe(false);
-    expect(isTrustedProxy("192.168.1.7", list)).toBe(true);
-    expect(isTrustedProxy("192.168.1.8", list)).toBe(false);
-    expect(isTrustedProxy("fd12:3456::1", list)).toBe(true);
-    expect(isTrustedProxy("2001:db8:1:ffff::1", list)).toBe(true);
-    expect(isTrustedProxy("2001:db8:2::1", list)).toBe(false);
-    expect(isTrustedProxy("172.31.255.255", list)).toBe(true);
-    expect(isTrustedProxy("172.32.0.0", list)).toBe(false);
-    expect(isTrustedProxy("8.8.8.8", list)).toBe(false);
-    expect(isTrustedProxy("not-an-ip", list)).toBe(false);
-    expect(parseRange("10.0.0.0/33")).toBeNull();
-    expect(parseRange("nope")).toBeNull();
-    expect(parseRange("10.0.0.0/32")).not.toBeNull();
-  });
-
-  it("honors TRUST_PROXY_HOPS", async () => {
-    h = harness();
-    await h.claim();
-    h.ctx.config.trustProxy = true;
-    process.env.TRUST_PROXY_HOPS = "2";
-    try {
-      for (let i = 0; i < 5; i++) await login(`wrong-${i}`, { "x-forwarded-for": `spoof-${i}, 203.0.113.7, 10.0.0.1` });
-      expect((await login(PASSWORD, { "x-forwarded-for": "203.0.113.7, 10.0.0.1" })).status).toBe(429);
-    } finally {
-      delete process.env.TRUST_PROXY_HOPS;
-    }
   });
 
   it("keys IPv6 clients by /64", () => {

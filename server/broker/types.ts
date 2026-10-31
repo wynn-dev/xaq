@@ -1,14 +1,8 @@
-// Contracts for the MCP broker (docs/MCP-BROKER.md). Parallel workstreams build against these:
-// - the upstream manager (server/broker/upstream/*) implements ToolSource for remote MCP servers;
-// - native integrations (server/integrations/<id>/*) implement IntegrationPreset (+ ToolSource when native);
-// - the catalog (server/broker/catalog/*) implements ToolRegistry and pinning;
-// - policy and approvals (server/broker/policy/*) implement BrokerPolicy and BrokerCalls;
-// - the credential store (server/broker/credentials/*) implements CredentialStore and TokenRefresher;
-// - /mcp and search mode only consume ToolRegistry and BrokerCalls.
-// Members marked FROZEN are relied on across workstreams: change them only with the lead's agreement.
+// Shared types of the MCP broker: tool sources (remote MCP servers and code extensions), presets,
+// registered tools and stored tokens.
 
 /** One choice per connection (and per agent × connection): Wynn's model. FROZEN. */
-export type AccessLevel = "full" | "ask" | "read";
+export type AccessLevel = "full" | "read";
 
 /** Where a tool's risk classification came from. FROZEN. */
 export type ClassSource = "preset" | "annotation" | "heuristic";
@@ -33,19 +27,13 @@ export interface ToolDef {
   annotations?: ToolAnnotations;
 }
 
-/** Classification used by levels and approvals. FROZEN. */
+/** Classification used by levels. FROZEN. */
 export interface ToolClass {
-  /** Irreversible: delete, send, publish/share externally, payments. Asks at the "ask" level. */
+  /** Irreversible: delete, send, publish/share externally, payments. Never listed at the "read" level. */
   risky: boolean;
   /** Listed at the "read" level. */
   read: boolean;
   source: ClassSource;
-  /**
-   * JSON Pointer (RFC 6901) into the call's arguments naming the target, offered for "always allow … for this
-   * target" (e.g. `/page_ids`). Not dot paths: `{"a.b": x}` vs `{a: {b: y}}` must never be confused. The value may
-   * be an array of ids; a rule matches only when every element is covered.
-   */
-  targetPath?: string;
 }
 
 /** A content block of a tool result (MCP CallToolResult content; kept SDK-agnostic). */
@@ -88,7 +76,7 @@ export interface ToolSource {
   /** Releases sessions/processes. Idempotent. */
   close(): Promise<void>;
   /**
-   * Additive (extensions, docs/EXTENSIONS.md "Prompts and resources"): the upstream's prompts and resources, passed
+   * Additive (extensions): the upstream's prompts and resources, passed
    * through /mcp. Optional: a source without them (or whose server doesn't declare the capability) has none. Errors as
    * for listTools (SourceError).
    */
@@ -133,7 +121,7 @@ export interface ResourceReadResult {
   contents: ({ uri: string; mimeType?: string } & ({ text: string } | { blob: string }))[];
 }
 
-/** Prompts and resources of one source (all "read" class; docs/EXTENSIONS.md). */
+/** Prompts and resources of one source (all "read" class). */
 export interface PromptSource {
   listPrompts(signal: AbortSignal): Promise<PromptDef[]>;
   getPrompt(name: string, args: Record<string, string>, signal: AbortSignal): Promise<PromptResult>;
@@ -142,7 +130,7 @@ export interface PromptSource {
   readResource(uri: string, signal: AbortSignal): Promise<ResourceReadResult>;
 }
 
-/** Why a source couldn't serve a call. `needs_reauth` also flips the connection's status (CredentialStore). FROZEN. */
+/** Why a source couldn't serve a call. `needs_reauth` also flips the connection's status (the credential store). FROZEN. */
 export type SourceErrorCode = "needs_reauth" | "unavailable" | "timeout" | "blocked_target" | "rate_limited" | "protocol";
 
 export class SourceError extends Error {
@@ -192,16 +180,6 @@ export interface SetupContext {
   /** Redirect URI for upstream OAuth (/oauth/connections/callback on this install). */
   redirectUri: string;
   /**
-   * Inbound webhook URL, or null when nothing public reaches this install (server/broker/reachability.ts). Presets
-   * poll either way (with webhooks it's the reconciliation poll), so a webhook step is always optional.
-   */
-  webhookUrl: string | null;
-  /**
-   * The optional Tailscale Funnel step: the install is tailnet-only on a *.ts.net name and the Tailscale CLI is
-   * there. `command` exposes only the webhook path on `port`; once run, webhooks go to `webhookUrl`.
-   */
-  funnel?: { port: number; command: string; offCommand: string; webhookUrl: string } | null;
-  /**
    * Additive (Google extensions): the install's Google Cloud project ID (null until the Google step of the setup
    * wizard is done), its OAuth app type, and xaq's connected Google accounts with the scopes each granted.
    */
@@ -223,7 +201,7 @@ export type PresetAuth =
    */
   | { type: "mcp_oauth"; broadScopes?: readonly string[]; scopeNotes?: readonly { scope: string; note: string }[] }
   /**
-   * Additive (official code extensions, docs/EXTENSIONS.md "Google accounts for code extensions"): the connection is
+   * Additive (official code extensions): the connection is
    * bound to one of xaq's connected Google accounts (connections.google_account_id) and gets access tokens downscoped
    * to `scopes`, added to the account by incremental consent. `apis` must be on in the user's Cloud project.
    */
@@ -321,9 +299,7 @@ export interface IntegrationEvent {
 export interface NativeEvents {
   /** Event types this preset may emit. */
   types: string[];
-  /** Verifies and parses an inbound webhook; null when the signature is bad (respond 401, emit nothing). */
-  handleWebhook?(req: { headers: Record<string, string>; rawBody: Buffer }, deps: NativeSourceDeps & { clientSecret: string }): Promise<IntegrationEvent[] | null>;
-  /** Polling fallback without a public URL; returns new events since `cursor` and the next cursor. */
+  /** Returns new events since `cursor` and the next cursor. */
   poll?(cursor: string | null, deps: NativeSourceDeps): Promise<{ events: IntegrationEvent[]; cursor: string | null }>;
   pollIntervalMs?: number;
 }
@@ -342,32 +318,12 @@ export interface RegisteredTool {
   pinHash: string;
 }
 
-/** Per-agent view of every broker tool. Native Gmail/Calendar tools stay in server/mcp and are not in here. FROZEN. */
-export interface ToolRegistry {
-  /** Tools the agent may see now: granted connections, level applied (read level lists read tools only). */
-  forAgent(agentId: string): RegisteredTool[];
-  /** Same filter as forAgent, for one exposed name; null when not visible to this agent. */
-  resolve(agentId: string, exposedName: string): RegisteredTool | null;
-}
-
 /** The policy's verdict on one call. FROZEN. */
-export type CallDecision =
-  /** `ruleId`: the "always allow" rule that let a risky call through at the "ask" level (audit). */
-  | { kind: "allow"; ruleId?: string }
-  | { kind: "ask" }
-  | { kind: "deny"; reason: string; message: string };
+export type CallDecision = { kind: "allow" } | { kind: "deny"; reason: string; message: string };
 
 export interface BrokerPolicy {
-  /** Level + risk + "always allow" rules + caps. Never runs the call. */
-  decide(agentId: string, tool: RegisteredTool, args: Record<string, unknown>): CallDecision;
-}
-
-/**
- * The single entry point for running a broker tool, used by /mcp and search mode: resolve, decide, then run
- * (with output wrapping, token scrubbing, audit) or queue an approval and return `pending_approval` at once. FROZEN.
- */
-export interface BrokerCalls {
-  call(agentId: string, exposedName: string, args: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult>;
+  /** Connection state + the agent's level. Never runs the call. */
+  decide(tool: RegisteredTool): CallDecision;
 }
 
 /** OAuth tokens as stored (encrypted at rest). */
@@ -380,36 +336,6 @@ export interface StoredTokens {
   issuer: string | null;
   /** Epoch ms when the access token was issued (for the 10 %-of-lifetime refresh window). Additive. */
   issuedAt?: number | null;
-}
-
-/** Encrypted per-connection credentials. FROZEN. */
-export interface CredentialStore {
-  header(connectionId: string): { name: string; value: string } | null;
-  setHeader(connectionId: string, name: string, value: string): void;
-  tokens(connectionId: string): StoredTokens | null;
-  /** Compare-and-swap on the refresh token: false when another refresh already rotated it. */
-  saveTokens(connectionId: string, tokens: StoredTokens, expectedRefreshToken?: string | null): boolean;
-  /** OAuth client registration / user app (client id, secret, registration response), per issuer. */
-  client(connectionId: string): Record<string, unknown> | null;
-  setClient(connectionId: string, client: Record<string, unknown>): void;
-  /**
-   * Sets status `needs_reauth` (with reason), emits `connection.auth_failed` once, audits. `expired` (additive): the
-   * credential's lifetime is over (no refresh token), so the connection reads as expired.
-   */
-  markNeedsReauth(connectionId: string, reason: string, opts?: { expired?: boolean }): void;
-  /** Deletes every credential of the connection (kill switch, disconnect). */
-  clear(connectionId: string): void;
-}
-
-/**
- * Single-flight access tokens with proactive refresh (expiresAt − max(60 s, 10 % of lifetime)) and a background sweep.
- * The provider-specific exchange is passed in, so MCP OAuth and native user-app OAuth (WHOOP) share it. FROZEN.
- */
-export interface TokenRefresher {
-  accessToken(connectionId: string, refresh: RefreshFn, signal: AbortSignal): Promise<string>;
-  /** Registers a connection for the background sweep (keeps rotating refresh tokens alive while idle). */
-  track(connectionId: string, refresh: RefreshFn): void;
-  untrack(connectionId: string): void;
 }
 
 /** Exchanges the current tokens for new ones; throws `SourceError("needs_reauth")` on invalid_grant/invalid_client. */

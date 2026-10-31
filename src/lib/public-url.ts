@@ -140,18 +140,6 @@ export function consolePort(addresses: string[], publicUrl: string): string {
   return "8425";
 }
 
-// Mirrors the server's validation (server/settings.ts) so mistakes show before saving.
-export function publicUrlError(v: string): string | undefined {
-  let url: URL;
-  try {
-    url = new URL(v.trim());
-  } catch {
-    return "Enter a full URL, e.g. https://mail.example.com or http://localhost:8425";
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") return "Use http or https.";
-  if (url.search || url.hash) return "Leave out any ?query or #fragment.";
-  return undefined;
-}
 
 
 /**

@@ -8,8 +8,6 @@ import { AgentConnections } from "@/components/agents/agent-connections";
 import { AgentHeader } from "@/components/agents/agent-header";
 import { AgentListeners } from "@/components/agents/agent-listeners";
 import { AgentTools } from "@/components/agents/agent-tools";
-import { AgentToolMode } from "@/components/agents/agent-tool-mode";
-import { AgentWebhooks } from "@/components/agents/agent-webhooks";
 import { GrantEditor } from "@/components/agents/grant-editor";
 import { KeyReveal } from "@/components/agents/key-reveal";
 import { QueryError } from "@/components/common";
@@ -18,7 +16,6 @@ import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle }
 import { Skeleton } from "@/components/ui/skeleton";
 import { queries } from "@/lib/queries";
 import { useRevealedKey } from "@/lib/revealed-keys";
-import { useBrokerEnabled } from "@/hooks/use-broker";
 
 export const Route = createFileRoute("/_app/agents/$agentId")({
   component: AgentPage,
@@ -30,7 +27,6 @@ function AgentPage() {
   const accounts = useQuery(queries.accounts());
   const apiKey = useRevealedKey(agentId);
   const [keyHidden, setKeyHidden] = useState(false);
-  const broker = useBrokerEnabled();
 
   if (agent.isPending) {
     return (
@@ -100,18 +96,13 @@ function AgentPage() {
         )}
       </section>
 
-      {broker && <AgentConnections agentId={a.id} />}
-
-      {broker && <AgentToolMode agentId={a.id} />}
+      <AgentConnections agentId={a.id} />
 
       <AgentTools agent={a} apiKey={apiKey} />
 
       <AgentListeners agent={a} />
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <AgentWebhooks agentId={a.id} />
-        <AgentActivity agentId={a.id} />
-      </div>
+      <AgentActivity agentId={a.id} />
     </>
   );
 }

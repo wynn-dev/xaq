@@ -7,7 +7,7 @@
 //   GET  /agent/v1/me                        → AgentSelf                                (bearer aib_ key)
 //   GET  /agent/v1/events/stream             → text/event-stream                        (bearer aib_ key)
 //        ?consumer=<name>&after=<seq>&types=a,b&include_body=1&start=now|beginning
-//        Each event:  `id: <seq>` `event: mail` `data: <WebhookPayload JSON>`; `: ping` comments every 15 s;
+//        Each event:  `id: <seq>` `event: mail` `data: <EventPayload JSON>`; `: ping` comments every 15 s;
 //        `event: revoked` `data: {"reason": …}` then close when the key, agent or grant stops being valid.
 //        Resumes after max(after, Last-Event-ID, the consumer's acked cursor). A consumer seen for the
 //        first time starts at the head (newest event the agent can see: only new mail), or at 0 with
@@ -24,25 +24,23 @@
 //                                            key_rotated and agent_deleted)
 //
 // Pairing (approved design): the CLI starts a pairing and shows `userCode` + `verificationUrl`; a human
-// approves that exact code in the console (choosing the grant, draft_only by default). Only then is
+// approves that exact code in the console (choosing the access, read by default). Only then is
 // the API key generated; it is handed to the polling CLI exactly once and written to a 0600 file.
 // Codes are short-lived and single-use; requests, approvals, denials, expiry and key delivery are audited.
 
-import type { CalendarWriteMode, Capability, EventType, SendMode, WebhookFilter } from "./types.ts";
+import type { AccessLevel } from "./types.ts";
 
-export type AgentTool = "claude-code" | "codex" | "cursor" | "hermes" | "other";
+/** The agent tools the CLI and the console know (recipes, connect commands). */
+export const AGENT_TOOLS = ["claude-code", "codex", "cursor", "hermes", "other"] as const;
+export type AgentTool = (typeof AGENT_TOOLS)[number];
 
 export interface PairingStartInput {
   /** Human-readable agent name, e.g. "Hermes on wynn-mbp". */
   name: string;
   description?: string | null;
-  /** What the agent asks for. The human decides in the console; send mode defaults to draft_only. */
+  /** What the agent asks for. The human decides in the console. */
   requested?: {
     accounts?: string[]; // account emails
-    capabilities?: Capability[];
-    sendMode?: SendMode;
-    /** How calendar writes should run if calendar.write is granted; the human decides (default "approval"). */
-    calendarWriteMode?: CalendarWriteMode;
     reason?: string;
   };
   client?: { hostname?: string; platform?: string; tool?: AgentTool; version?: string };
@@ -85,18 +83,9 @@ export interface AgentSelf {
   grants: {
     accountId: string;
     accountEmail: string;
-    capabilities: Capability[];
-    labelScope: string[] | null;
-    sendMode: SendMode;
-    /** Send restrictions (absent from older daemons). */
-    allowTo?: string[];
-    replyOnly?: boolean;
-    maxSendsPerHour?: number | null;
-    maxSendsPerDay?: number | null;
-    /** Calendar ids the grant covers, null = every calendar (absent from older daemons). */
-    calendarScope?: string[] | null;
-    /** How calendar.write changes execute (absent from older daemons). */
-    calendarWriteMode?: CalendarWriteMode;
+    level: AccessLevel;
+    /** Recipient allowlist for sends and calendar attendees; empty = anyone. */
+    allowTo: string[];
   }[];
   /**
    * This agent's listener consumers (absent from older daemons). `startSeq`: where the cursor started
@@ -105,34 +94,12 @@ export interface AgentSelf {
    */
   consumers?: { consumer: string; startSeq: number | null; ackedSeq: number; connected: boolean }[];
   /**
-   * MCP broker connections this agent may use (absent from older daemons and while the broker is off): the
+   * MCP broker connections this agent may use (absent from older daemons): the
    * connection's name, its tool prefix (`<slug>__`) and this agent's level. Nothing else about the connection.
    */
-  connections?: { name: string; slug: string; level: "full" | "ask" | "read" }[];
+  connections?: { name: string; slug: string; level: AccessLevel }[];
   mcpUrl: string;
   skillUrl: string;
   /** Newest event seq this agent can see: where a new consumer starts ("from now on"). */
   headSeq: number;
-}
-
-/** Listener config file (written by `connect`, read by `listen`; mode 0600). */
-export interface ListenerConfig {
-  url: string;
-  apiKey: string;
-  agentId: string;
-  agentName: string;
-  /** Consumer name for the server-side cursor; one per listener. */
-  consumer: string;
-  /** Allow plain http to a non-loopback, non-Tailscale host (loud warning). */
-  insecure?: boolean;
-  types?: EventType[];
-  filter?: WebhookFilter;
-  includeBody?: boolean;
-  /** Command mode: run through the shell as a fixed string; the event goes to stdin/env/file only. */
-  exec?: string;
-  /** Localhost POST mode: signed per Standard Webhooks with `secret`. */
-  forward?: { url: string; secret: string };
-  concurrency?: number;
-  timeoutSeconds?: number;
-  maxAttempts?: number;
 }

@@ -1,6 +1,6 @@
-// The setup steps core renders for a code extension with `"code.auth": { "type": "google" }` (docs/EXTENSIONS.md
-// "Google accounts for code extensions"), before the manifest's own steps. Pure: everything comes from SetupContext,
-// so the console (PresetView.setupSteps) and the CLI (`connections add`) show the same four steps:
+// The setup steps core renders for a code extension with `"code.auth": { "type": "google" }`, before the manifest's
+// own steps. Pure: everything comes from SetupContext, so the console (PresetView.setupSteps) shows the same four
+// steps for every such extension:
 //   1. pick the Google account (from xaq's connected accounts; a link to add one);
 //   2. turn on the APIs in the user's own Cloud project (a link per API, a gcloud command, "Check again");
 //   3. allow access on Google's screen (what it will ask, tick every box, the "unverified app" warning);
@@ -8,7 +8,7 @@
 
 import type { PresetAuth, SetupContext, SetupStep } from "../broker/types.ts";
 import { apiLibraryUrl, enableApisCommand, GOOGLE_PERMISSIONS_URL } from "../google/api-links.ts";
-import { hasScopes, scopeGrants } from "../google/scopes.ts";
+import { hasScopes, scopeGrants } from "../../shared/google-scopes.ts";
 
 export type GoogleAuth = Extract<PresetAuth, { type: "google" }>;
 

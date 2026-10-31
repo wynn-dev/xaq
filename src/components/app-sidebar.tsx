@@ -13,7 +13,6 @@ import {
   ScrollTextIcon,
   SettingsIcon,
   StampIcon,
-  WebhookIcon,
 } from "lucide-react";
 import { Logo } from "@/components/auth-shell";
 import { ConsoleVersion } from "@/components/console-update";
@@ -32,16 +31,13 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar";
-import { useBrokerEnabled } from "@/hooks/use-broker";
 import { useSignOut } from "@/hooks/use-sign-out";
 import { queries } from "@/lib/queries";
 
 type NavItem = {
-  to: "/" | "/approvals" | "/events" | "/audit" | "/accounts" | "/connections" | "/extensions" | "/agents" | "/webhooks" | "/settings";
+  to: "/" | "/approvals" | "/events" | "/audit" | "/accounts" | "/connections" | "/extensions" | "/agents" | "/settings";
   label: string;
   icon: typeof InboxIcon;
-  /** Only with Settings.brokerUpstreams. */
-  broker?: boolean;
 };
 
 const NAV: { label: string; items: NavItem[] }[] = [
@@ -58,10 +54,9 @@ const NAV: { label: string; items: NavItem[] }[] = [
     label: "Manage",
     items: [
       { to: "/accounts", label: "Gmail accounts", icon: MailIcon },
-      { to: "/connections", label: "Connections", icon: PlugIcon, broker: true },
-      { to: "/extensions", label: "Extensions", icon: PuzzleIcon, broker: true },
+      { to: "/connections", label: "Connections", icon: PlugIcon },
+      { to: "/extensions", label: "Extensions", icon: PuzzleIcon },
       { to: "/agents", label: "Agents", icon: BotIcon },
-      { to: "/webhooks", label: "Webhooks", icon: WebhookIcon },
       { to: "/settings", label: "Settings", icon: SettingsIcon },
     ],
   },
@@ -71,14 +66,12 @@ export function AppSidebar() {
   const pathname = useLocation({ select: (l) => l.pathname });
   const { setOpenMobile } = useSidebar();
   const close = () => setOpenMobile(false);
-  const { data: pending } = useQuery(queries.approvals("pending"));
   const { data: system } = useQuery(queries.system());
   const setup = useSetupProgress();
   const { data: pairings } = useQuery(queries.pairings("pending"));
-  const pendingCount = (pending?.length ?? 0) + (pairings?.length ?? 0);
+  const pendingCount = pairings?.length ?? 0;
 
   const signOut = useSignOut();
-  const broker = useBrokerEnabled();
 
   return (
     <Sidebar variant="inset" collapsible="icon">
@@ -123,7 +116,7 @@ export function AppSidebar() {
             <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
-                {group.items.filter((item) => !item.broker || broker).map((item) => (
+                {group.items.map((item) => (
                   <SidebarMenuItem key={item.to}>
                     <SidebarMenuButton
                       asChild

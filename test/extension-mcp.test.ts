@@ -1,4 +1,4 @@
-// Prompts and resources on /mcp for every upstream, remote and code (docs/EXTENSIONS.md "Prompts and resources"),
+// Prompts and resources on /mcp for every upstream, remote and code,
 // end to end and offline: a code-extension connection (the echo fixture, a real child) and a remote one (the fake
 // upstream), an agent at "read", both tool-list modes, routing, namespacing, audit, the kill switch, events through
 // the outbox, and the state directory going with the connection.
@@ -21,7 +21,7 @@ import type { AppContext } from "../server/context.ts";
 import { codeExtensionNodeProblem, codeExtensionSource, extensionStateDir, type InstalledExtension } from "../server/extensions/host/index.ts";
 import { extensionStore } from "../server/extensions/store.ts";
 import { type FakeMcpUpstream, startFakeMcpUpstream } from "./fake-mcp-upstream.ts";
-import { CSRF, harness, json } from "./platform-helpers.ts";
+import { CSRF, harness, json } from "./helpers.ts";
 
 const FIXTURE = resolve(import.meta.dirname, "fixtures/extensions/echo");
 const cleanup: (() => Promise<unknown>)[] = [];
@@ -61,7 +61,7 @@ const echoPreset = (ext: () => InstalledExtension): IntegrationPreset => ({
   createSource: (deps) => codeExtensionSource(ext(), deps, { verify: () => true }),
 });
 
-async function world(opts: { level?: "read" | "ask" | "full" } = {}) {
+async function world(opts: { level?: "read" | "full" } = {}) {
   const up: FakeMcpUpstream = await startFakeMcpUpstream({
     tools: [{ name: "get_page", description: "Read a page.", inputSchema: { type: "object", properties: {} }, annotations: { readOnlyHint: true } }],
     prompts: [{ name: "summarize", description: "Summarize a page.", arguments: [{ name: "page", required: true }], get: (a) => ({ messages: [{ role: "user", content: { type: "text", text: `Summarize ${a.page}` } }] }) }],
@@ -77,7 +77,6 @@ async function world(opts: { level?: "read" | "ask" | "full" } = {}) {
   ext = installEcho(ctx);
   const cookie = await h.claim();
   const api = (path: string, init: RequestInit & { json?: unknown } = {}) => h.request(`/api${path}`, { cookie, ...init, headers: { ...CSRF, ...(init.headers as object) } });
-  ctx.settings.update({ brokerUpstreams: true });
   const { agent, apiKey } = ctx.policy.createAgent({ name: "Hermes" });
   const level = opts.level ?? "read";
 
@@ -223,28 +222,17 @@ describe.skipIf(codeExtensionNodeProblem() !== null)("prompts and resources on /
 });
 
 describe("connections without their extension", () => {
-  it("a code connection whose extension isn't installed says so (status error), and calls say so too; the presets list skips the reachability check", async () => {
-    let checks = 0;
+  it("a code connection whose extension isn't installed says so (status error), and calls say so too", async () => {
     const h = harness({
       broker: (ctx) =>
         createBrokerService(ctx, {
           presets: () => [],
-          reachability: {
-            lookup: async () => {
-              checks++;
-              return [{ address: "93.184.216.34", family: 4 }];
-            },
-            tailscale: async () => {
-              checks++;
-              return null;
-            },
-          },
         }),
     });
     cleanup.push(() => h.dispose());
     const { ctx } = h;
     const cookie = await h.claim();
-    ctx.settings.update({ brokerUpstreams: true, publicUrl: "https://inbox.example.com" });
+    ctx.settings.update({ publicUrl: "https://inbox.example.com" });
     const t = new Date().toISOString();
     ctx.db.run("INSERT INTO connections (id, kind, preset, slug, name, auth_type, created_at, updated_at) VALUES ('con_w', 'native_whoop', 'whoop', 'whoop', 'WHOOP', 'oauth', ?, ?)", t, t);
     const view = await json(await h.request("/api/connections/con_w", { cookie, headers: CSRF }));
@@ -256,7 +244,6 @@ describe("connections without their extension", () => {
     expect(ctx.db.get<{ status: string }>("SELECT status FROM connections WHERE id = 'con_w'")!.status).toBe("active");
 
     expect(await json(await h.request("/api/connections/presets", { cookie, headers: CSRF }))).toEqual([]);
-    expect(checks).toBe(0);
   });
 });
 

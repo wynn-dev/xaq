@@ -116,41 +116,20 @@ export function PairingOffAlert() {
   );
 }
 
-/**
- * `connect` saves a second agent only with --profile <name>, and setup-mcp / listen act on the
- * default profile unless given the same flag.
- */
-export function ProfileHint() {
-  return (
-    <>
-      Connected it with <code className="font-mono text-foreground">--profile &lt;name&gt;</code>? Add the same flag to these commands.
-    </>
-  );
-}
-
 /** `listen`: try it in the foreground first, then install it as a service (the order `connect` prints). */
 export function ListenCommands({ c, tool }: { c: ConnectCommands; tool: AgentTool }) {
   const label = toolName(tool);
   return (
     <ol className="space-y-3 text-sm">
-      {c.hermesRoute && (
-        <li className="space-y-1.5">
-          <p>
-            <span className="font-medium">0. Create the Hermes route.</span>{" "}
-            <span className="text-muted-foreground">Once, with your Hermes gateway's webhook platform on. Use the platform Hermes should tell you on.</span>
-          </p>
-          <Command code={c.hermesRoute} label="hermes route command" />
-        </li>
-      )}
       <li className="space-y-1.5">
         <p>
           <span className="font-medium">1. Try it.</span> <span className="text-muted-foreground">Runs in this terminal until you press Ctrl-C.</span>
         </p>
         <Command code={c.listenTry} label="listen command" />
         <p className="text-xs text-muted-foreground">
-          {tool === "other"
+          {tool !== "claude-code"
             ? "This test command only confirms each email (a ✓ line per email). Swap in your own script for the service."
-            : `${tool === "hermes" ? `Forwards each new email you receive to ${label}` : `Starts ${label} for each new email you receive`} (not mail you send; Promotions, Social and Forums are skipped). ${RECIPES[tool].note}`}
+            : `Starts ${label} for each new email you receive (not mail you send; Promotions, Social and Forums are skipped). ${RECIPES[tool].note}`}
         </p>
       </li>
       <li className="space-y-1.5">
@@ -159,10 +138,7 @@ export function ListenCommands({ c, tool }: { c: ConnectCommands; tool: AgentToo
           <span className="text-muted-foreground">Installs a background service that starts at login and survives closing the terminal.</span>
         </p>
         <Command code={c.listenService} label="service install command" />
-        {tool === "other" && <p className="text-xs text-muted-foreground">Replace /path/to/handle-email.sh with your script. {RECIPES.other.note}</p>}
-      </li>
-      <li className="text-xs text-muted-foreground">
-        <ProfileHint />
+        {tool !== "claude-code" && <p className="text-xs text-muted-foreground">Replace /path/to/handle-email.sh with your script. {RECIPES[tool].note}</p>}
       </li>
     </ol>
   );
@@ -234,7 +210,7 @@ export function ConnectAgentGuide({
               <Step n={3} icon={BookOpenIcon} title={`Teach ${label} the rules`}>
                 <Command code={c.skillInstall} label="skill install command" />
                 <p className="text-xs text-muted-foreground">
-                  Installs the xaq skill: how to triage, reply in threads, wait for approvals, and treat email content as untrusted.
+                  Installs the xaq skill: how to triage, reply in threads, and treat email content as untrusted.
                 </p>
               </Step>
               <Step
