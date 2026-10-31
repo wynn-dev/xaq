@@ -6,7 +6,7 @@ import { CheckCircle2Icon, CircleIcon, InfoIcon, MailIcon, PartyPopperIcon, Rota
 import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { useAgentOrigin, useMcpActivity } from "@/components/agents/agent-status";
 import { Command } from "@/components/agents/command";
-import { ProfileHint, toolName, usePublicUrl } from "@/components/agents/connect-agent-guide";
+import { toolName, usePublicUrl } from "@/components/agents/connect-agent-guide";
 import { grantInWords } from "@/components/agents/grant-words";
 import { CopyButton, ErrorAlert, TimeAgo } from "@/components/common";
 import { Visible } from "@/components/hidden-chars";
@@ -176,7 +176,7 @@ export function StepVerify({ index, onBack, onNext }: StepProps) {
               This step stays done whatever these checks show.
             </p>
           )}
-          <Checklist key={agent.id} agent={agent} state={state} severalAgents={list.length > 1} />
+          <Checklist key={agent.id} agent={agent} state={state} />
         </>
       )}
     </StepCard>
@@ -275,7 +275,7 @@ function Prompt({ text, label }: { text: string; label: string }) {
   );
 }
 
-function Checklist({ agent, state, severalAgents }: { agent: Agent; state: VerifyState; severalAgents: boolean }) {
+function Checklist({ agent, state }: { agent: Agent; state: VerifyState }) {
   const origin = useAgentOrigin(agent);
   const { publicUrl } = usePublicUrl();
   const tool: AgentTool = origin.tool ?? "other";
@@ -376,11 +376,6 @@ function Checklist({ agent, state, severalAgents }: { agent: Agent; state: Verif
           detail={
             <>
               {agent.grants.length ? agent.grants.map((g) => grantInWords(g)).join(" · ") : "It has no mailbox access yet: add some on its page."}
-              {severalAgents && origin.paired && (
-                <span className="mt-1 block">
-                  <ProfileHint /> The commands below act on the default profile.
-                </span>
-              )}
             </>
           }
         />
@@ -403,7 +398,7 @@ function Checklist({ agent, state, severalAgents }: { agent: Agent; state: Verif
             ) : undefined
           }
         >
-          {!mcpDone && <McpHelp tool={tool} label={label} paired={origin.paired} c={c} agentId={agent.id} publicUrl={publicUrl} />}
+          {!mcpDone && <McpHelp label={label} paired={origin.paired} c={c} agentId={agent.id} publicUrl={publicUrl} />}
         </Item>
 
         <Item
@@ -444,22 +439,14 @@ function Checklist({ agent, state, severalAgents }: { agent: Agent; state: Verif
         >
           {!listenDone && !skipListen && (
             <>
-              {c.hermesRoute && (
-                <>
-                  <p className="text-sm text-muted-foreground">On the machine where you ran connect, create the Hermes route once (use the platform Hermes should tell you on):</p>
-                  <Command code={c.hermesRoute} label="hermes route command" />
-                </>
-              )}
               <p className="text-sm text-muted-foreground">On the machine where you ran connect (Ctrl-C stops it):</p>
               <Command code={c.listenTry} label="listen command" />
               <p className="text-xs text-muted-foreground">
-                {tool === "other"
+                {tool !== "claude-code"
                   ? "This test command only confirms each email (a ✓ line per email); it starts nothing."
                   : (
                     <>
-                      {tool === "hermes"
-                        ? `Forwards each new email you receive (not mail you send) to ${label}, which triages it.`
-                        : `Starts ${label} for each new email you receive (not mail you send), with only the xaq tools.`}{" "}
+                      {`Starts ${label} for each new email you receive (not mail you send), with only the xaq tools.`}{" "}
                       Add{" "}
                       <code className="font-mono whitespace-nowrap text-foreground">--types</code> to wake it for other events too. Just testing delivery?{" "}
                       <code className="font-mono whitespace-nowrap text-foreground">--exec {shellQuote(LISTEN_TEST_EXEC)}</code> only confirms each email.
@@ -552,14 +539,12 @@ function AccountEmail({ id }: { id: string }) {
 }
 
 function McpHelp({
-  tool,
   label,
   paired,
   c,
   agentId,
   publicUrl,
 }: {
-  tool: AgentTool;
   label: string;
   paired: boolean;
   c: ReturnType<typeof connectCommands>;
@@ -568,7 +553,7 @@ function McpHelp({
 }) {
   return (
     <div className="space-y-2 text-sm text-muted-foreground">
-      {paired && tool !== "other" ? (
+      {paired && c.setupMcp ? (
         <>
           <p>
             If you ran connect with <span className="font-mono">--setup-mcp</span>, restart {label}. If not, run this on the same machine, then restart{" "}

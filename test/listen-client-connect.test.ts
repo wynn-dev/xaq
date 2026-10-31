@@ -42,12 +42,12 @@ describe("connect (device flow)", () => {
     const code = await runConnect(api.url, { tool: "claude-code", name: "Claude Code on testhost", capabilities: "read,draft", account: ["me@example.com"] }, { pollIntervalMs: 10 });
     expect(code).toBe(CONNECT_EXIT.approved);
 
-    const path = profilePath("default");
+    const path = profilePath();
     expect(statSync(path).mode & 0o777).toBe(0o600);
     expect(statSync(dirname(path)).mode & 0o777).toBe(0o700);
     const saved = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     expect(saved).toMatchObject({ url: api.url, apiKey: FAKE_KEY, agentId: "agt_1", tool: "claude-code", mcpUrl: `${api.url}/mcp` });
-    expect(loadProfile().consumer).toMatch(/-default$/);
+    expect(loadProfile().consumer).toMatch(/^[a-z0-9._-]+$/);
 
     expect(output).toContain("K7QM-2XPD");
     expect(output).toContain("Approved");
@@ -67,7 +67,7 @@ describe("connect (device flow)", () => {
     expect(await runConnect(api.url, {}, { pollIntervalMs: 10 })).toBe(CONNECT_EXIT.denied);
     expect(output).toContain("denied");
     expect(output).toContain("not this one");
-    expect(() => loadProfile()).toThrow(/No xaq profile/);
+    expect(() => loadProfile()).toThrow(/isn't paired yet/);
   });
 
   it("reports expiry (3) and consumed (4)", async () => {
@@ -91,16 +91,12 @@ describe("connect (device flow)", () => {
     expect(third! - second!).toBeGreaterThanOrEqual(1950);
   }, 15_000);
 
-  it("refuses to overwrite an existing profile without --force", async () => {
+  it("refuses to overwrite the pairing without --force", async () => {
     api.pollScript = [approved()];
     await runConnect(api.url, {}, { pollIntervalMs: 10 });
-    await expect(runConnect(api.url, {}, { pollIntervalMs: 10 })).rejects.toThrow(/already exists/);
+    await expect(runConnect(api.url, {}, { pollIntervalMs: 10 })).rejects.toThrow(/already paired[\s\S]*--force/);
     api.pollScript = [approved()];
     expect(await runConnect(api.url, { force: true }, { pollIntervalMs: 10 })).toBe(0);
-    // A second profile alongside.
-    api.pollScript = [approved()];
-    expect(await runConnect(api.url, { profile: "work" }, { pollIntervalMs: 10 })).toBe(0);
-    expect(loadProfile("work").consumer).toMatch(/-work$/);
   });
 
   it("can be cancelled", async () => {

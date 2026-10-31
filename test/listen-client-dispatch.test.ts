@@ -1,50 +1,40 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { replayDead } from "../server/listen/admin.ts";
 import { Dispatcher, type Job } from "../server/listen/dispatcher.ts";
-import { matchesLocal } from "../server/listen/event.ts";
 import { runListener } from "../server/listen/listen.ts";
 import { EVENT_TYPES } from "../shared/types.ts";
 import { describeFilter, resolveListen, typesNotes } from "../server/listen/options.ts";
 import { recipe, recipesHelp } from "../server/listen/recipes.ts";
-import { deadPath } from "../server/listen/paths.ts";
-import { loadProfile, saveProfile } from "../server/listen/profile.ts";
-import { readDead } from "../server/listen/state.ts";
+import { saveProfile } from "../server/listen/profile.ts";
+import { readStatus } from "../server/listen/state.ts";
 import { FAKE_KEY, FakeAgentApi, isolateXdg, makeEvent, waitFor } from "./listen-client-fake.ts";
 
 describe("dispatcher", () => {
   it("acknowledges only the contiguous prefix of finished events", async () => {
-    const release = new Map<number, (errors: string[]) => void>();
+    const release = new Map<number, (error: string | null) => void>();
     const advanced: number[] = [];
     const d = new Dispatcher({
-      targets: ["exec"],
       concurrency: 3,
       maxAttempts: 1,
-      run: (job: Job) =>
-        new Promise<string[]>((resolve) =>
-          release.set(job.seq, (errors) => {
-            if (!errors.length) job.remaining.clear();
-            resolve(errors);
-          }),
-        ),
+      run: (job: Job) => new Promise<string | null>((resolve) => release.set(job.seq, resolve)),
       onAdvance: (seq) => advanced.push(seq),
-      onDead: () => {},
+      onFailed: () => {},
     });
     for (const s of [10, 11, 12, 13]) d.push(makeEvent(s));
     await waitFor(() => release.size === 3, 1000, "three running");
     expect(release.has(13)).toBe(false); // concurrency limit
 
-    release.get(12)!([]);
+    release.get(12)!(null);
     await waitFor(() => release.has(13), 1000, "13 starts when a slot frees");
-    release.get(11)!([]);
+    release.get(11)!(null);
     await new Promise((r) => setTimeout(r, 20));
     expect(advanced).toEqual([]); // 10 is still running: nothing may be acked
 
-    release.get(10)!(["boom"]); // dead (maxAttempts 1) still counts as finished
+    release.get(10)!("boom"); // failed (maxAttempts 1) still counts as finished
     await waitFor(() => advanced.length === 1, 1000, "advance");
     expect(advanced).toEqual([12]);
-    release.get(13)!([]);
+    release.get(13)!(null);
     await waitFor(() => advanced.length === 2, 1000, "advance to 13");
     expect(advanced).toEqual([12, 13]);
     expect(d.finishedThrough).toBe(13);
@@ -52,99 +42,61 @@ describe("dispatcher", () => {
 
   it("skips filtered events immediately and ignores duplicates", () => {
     const advanced: number[] = [];
-    const d = new Dispatcher({ targets: ["exec"], concurrency: 1, maxAttempts: 1, run: async () => [], onAdvance: (s) => advanced.push(s), onDead: () => {} });
-    d.seed(5);
-    expect(d.push(makeEvent(4))).toBe(false);
+    const d = new Dispatcher({ concurrency: 1, maxAttempts: 1, run: async () => null, onAdvance: (s) => advanced.push(s), onFailed: () => {} });
     expect(d.push(makeEvent(6), { skip: true })).toBe(true);
     expect(d.push(makeEvent(6))).toBe(false);
     expect(advanced).toEqual([6]);
   });
 });
 
-describe("local filter", () => {
-  const ev = makeEvent(1, { message: { from: { name: null, email: "billing@stripe.com" }, subject: "Invoice 2291 paid", labelIds: ["INBOX", "Label_7"] } });
-  it("applies the webhook filter model", () => {
-    expect(matchesLocal(ev, {})).toBe(true);
-    expect(matchesLocal(ev, { types: ["label.added"] })).toBe(false);
-    expect(matchesLocal(ev, { filter: { from: ["*@stripe.com"] } })).toBe(true);
-    expect(matchesLocal(ev, { filter: { from: ["*@paypal.com"] } })).toBe(false);
-    expect(matchesLocal(ev, { filter: { to: ["me@*"] } })).toBe(true);
-    expect(matchesLocal(ev, { filter: { subject: "^invoice \\d+" } })).toBe(true);
-    expect(matchesLocal(ev, { filter: { subject: "refund" } })).toBe(false);
-    expect(matchesLocal(ev, { filter: { labelIds: ["Label_7"] } })).toBe(true);
-    expect(matchesLocal(ev, { filter: { labelIds: ["Label_8"] } })).toBe(false);
-    // Account events pass message criteria (they only narrow by account).
-    expect(matchesLocal(makeEvent(2, { type: "account.auth_failed", message: null }), { filter: { from: ["*@stripe.com"] } })).toBe(true);
-  });
+describe("listener settings", () => {
+  const profile = { url: "https://x", apiKey: FAKE_KEY, agentId: "a", agentName: "n", consumer: "c", exec: "old" };
 
-  it("builds filters from flags (each group overrides the profile as a unit)", () => {
-    const profile = { url: "https://x", apiKey: FAKE_KEY, agentId: "a", agentName: "n", consumer: "c", filter: { from: ["*@old.com"] }, exec: "old" };
-    const { config } = resolveListen("default", profile, { from: ["*@stripe.com", "*@stripe.com"], subject: "invoice", forward: "http://localhost:9/x" });
-    expect(config.filter).toEqual({ from: ["*@stripe.com"], subject: "invoice" });
-    expect(config.exec).toBeNull();
-    expect(config.forward?.url).toBe("http://localhost:9/x");
-    expect(() => resolveListen("default", profile, { subject: "(" })).toThrow(/regular expression/);
-    expect(() => resolveListen("default", profile, { types: "message.received,nope" })).toThrow(/Unknown event type nope/);
-    expect(() => resolveListen("default", profile, { forward: "http://example.com/x" })).toThrow(/this machine/);
-  });
-
-  it("--recipe <tool> is the built-in command as the exec, saved like --exec; it excludes --exec and unknown tools", () => {
-    const profile = { url: "https://x", apiKey: FAKE_KEY, agentId: "a", agentName: "n", consumer: "c", exec: "old", forward: { url: "http://localhost:9/x", secret: "whsec_x" } };
-    const r = resolveListen("work", profile, { recipe: "claude-code", save: true });
-    expect(r.config.exec).toBe(recipe("claude-code", "work").exec);
-    expect(r.config.exec).toContain("work.claude.json");
-    // A target group: the saved forward is replaced too, as with --exec.
-    expect(r.config.forward).toBeNull();
-    expect(r.next.exec).toBe(r.config.exec);
-    expect(r.next.forward).toBeUndefined();
-    expect(resolveListen("default", profile, { recipe: "Claude" }).config.exec).toBe(recipe("claude-code").exec);
-    expect(resolveListen("default", profile, { recipe: "hermes-oneshot", forward: "http://localhost:9/y" }).config).toMatchObject({ exec: recipe("hermes-oneshot").exec, forward: { url: "http://localhost:9/y" } });
-    // hermes is the gateway forward: the profile's secret signs it, and it replaces a saved exec.
-    const h = resolveListen("work", profile, { recipe: "hermes", save: true });
-    expect(h.config).toMatchObject({ exec: null, forward: { url: "http://127.0.0.1:8644/webhooks/xaq-work", secret: "whsec_x" } });
-    expect(h.next.forward?.url).toBe("http://127.0.0.1:8644/webhooks/xaq-work");
-    expect(() => resolveListen("default", profile, { recipe: "hermes", forward: "http://localhost:9/y" })).toThrow(/already forwards/);
-    expect(() => resolveListen("default", profile, { recipe: "codex", exec: "x" })).toThrow(/--recipe and --exec can't be combined/);
-    expect(() => resolveListen("default", profile, { recipe: "vim" })).toThrow(/Unknown --recipe "vim"\. Built-in recipes: claude-code, codex, cursor, hermes, hermes-oneshot\./);
-    expect(() => resolveListen("default", profile, { recipe: "other" })).toThrow(/"other" has no built-in recipe/);
+  it("--recipe claude-code is the built-in command as the exec; it excludes --exec and unknown recipes", () => {
+    const r = resolveListen(profile, { recipe: "claude-code" });
+    expect(r.config.exec).toBe(recipe("claude-code").exec);
+    expect(r.config.exec).toContain("default.claude.json");
+    expect(r.settings.exec).toBe(r.config.exec);
+    expect(resolveListen(profile, { recipe: "Claude" }).config.exec).toBe(recipe("claude-code").exec);
+    expect(() => resolveListen(profile, { recipe: "claude-code", exec: "x" })).toThrow(/--recipe and --exec can't be combined/);
+    expect(() => resolveListen(profile, { recipe: "codex" })).toThrow(/Unknown --recipe "codex"\. The built-in recipe is claude-code; for any other agent, pass your own command with --exec/);
+    expect(() => resolveListen(profile, { exec: " " })).toThrow(/--exec needs a command/);
+    expect(() => resolveListen(profile, { types: "message.received,nope" })).toThrow(/Unknown event type nope/);
   });
 
   it("wakes only on new mail unless --types or the profile asks for more", () => {
-    const profile = { url: "https://x", apiKey: FAKE_KEY, agentId: "a", agentName: "n", consumer: "c", exec: "run" };
     // One test email produces message.sent and message.received: only the latter starts the agent.
-    expect(resolveListen("default", profile, {}).config.types).toEqual(["message.received"]);
-    // --save without --types keeps following the default (nothing saved).
-    expect(resolveListen("default", profile, { save: true, exec: "run" }).next.types).toBeUndefined();
-    // Opting in: a list, or all; both are saved.
-    const opted = resolveListen("default", profile, { save: true, types: "message.received,thread.reply_received" });
+    expect(resolveListen(profile, {}).config.types).toEqual(["message.received"]);
+    // Without --types nothing is saved, so the saved settings keep following the default.
+    expect(resolveListen(profile, { exec: "run" }).settings.types).toBeUndefined();
+    const opted = resolveListen(profile, { types: "message.received,thread.reply_received" });
     expect(opted.config.types).toEqual(["message.received", "thread.reply_received"]);
-    expect(opted.next.types).toEqual(["message.received", "thread.reply_received"]);
-    expect(resolveListen("default", { ...profile, types: ["message.sent"] }, {}).config.types).toEqual(["message.sent"]);
-    const all = resolveListen("default", profile, { types: "all" }).config;
+    expect(opted.settings.types).toEqual(["message.received", "thread.reply_received"]);
+    expect(resolveListen({ ...profile, types: ["message.sent"] }, {}).config.types).toEqual(["message.sent"]);
+    const all = resolveListen(profile, { types: "all" }).config;
     expect(all.types).toContain("message.sent");
     expect(all.types).toContain("sync.gap");
     expect(describeFilter(all)).toBe("all event types · skipping Gmail promotions, social, forums");
-    expect(describeFilter(resolveListen("default", profile, {}).config)).toBe("types message.received · skipping Gmail promotions, social, forums");
-    expect(() => resolveListen("default", profile, { types: "" })).toThrow(/at least one event type/);
-    expect(() => resolveListen("default", profile, { types: "all,message.sent" })).toThrow(/can't be combined/);
+    expect(describeFilter(resolveListen(profile, {}).config)).toBe("types message.received · skipping Gmail promotions, social, forums");
+    expect(() => resolveListen(profile, { types: "" })).toThrow(/at least one event type/);
+    expect(() => resolveListen(profile, { types: "all,message.sent" })).toThrow(/can't be combined/);
   });
 
   it("says when the default types are in use, and warns when replies would run twice", () => {
-    const profile = { url: "https://x", apiKey: FAKE_KEY, agentId: "a", agentName: "n", consumer: "c", exec: "run" };
-    const defaulted = resolveListen("default", profile, {}).config;
+    const defaulted = resolveListen(profile, {}).config;
     expect(defaulted.typesDefaulted).toBe(true);
     expect(typesNotes(defaulted).info).toEqual(["Using default types: message.received (add --types all for every event)."]);
-    expect(resolveListen("default", { ...profile, types: ["message.received"] }, {}).config.typesDefaulted).toBe(false);
+    expect(resolveListen({ ...profile, types: ["message.received"] }, {}).config.typesDefaulted).toBe(false);
     // A reply produces message.received AND thread.reply_received (server/ingest/sync.ts).
-    const both = resolveListen("default", profile, { types: "message.received,thread.reply_received" }).config;
+    const both = resolveListen(profile, { types: "message.received,thread.reply_received" }).config;
     expect(typesNotes(both)).toEqual({ info: [], warn: [expect.stringMatching(/subset of message\.received.*twice/)] });
-    expect(typesNotes(resolveListen("default", profile, { types: "thread.reply_received" }).config).warn).toEqual([]);
+    expect(typesNotes(resolveListen(profile, { types: "thread.reply_received" }).config).warn).toEqual([]);
     // --types all is recommended in several places: a dedupe note, not the "keep one of them" warning.
-    expect(typesNotes(resolveListen("default", profile, { types: "all" }).config)).toEqual({
+    expect(typesNotes(resolveListen(profile, { types: "all" }).config)).toEqual({
       info: ["With all types, each reply also arrives as thread.reply_received: dedupe on the message id."],
       warn: [],
     });
-    expect(typesNotes(resolveListen("default", { ...profile, types: [...EVENT_TYPES] }, {}).config).warn).toEqual([]);
+    expect(typesNotes(resolveListen({ ...profile, types: [...EVENT_TYPES] }, {}).config).warn).toEqual([]);
   });
 
   it("never suggests combining message.received with thread.reply_received (each reply would run twice)", () => {
@@ -161,7 +113,7 @@ describe("local filter", () => {
   });
 });
 
-describe("retries and dead letters", () => {
+describe("retries", () => {
   let api: FakeAgentApi;
   let env: ReturnType<typeof isolateXdg>;
   beforeEach(async () => {
@@ -176,20 +128,15 @@ describe("retries and dead letters", () => {
     env.restore();
   });
 
-  it("retries with backoff, then writes dead.jsonl, keeps going, and replays", async () => {
+  it("retries with backoff, then gives up on the event, keeps going, and acknowledges it", async () => {
     const attempts = join(env.root, "attempts.txt");
     process.env.LISTEN_TEST_OUT = attempts;
-    saveProfile("default", { url: api.url, apiKey: FAKE_KEY, agentId: "agt_1", agentName: "t", consumer: "c" });
+    saveProfile({ url: api.url, apiKey: FAKE_KEY, agentId: "agt_1", agentName: "t", consumer: "c" });
     const ac = new AbortController();
     const delays: number[] = [];
     const run = runListener({
-      flags: {
-        // Event 1 always fails; the others succeed.
-        exec: `echo "$XAQ_EVENT_SEQ" >> "$LISTEN_TEST_OUT"; [ "$XAQ_EVENT_SEQ" != 1 ]`,
-        maxAttempts: 3,
-        from: ["*@example.com"],
-        save: true,
-      },
+      // Event 1 always fails; the others succeed.
+      flags: { exec: `echo "$XAQ_EVENT_SEQ" >> "$LISTEN_TEST_OUT"; [ "$XAQ_EVENT_SEQ" != 1 ]`, notFrom: ["*@other.org"] },
       signal: ac.signal,
       retryDelayMs: (n) => {
         delays.push(n);
@@ -205,28 +152,14 @@ describe("retries and dead letters", () => {
     await run;
 
     const lines = readFileSync(attempts, "utf8").trim().split("\n");
-    expect(lines.filter((l) => l === "1")).toHaveLength(3);
+    expect(lines.filter((l) => l === "1")).toHaveLength(5);
     expect(lines.filter((l) => l === "2")).toHaveLength(1);
     expect(lines).not.toContain("3");
-    expect(delays).toEqual([1, 2]);
+    expect(delays).toEqual([1, 2, 3, 4]);
     // Acks only move forward (the strict prefix rule is covered by the dispatcher test above).
     expect([...api.acks].sort((a, b) => a - b)).toEqual(api.acks);
     expect(api.acks.at(-1)).toBe(3);
-
-    const dead = readDead("default");
-    expect(dead).toHaveLength(1);
-    expect(dead[0]).toMatchObject({ seq: 1, id: "evt_1", attempts: 3, targets: ["exec"] });
-    expect(dead[0]!.error).toMatch(/Exited with code 1/);
-    expect(statSync(deadPath("default")).mode & 0o777).toBe(0o600);
-
-    // --save kept the settings in the profile.
-    expect(loadProfile()).toMatchObject({ maxAttempts: 3, filter: { from: ["*@example.com"] } });
-
-    // Replay with a command that now succeeds.
-    const failed = await replayDead({ exec: "cat > /dev/null" });
-    expect(failed).toBe(0);
-    expect(readDead("default")).toHaveLength(0);
-    expect(existsSync(deadPath("default"))).toBe(true);
+    expect(readStatus()!.recent.find((r) => r.seq === 1)).toMatchObject({ outcome: "failed", attempts: 5 });
     delete process.env.LISTEN_TEST_OUT;
   });
 });

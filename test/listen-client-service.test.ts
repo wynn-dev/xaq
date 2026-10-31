@@ -1,6 +1,6 @@
 import { dirname } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { launchdLabel, launchdListenPlist, systemdListenUnit, unitName } from "../server/listen/service.ts";
+import { LAUNCHD_LABEL, launchdListenPlist, systemdListenUnit, UNIT_NAME } from "../server/listen/service.ts";
 import { FAKE_KEY, isolateXdg } from "./listen-client-fake.ts";
 
 let env: ReturnType<typeof isolateXdg>;
@@ -10,12 +10,12 @@ beforeEach(() => {
 afterEach(() => env.restore());
 
 describe("listener service units", () => {
-  it("systemd: one unit per profile, runs the stable install, keeps the key out, doesn't restart on revocation", () => {
+  it("systemd: one unit, runs the stable install, keeps the key out, doesn't restart on revocation", () => {
     process.env.XAQ_TEST_SECRET_IN_ENV = FAKE_KEY;
     try {
-      const unit = systemdListenUnit("work", "/home/u/.local/share/xaq/listen-app/node_modules/xaq-cli/dist/cli.js", "/home/u/projects/100%");
-      expect(unitName("work")).toBe("xaq-listen-work");
-      expect(unit).toContain(`ExecStart="${process.execPath}" "/home/u/.local/share/xaq/listen-app/node_modules/xaq-cli/dist/cli.js" listen --profile work`);
+      const unit = systemdListenUnit("/home/u/.local/share/xaq/listen-app/node_modules/xaq-cli/dist/cli.js", "/home/u/projects/100%");
+      expect(UNIT_NAME).toBe("xaq-listen-default");
+      expect(unit).toContain(`ExecStart="${process.execPath}" "/home/u/.local/share/xaq/listen-app/node_modules/xaq-cli/dist/cli.js" listen\n`);
       expect(unit).toContain("WorkingDirectory=/home/u/projects/100%%");
       expect(unit).toContain("Restart=on-failure");
       expect(unit).toContain("RestartPreventExitStatus=78");
@@ -35,12 +35,12 @@ describe("listener service units", () => {
     expect(p.split(":")).toEqual([dirname(process.execPath), "/home/u/.local/bin", "/usr/bin"].filter((d, i, a) => a.indexOf(d) === i));
   });
 
-  it("launchd: label per profile, restarts only on failure, escapes XML", () => {
-    const plist = launchdListenPlist("default", "/opt/a&b/cli.js", "/Users/u");
-    expect(launchdLabel("default")).toBe("sh.xaq.listen.default");
+  it("launchd: one label, restarts only on failure, escapes XML", () => {
+    const plist = launchdListenPlist("/opt/a&b/cli.js", "/Users/u");
+    expect(LAUNCHD_LABEL).toBe("sh.xaq.listen.default");
     expect(plist).toContain("<string>sh.xaq.listen.default</string>");
     expect(plist).toContain("<string>/opt/a&amp;b/cli.js</string>");
     expect(plist).toContain("<key>SuccessfulExit</key><false/>");
-    expect(plist).toContain("<string>--profile</string>\n    <string>default</string>");
+    expect(plist).toContain("<string>listen</string>\n  </array>");
   });
 });

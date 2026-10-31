@@ -36,12 +36,11 @@ describe("xaq CLI (subprocess)", () => {
     expect(await run.exit).toBe(0);
     const out = run.output();
     expect(out).toContain("K7QM-2XPD");
-    // Hermes forwards to its gateway: connect says to create the route first, and where the result goes.
-    expect(out).toContain("npx xaq-cli listen hermes --deliver telegram --run");
-    expect(out).toContain("http://127.0.0.1:8644/webhooks/xaq");
-    expect(out).toContain("npx xaq-cli listen --save --recipe hermes");
+    // Not Claude Code: the agent runs from the user's own script, and its MCP client is pointed by hand.
+    expect(out).toContain("npx xaq-cli listen --exec /path/to/handle-email.sh");
+    expect(out).toContain(`MCP endpoint (streamable HTTP): ${api.url}/mcp`);
     expect(out).not.toContain("$(");
-    expect(out).toContain("npx xaq-cli listen service install");
+    expect(out).toContain("npx xaq-cli listen service install --exec /path/to/handle-email.sh");
     expect(out).not.toContain(FAKE_KEY);
   }, 30_000);
 
@@ -56,41 +55,25 @@ describe("xaq CLI (subprocess)", () => {
     expect(text).not.toContain(FAKE_KEY);
     expect(statSync(log).mode & 0o777).toBe(0o600);
 
-    const recipe = cli(["listen", "--print-recipe", "claude-code"], xdg);
-    expect(await recipe.exit).toBe(0);
-    expect(recipe.output().trim()).toContain(`--mcp-config '${join(xdg.XDG_CONFIG_HOME!, "xaq", "mcp", "default.claude.json")}'`);
   }, 30_000);
 
   it("listen --recipe rejects unknown tools and --exec alongside it, before connecting", async () => {
-    saveProfile("default", { url: api.url, apiKey: FAKE_KEY, agentId: "agt_1", agentName: "t", consumer: "c" });
+    saveProfile({ url: api.url, apiKey: FAKE_KEY, agentId: "agt_1", agentName: "t", consumer: "c" });
     const bad = cli(["listen", "--recipe", "vim"], xdg);
     expect(await bad.exit).toBe(1);
-    expect(bad.output()).toContain('Unknown --recipe "vim". Built-in recipes: claude-code, codex, cursor, hermes, hermes-oneshot.');
+    expect(bad.output()).toContain('Unknown --recipe "vim". The built-in recipe is claude-code');
     const both = cli(["listen", "service", "install", "--recipe", "claude-code", "--exec", "cat"], xdg);
     expect(await both.exit).toBe(1);
     expect(both.output()).toContain("--recipe and --exec can't be combined");
     // Without a target, the service install points at --recipe first.
     const none = cli(["listen", "service", "install"], xdg);
     expect(await none.exit).toBe(1);
-    expect(none.output()).toContain("Nothing for the service to run. Pass --recipe <name> (claude-code, codex, cursor, hermes, hermes-oneshot)");
+    expect(none.output()).toContain("Nothing for the service to run. Pass --recipe claude-code or --exec");
     expect(api.live.size).toBe(0);
   }, 30_000);
 
-  it("--print-recipe validates the profile name before putting it into a command", async () => {
-    const bad = cli(["listen", "--print-recipe", "hermes-oneshot", "--profile", "x$(touch /tmp/aib-recipe-pwn)"], xdg);
-    expect(await bad.exit).toBe(1);
-    expect(bad.output()).toContain("Invalid profile name");
-    expect(bad.output()).not.toContain("hermes chat");
-    const ok = cli(["listen", "--print-recipe", "hermes-oneshot", "--profile", "work"], xdg);
-    expect(await ok.exit).toBe(0);
-    expect(ok.output()).toContain("-t mcp-xaq-work --query-file -");
-    const fwd = cli(["listen", "--print-recipe", "hermes", "--profile", "work"], xdg);
-    expect(await fwd.exit).toBe(0);
-    expect(fwd.output().trim()).toBe("http://127.0.0.1:8644/webhooks/xaq-work");
-  }, 30_000);
-
   it("listen exits 78 when access is revoked, so services don't restart-loop", async () => {
-    saveProfile("default", { url: api.url, apiKey: FAKE_KEY, agentId: "agt_1", agentName: "t", consumer: "c", exec: "cat > /dev/null" });
+    saveProfile({ url: api.url, apiKey: FAKE_KEY, agentId: "agt_1", agentName: "t", consumer: "c", exec: "cat > /dev/null" });
     const run = cli(["listen"], xdg);
     await waitFor(() => api.live.size === 1, 15_000, "stream");
     api.publish(makeEvent(1));
@@ -108,8 +91,8 @@ describe("xaq CLI (subprocess)", () => {
   }, 30_000);
 
   it("listen stops cleanly on SIGTERM", async () => {
-    saveProfile("default", { url: api.url, apiKey: FAKE_KEY, agentId: "agt_1", agentName: "t", consumer: "c", exec: "cat > /dev/null" });
-    const run = cli(["listen", "--types", "message.received"], xdg);
+    saveProfile({ url: api.url, apiKey: FAKE_KEY, agentId: "agt_1", agentName: "t", consumer: "c", exec: "cat > /dev/null" });
+    const run = cli(["listen", "--exec", "cat > /dev/null", "--types", "message.received"], xdg);
     await waitFor(() => api.live.size === 1, 15_000, "stream");
     run.child.kill("SIGTERM");
     expect(await run.exit).toBe(0);
@@ -117,7 +100,7 @@ describe("xaq CLI (subprocess)", () => {
   }, 30_000);
 
   it("listen without a target explains what to pass", async () => {
-    saveProfile("default", { url: api.url, apiKey: FAKE_KEY, agentId: "agt_1", agentName: "t", consumer: "c" });
+    saveProfile({ url: api.url, apiKey: FAKE_KEY, agentId: "agt_1", agentName: "t", consumer: "c" });
     const run = cli(["listen"], xdg);
     expect(await run.exit).toBe(1);
     expect(run.output()).toContain("--exec");

@@ -7,10 +7,9 @@ import { accessProblem, newestGrantedSeq, newestVisibleSeq } from "../server/age
 import { summarizeEvent } from "../server/calendar/summary.ts";
 import type { CalendarService } from "../server/calendar/types.ts";
 import type { StoredEvent } from "../server/events/types.ts";
-import { batchEnv, commandInput, eventEnv, skipReason } from "../server/listen/event.ts";
-import { wrappedBody } from "../server/listen/forward.ts";
+import { commandInput, eventEnv, skipReason } from "../server/listen/event.ts";
 import { parseTypes, resolveListen } from "../server/listen/options.ts";
-import { HERMES_ROUTE_PROMPT, STDIN_PROMPT } from "../server/listen/recipes.ts";
+import { STDIN_PROMPT } from "../server/listen/recipes.ts";
 import { matchesFilter, normalizeFilter, webhookFilterSchema } from "../server/webhooks/filter.ts";
 import { buildPayload, scopeBodyCheck } from "../server/webhooks/payload.ts";
 import { testContext } from "./helpers.ts";
@@ -192,12 +191,9 @@ describe("listener input for calendar events", () => {
     expect([ce.id, ce.calendarId, ce.start]).toEqual([e.id, e.calendarId, e.start]);
   });
 
-  it("wraps the description as unknown when there is no organizer, and forwards the same form to Hermes", () => {
+  it("wraps the description as unknown when there is no organizer", () => {
     const { event } = commandInput(payload(calEvent(ME, { organizer: null }), { content: description("x") }));
     expect(event.data.content!.body.startsWith('<calendar_content organizer="unknown" untrusted>')).toBe(true);
-    const wrapped = JSON.parse(wrappedBody(payload(calEvent(), { content: description("Agenda") })));
-    expect(wrapped).toMatchObject({ type: "calendar.invitation_received", notice: expect.stringMatching(/invitation/) });
-    expect(wrapped.event.data.content.body).toMatch(/^<calendar_content organizer="bob@partner\.com" untrusted>/);
   });
 
   it("puts the calendar and event ids in the environment, never the title", () => {
@@ -205,29 +201,22 @@ describe("listener input for calendar events", () => {
     expect(env).toMatchObject({ XAQ_EVENT_TYPE: "calendar.invitation_received", XAQ_CALENDAR_ID: ME, XAQ_CALENDAR_EVENT_ID: "ev1" });
     expect(env).not.toHaveProperty("XAQ_MESSAGE_ID");
     expect(JSON.stringify(env)).not.toContain("Quarterly");
-    expect(batchEnv([payload()])).toMatchObject({ XAQ_CALENDAR_EVENT_ID: "ev1", XAQ_EVENT_COUNT: "1" });
   });
 
   it("--types takes the calendar types; mail-only skips let calendar events through", () => {
     expect(parseTypes("message.received,calendar.invitation_received")).toEqual(["message.received", "calendar.invitation_received"]);
     expect(parseTypes("all")).toContain("calendar.event_cancelled");
     const base = { url: "https://x", apiKey: "k", agentId: "a", agentName: "n", consumer: "c", exec: "run" };
-    const c = resolveListen("default", base, { types: "calendar.invitation_received", notFrom: ["*@partner.com"], notLabel: ["CATEGORY_PROMOTIONS"] }).config;
+    const c = resolveListen(base, { types: "calendar.invitation_received", notFrom: ["*@partner.com"] }).config;
     expect(c.skipCategories.length).toBeGreaterThan(0);
     expect(skipReason(payload(), c)).toBeNull();
-    // The include filter applies, with calendar meanings.
-    const f = resolveListen("default", base, { types: "all", from: ["*@partner.com"], subject: "planning" }).config;
-    expect(skipReason(payload(), f)).toBeNull();
-    expect(skipReason(payload(calEvent(ME, { summary: "Standup" })), f)).toBe("filter");
-    expect(skipReason(payload(), resolveListen("default", base, {}).config)).toBe("type calendar.invitation_received");
+    expect(skipReason(payload(), resolveListen(base, {}).config)).toBe("type calendar.invitation_received");
   });
 
-  it("recipe prompts mention calendar invitations as untrusted", () => {
-    for (const p of [STDIN_PROMPT, HERMES_ROUTE_PROMPT]) {
-      expect(p).toMatch(/calendar/);
-      expect(p).toMatch(/untrusted/);
-      // They sit inside "…" in shell commands.
-      expect(p).not.toMatch(/["$`\\]/);
-    }
+  it("the recipe prompt mentions calendar invitations as untrusted", () => {
+    expect(STDIN_PROMPT).toMatch(/calendar/);
+    expect(STDIN_PROMPT).toMatch(/untrusted/);
+    // It sits inside "…" in a shell command.
+    expect(STDIN_PROMPT).not.toMatch(/["$`\\]/);
   });
 });

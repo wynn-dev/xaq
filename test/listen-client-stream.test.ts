@@ -23,7 +23,7 @@ beforeEach(async () => {
   output = "";
   vi.spyOn(process.stdout, "write").mockImplementation((c: unknown) => ((output += String(c)), true));
   vi.spyOn(process.stderr, "write").mockImplementation((c: unknown) => ((output += String(c)), true));
-  saveProfile("default", {
+  saveProfile({
     url: api.url,
     apiKey: FAKE_KEY,
     agentId: "agt_1",
@@ -78,7 +78,7 @@ describe("listen stream", () => {
     expect(handled().sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     l.stop();
     expect(await l.done).toBe(EXIT.ok);
-    const st = readStatus("default")!;
+    const st = readStatus()!;
     expect(st).toMatchObject({ ackedSeq: 7, receivedSeq: 7, connected: false, exitReason: "stopped" });
     expect(output).toContain("Connected");
     expect(output).toContain("Disconnected");
@@ -101,7 +101,7 @@ describe("listen stream", () => {
     expect(await l.done).toBe(EXIT.revoked);
     expect(output).toContain("Access revoked: This agent's API key was replaced (rotated)");
     expect(output).toContain("connect");
-    expect(readStatus("default")!.exitReason).toMatch(/revoked/);
+    expect(readStatus()!.exitReason).toMatch(/revoked/);
   });
 
   it("exits with the revoked code when the key is rejected (401)", async () => {
@@ -114,7 +114,7 @@ describe("listen stream", () => {
   it("passes types and include_body to the daemon and keeps the server cursor in charge", async () => {
     api.acked = 5;
     for (const s of [3, 4, 5, 6]) api.events.push(makeEvent(s));
-    const l = start({ flags: { types: "message.received,label.added", includeBody: true } });
+    const l = start({ flags: { exec: `printf '%s\\n' "$XAQ_EVENT_SEQ" >> "$LISTEN_TEST_OUT"`, types: "message.received,label.added", includeBody: true } });
     await waitFor(() => handled().length === 1, 5000, "event after the cursor");
     expect(handled()).toEqual([6]);
     expect(api.streamRequests[0]).toMatchObject({ types: "message.received,label.added", includeBody: "1" });

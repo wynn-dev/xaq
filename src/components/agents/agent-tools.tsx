@@ -9,7 +9,7 @@ import { useAgentOrigin, useMcpActivity } from "./agent-status";
 import { lastCallShown } from "./last-call";
 import { Command } from "./command";
 import { ConnectSnippets } from "./connect-snippets";
-import { ProfileHint, ToolTabs, toolName, usePublicUrl } from "./connect-agent-guide";
+import { ToolTabs, toolName, usePublicUrl } from "./connect-agent-guide";
 import { TestConnection } from "./test-connection";
 import { explainReason } from "@/lib/labels";
 
@@ -71,7 +71,7 @@ function PairedTools({ agent, initialTool }: { agent: Agent; initialTool: AgentT
         <McpStatus agent={agent} label={initialTool ? toolName(initialTool) : "the agent"} />
         <div className="space-y-3">
           <ToolTabs value={tool} onChange={setTool} />
-          {tool === "other" ? (
+          {!c.setupMcp ? (
             <p className="text-sm text-muted-foreground">
               Point your agent's MCP client at <code className="font-mono break-all text-foreground">{publicUrl}/mcp</code> with the header{" "}
               <code className="font-mono text-foreground">Authorization: Bearer &lt;key&gt;</code>. The key is the "apiKey" field in{" "}
@@ -90,9 +90,6 @@ function PairedTools({ agent, initialTool }: { agent: Agent; initialTool: AgentT
                   <span className="font-mono text-foreground">xaq</span>.
                 </p>
               )}
-              <p className="text-xs text-muted-foreground">
-                <ProfileHint />
-              </p>
             </>
           )}
           <p className="text-sm text-muted-foreground">Teach it the rules with the xaq skill:</p>

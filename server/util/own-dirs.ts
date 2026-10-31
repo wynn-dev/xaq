@@ -10,10 +10,10 @@
 // Nothing here reads these files; paths are computed from the environment.
 
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { LEGACY_PRODUCT, PRODUCT } from "../brand.ts";
 import { legacyDataDir, newDataDir } from "../config.ts";
-import { claudeConfigFile, codexConfigFile, cursorConfigFile } from "../listen/mcpsetup.ts";
+import { claudeConfigFile } from "../listen/mcpsetup.ts";
 
 /** Case-insensitive file systems (macOS, Windows by default): paths are compared lower-cased there. */
 const FOLD = process.platform === "darwin" || process.platform === "win32";
@@ -65,6 +65,7 @@ export function protectedPaths(dataDir: string, env: NodeJS.ProcessEnv = process
   const configHome = xdgEnv(env, "XDG_CONFIG_HOME");
   const hermesRoot = env.HERMES_HOME?.trim() ? resolve(env.HERMES_HOME.trim().replace(/^~(?=\/|$)/, home)) : h(`.hermes${env.HERMES_DATA_DIR_SUFFIX ?? ""}`);
   const claudeDir = env.CLAUDE_CONFIG_DIR?.trim() ? resolve(env.CLAUDE_CONFIG_DIR.trim()) : null;
+  const codexDir = env.CODEX_HOME || h(".codex");
   const dirs = [
     ...ownDirs(dataDir, env),
     // Service files: launchd agents (all of them: their EnvironmentVariables may hold secrets), systemd units.
@@ -73,10 +74,10 @@ export function protectedPaths(dataDir: string, env: NodeJS.ProcessEnv = process
     ...(configHome ? [join(configHome, "systemd", "user")] : []),
     "/etc/systemd/system",
     "/Library/LaunchDaemons",
-    // Agent tools whose configs `setup-mcp` writes (they also keep their own credentials there).
-    dirname(codexConfigFile()),
+    // Agent tools that keep MCP keys and their own credentials there.
+    codexDir,
     h(".codex"),
-    dirname(cursorConfigFile()),
+    h(".cursor"),
     hermesRoot,
     h(".hermes"),
     h(".claude"),
@@ -92,8 +93,8 @@ export function protectedPaths(dataDir: string, env: NodeJS.ProcessEnv = process
     h(".docker"),
   ];
   const files = [
-    codexConfigFile(),
-    cursorConfigFile(),
+    join(codexDir, "config.toml"),
+    h(".cursor", "mcp.json"),
     claudeConfigFile(),
     h(".claude.json"),
     join(hermesRoot, "config.yaml"),

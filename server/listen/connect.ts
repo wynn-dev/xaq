@@ -7,10 +7,10 @@ import { ApiError, clientInfo, getSelf, pollPairing, startPairing } from "./api.
 import { describeGrants, hasAccess } from "./grants.ts";
 import { writeClaudeMcpConfig } from "./mcpheader.ts";
 import { isServiceInstalled } from "./service.ts";
-import { setupMcp, mcpTarget, type McpSetupResult } from "./mcpsetup.ts";
-import { defaultConsumer, validConsumer } from "./options.ts";
-import { DEFAULT_PROFILE, profilePath, validProfileName } from "./paths.ts";
-import { listProfiles, loadProfile, type Profile, profileExists, saveProfile } from "./profile.ts";
+import { manualSteps, setupMcp, type McpSetupResult } from "./mcpsetup.ts";
+import { defaultConsumer } from "./options.ts";
+import { profilePath } from "./paths.ts";
+import { loadProfile, type Profile, profileExists, saveProfile } from "./profile.ts";
 import { recipe, shellQuote, TOOL_LABELS, TOOLS } from "./recipes.ts";
 import { checkTransport, insecureBanner, normalizeDaemonUrl } from "./transport.ts";
 import { box, formatDuration, safeText, StatusLine } from "./ui.ts";
@@ -22,8 +22,6 @@ export interface ConnectFlags {
   account?: string[];
   capabilities?: string;
   reason?: string;
-  profile?: string;
-  consumer?: string;
   insecure?: boolean;
   force?: boolean;
   setupMcp?: boolean;
@@ -124,33 +122,28 @@ async function connect(rawUrl: string, flags: ConnectFlags, opts: ConnectOptions
   const verdict = await checkTransport(url, { insecure: flags.insecure });
   if (verdict.warning) err(insecureBanner(verdict.warning));
 
-  const profileName = validProfileName(flags.profile ?? DEFAULT_PROFILE);
   let replacing: Profile | null = null;
-  if (profileExists(profileName) && flags.force) {
+  if (profileExists() && flags.force) {
     try {
-      replacing = loadProfile(profileName);
+      replacing = loadProfile();
     } catch {
       // Unreadable: it's being replaced anyway.
     }
   }
-  if (profileExists(profileName) && !flags.force) {
+  if (profileExists() && !flags.force) {
     let who = "";
     try {
-      const p = loadProfile(profileName);
+      const p = loadProfile();
       who = ` (agent "${safeText(p.agentName)}" on ${p.url})`;
     } catch {
       // Unreadable: still don't overwrite silently.
     }
-    const others = listProfiles();
-    throw new Error(
-      `Profile "${profileName}" already exists${who}.\n` +
-        `  Pair a second agent with --profile <name>${others.length > 1 ? ` (existing: ${others.join(", ")})` : ""}, or replace this one with --force.`,
-    );
+    throw new Error(`This machine is already paired${who}. Replace the pairing with --force.`);
   }
   const tool = parseTool(flags.tool);
   const capabilities = parseCapabilities(flags.capabilities);
   // --force keeps the listener's consumer, so the server-side cursor carries on (no replay, no gap).
-  const consumer = validConsumer(flags.consumer ?? replacing?.consumer ?? defaultConsumer(profileName));
+  const consumer = replacing?.consumer ?? defaultConsumer();
   const name = (flags.name?.trim() || `${tool === "other" ? "Agent" : TOOL_LABELS[tool]} on ${shortHost()}`).slice(0, 80);
 
   const input: PairingStartInput = {
@@ -271,21 +264,9 @@ async function connect(rawUrl: string, flags: ConnectFlags, opts: ConnectOptions
       throw new Error(`Unexpected pairing status ${JSON.stringify((result as { status: unknown }).status)}`);
   }
 
-  // --force keeps everything about the listener (targets, filters, limits, forward secret, cwd); only
-  // the pairing (daemon, key, agent) is replaced.
+  // --force keeps the listener settings; only the pairing (daemon, key, agent) is replaced.
   const kept: Partial<Profile> = replacing
-    ? {
-        types: replacing.types,
-        filter: replacing.filter,
-        includeBody: replacing.includeBody,
-        exec: replacing.exec,
-        forward: replacing.forward,
-        forwardSecret: replacing.forwardSecret,
-        concurrency: replacing.concurrency,
-        timeoutSeconds: replacing.timeoutSeconds,
-        maxAttempts: replacing.maxAttempts,
-        cwd: replacing.cwd,
-      }
+    ? { exec: replacing.exec, types: replacing.types, notFrom: replacing.notFrom, allCategories: replacing.allCategories, includeBody: replacing.includeBody }
     : {};
   const profile: Profile = {
     ...kept,
@@ -302,8 +283,8 @@ async function connect(rawUrl: string, flags: ConnectFlags, opts: ConnectOptions
     skillUrl: `${url}/skill.md`,
     createdAt: new Date().toISOString(),
   };
-  const path = saveProfile(profileName, profile);
-  writeClaudeMcpConfig(profileName, profile.mcpUrl!);
+  const path = saveProfile(profile);
+  writeClaudeMcpConfig(profile.mcpUrl!);
   if (typeof result.mcpUrl === "string" && result.mcpUrl !== profile.mcpUrl) {
     err(
       pc.yellow(
@@ -314,26 +295,24 @@ async function connect(rawUrl: string, flags: ConnectFlags, opts: ConnectOptions
 
   out(`${pc.green("✔")} Approved. Agent ${pc.bold(safeText(result.agent.name))} ${pc.gray(`(${result.agent.id})`)} is connected.`);
   out(`  Key saved to ${pc.cyan(path)} ${pc.gray("(mode 0600; never displayed. Rotate it in the console if it leaks.)")}`);
-  if (replacing && (replacing.exec || replacing.forward)) {
-    out(`  Kept this profile's listener settings. Restart the listener to use the new key${isServiceInstalled(profileName) ? `: ${NPX} listen service install${profileName === DEFAULT_PROFILE ? "" : ` --profile ${profileName}`}` : "."}`);
-  }
+  if (replacing?.exec) out(`  Kept the listener settings. Restart the listener to use the new key${isServiceInstalled() ? `: ${NPX} listen service install` : "."}`);
   if (replacing && replacing.agentId !== profile.agentId) {
     err(
       pc.yellow(
-        `! Replaced profile "${profileName}" (agent "${safeText(replacing.agentName)}", ${replacing.agentId}). Its key still works until you rotate it or delete that agent in the console; config backups made by setup-mcp (*.xaq-backup-*, or *.agentinbox-backup-* from before the rename) may contain it.`, // rename-xaq: keep
+        `! Replaced the pairing with agent "${safeText(replacing.agentName)}" (${replacing.agentId}). Its key still works until you rotate it or delete that agent in the console.`,
       ),
     );
   }
 
-  const access = await printGrants(url, profile.apiKey, profileName);
+  const access = await printGrants(url, profile.apiKey);
 
   let mcp: McpSetupResult | null = null;
   if (flags.setupMcp) {
-    mcp = setupMcp(tool, mcpTarget(profileName, profile), path);
+    mcp = setupMcp(tool, profile, path);
     printMcpResult(mcp);
   }
   // Mail-only steps (the listener's mail wording, the test email) only when it has a mailbox; unknown = as before.
-  printNextSteps(profileName, profile, tool, mcp, { mail: access ? access.grants.length > 0 : true });
+  printNextSteps(profile, tool, mcp, { mail: access ? access.grants.length > 0 : true });
   return CONNECT_EXIT.approved;
 }
 
@@ -358,15 +337,14 @@ export function approveLinks(url: string, start: Pick<PairingStart, "verificatio
 }
 
 /** What the approver actually granted, in plain words (the console's choice decides, not the request). Null when unreadable. */
-async function printGrants(url: string, key: string, profileName: string): Promise<AgentSelf | null> {
-  const p = profileName === DEFAULT_PROFILE ? "" : ` --profile ${profileName}`;
+async function printGrants(url: string, key: string): Promise<AgentSelf | null> {
   try {
     const self = await getSelf(url, key, 8000);
     out(`  ${pc.bold("Access granted")} ${pc.gray("(chosen by whoever approved it; change it in the console under Agents):")}`);
     for (const line of describeGrants(self.grants, self.connections)) out(`    ${hasAccess(self) ? line : pc.yellow(line)}`);
     return self;
   } catch (e) {
-    err(pc.yellow(`! Couldn't read this agent's access yet (${e instanceof Error ? e.message.split("\n")[0] : String(e)}). Check it with: ${NPX} listen status${p}`));
+    err(pc.yellow(`! Couldn't read this agent's access yet (${e instanceof Error ? e.message.split("\n")[0] : String(e)}). Check it with: ${NPX} listen status`));
     return null;
   }
 }
@@ -403,63 +381,47 @@ function skillCommand(tool: AgentTool, url: string): string {
   }
 }
 
-/** `listen hermes … --run`: creates the Hermes route (the console shows the same command). */
-export const hermesRouteCommand = (profileName: string) => `${NPX} listen hermes${profileName === DEFAULT_PROFILE ? "" : ` --profile ${profileName}`} --deliver telegram --run`;
-
-export function printNextSteps(profileName: string, profile: Profile, tool: AgentTool, mcp: McpSetupResult | null, o: { mail?: boolean } = {}): void {
+export function printNextSteps(profile: Profile, tool: AgentTool, mcp: McpSetupResult | null, o: { mail?: boolean } = {}): void {
   const mail = o.mail !== false;
-  const p = profileName === DEFAULT_PROFILE ? "" : ` --profile ${profileName}`;
+  const claude = tool === "claude-code";
   const label = tool === "other" ? "your agent" : TOOL_LABELS[tool];
-  const r = recipe(tool, profileName);
-  // Known tools use --recipe: no `$(…)` for npx's install prompt to hide in, and the command stays the CLI's own.
-  const target = tool === "other" ? `--exec ${shellQuote(r.exec!)}` : `--recipe ${tool}`;
+  const r = recipe(tool);
+  // Claude Code uses --recipe: no `$(…)` for npx's install prompt to hide in, and the command stays the CLI's own.
+  const target = claude ? "--recipe claude-code" : `--exec ${shellQuote(r.exec)}`;
   out();
   out(pc.bold("Next steps"));
   let n = 1;
   if (mcp?.ok) {
     out(`  ${n++}. ${label} has the xaq MCP tools ${pc.gray(`(restart it if it's running)`)}.`);
-  } else if (tool === "other") {
-    out(`  ${n++}. Point your agent's MCP client at ${pc.cyan(profile.mcpUrl ?? `${profile.url}/mcp`)} with header Authorization: Bearer <key>`);
-    out(pc.gray(`     The key is the "apiKey" field in ${profilePath(profileName)}.`));
-  } else {
+  } else if (claude) {
     out(`  ${n++}. Give ${label} the xaq MCP tools without ever seeing the key:`);
-    out(`       ${pc.cyan(`${NPX} setup-mcp --tool ${tool}${p}`)}  ${pc.gray("(add --dry-run to see exactly what it changes first)")}`);
+    out(`       ${pc.cyan(`${NPX} setup-mcp`)}  ${pc.gray("(add --dry-run to see exactly what it changes first)")}`);
+  } else {
+    out(`  ${n++}. Point ${label}'s MCP client at the xaq tools:`);
+    for (const l of manualSteps(profile.mcpUrl ?? `${profile.url}/mcp`, profilePath())) out(pc.gray(`     ${l}`));
   }
   out(`  ${n++}. Install the xaq skill so ${label} knows the rules:`);
   out(`       ${pc.cyan(skillCommand(tool, profile.url))}`);
-  if (tool === "hermes") {
-    out(`  ${n++}. Create the Hermes gateway route the listener forwards to, saying where Hermes should tell you (once; needs the gateway's webhook platform on):`);
-    out(`       ${pc.cyan(hermesRouteCommand(profileName))}`);
-    out(pc.gray(`     Or --deliver discord|slack|…, or --deliver-chat-id <id>. It sets the listener's secret without showing it and limits the route to the xaq tools.`));
-  }
   if (mail) {
-    out(`  ${n++}. Wake ${label} when mail arrives. First try it in the foreground (Ctrl-C stops it; --save keeps the command in the profile):`);
-    out(`       ${pc.cyan(`${NPX} listen${p} --save ${target}`)}`);
+    out(`  ${n++}. Wake ${label} when mail arrives. First try it in the foreground (Ctrl-C stops it):`);
+    out(`       ${pc.cyan(`${NPX} listen ${target}`)}`);
     out(pc.gray(`     Only new mail wakes it (message.received), not mail you send. Change it with --types, e.g. --types thread.reply_received (only replies to threads you sent) or --types all.`));
-    out(pc.gray(`     Gmail's Promotions, Social and Forums tabs are skipped (--all-categories to include them); skip more with --not-from '*@github.com'. --batch 60s runs a burst of mail once.`));
+    out(pc.gray(`     Gmail's Promotions, Social and Forums tabs are skipped (--all-categories to include them); skip more with --not-from '*@github.com'.`));
   } else {
-    // No mailbox: its connections' events (an approval waiting, a connection that needs reconnecting).
-    out(`  ${n++}. Wake ${label} when one of its connections needs it. First try it in the foreground (Ctrl-C stops it; --save keeps the command in the profile):`);
-    out(`       ${pc.cyan(`${NPX} listen${p} --save ${target} --types approval.requested,connection.auth_failed,connection.expiring`)}`);
+    // No mailbox: its connections' events (a connection that needs reconnecting).
+    out(`  ${n++}. Wake ${label} when one of its connections needs it. First try it in the foreground (Ctrl-C stops it):`);
+    out(`       ${pc.cyan(`${NPX} listen ${target} --types connection.auth_failed,connection.expiring`)}`);
     out(pc.gray(`     Add an integration's own events too (<extension>.<event>, if it emits any).`));
   }
   out(pc.gray(`     What the woken agent can use: ${r.confinement}.`));
   out(pc.gray(`     Where its output goes: ${r.output}`));
-  for (const note of r.notes.filter((x) => tool !== "hermes" || !x.startsWith("Create the Hermes route"))) out(pc.gray(`     ${note}`));
-  if (tool !== "other") {
-    out(pc.gray(`     It runs: ${r.runs}`));
-    if (r.exec) out(pc.gray(`     To change it: ${NPX} listen${p} --print-recipe ${tool} prints it; pass your edit with --exec '…' instead of --recipe.`));
-  }
+  for (const note of r.notes) out(pc.gray(`     ${note}`));
   if (mail) {
     out(`  ${n++}. Check that it works: in the console's setup, the "Check that it works" step sends a test email.`);
-    out(
-      `     Watch it arrive in the foreground listener as ${pc.cyan("→ #… message.received")} followed by one ${pc.green("✓")} line once ${
-        tool === "hermes" ? "Hermes accepted it (Hermes then triages it and tells you if it matters)" : `${label} handled it`
-      }.`,
-    );
+    out(`     Watch it arrive in the foreground listener as ${pc.cyan("→ #… message.received")} followed by one ${pc.green("✓")} line once ${label} handled it.`);
   }
-  out(`  ${n++}. Then keep it running in the background (systemd / launchd, starts at login; stop the foreground one first):`);
-  out(`       ${pc.cyan(`${NPX} listen service install${p}`)}`);
-  out(`       ${pc.cyan(`${NPX} listen status${p}`)}  ${pc.gray("(connection, cursor, recent events and the access granted)")}`);
+  out(`  ${n++}. Then keep it running in the background (systemd / launchd, starts at login; stop the foreground one first; saves the flags):`);
+  out(`       ${pc.cyan(`${NPX} listen service install ${target}`)}`);
+  out(`       ${pc.cyan(`${NPX} listen status`)}  ${pc.gray("(connection, cursor, recent events and the access granted)")}`);
   out();
 }

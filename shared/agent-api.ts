@@ -28,7 +28,7 @@
 // the API key generated; it is handed to the polling CLI exactly once and written to a 0600 file.
 // Codes are short-lived and single-use; requests, approvals, denials, expiry and key delivery are audited.
 
-import type { CalendarWriteMode, Capability, EventType, SendMode, WebhookFilter } from "./types.ts";
+import type { CalendarWriteMode, Capability, SendMode } from "./types.ts";
 
 export type AgentTool = "claude-code" | "codex" | "cursor" | "hermes" | "other";
 
@@ -113,26 +113,4 @@ export interface AgentSelf {
   skillUrl: string;
   /** Newest event seq this agent can see: where a new consumer starts ("from now on"). */
   headSeq: number;
-}
-
-/** Listener config file (written by `connect`, read by `listen`; mode 0600). */
-export interface ListenerConfig {
-  url: string;
-  apiKey: string;
-  agentId: string;
-  agentName: string;
-  /** Consumer name for the server-side cursor; one per listener. */
-  consumer: string;
-  /** Allow plain http to a non-loopback, non-Tailscale host (loud warning). */
-  insecure?: boolean;
-  types?: EventType[];
-  filter?: WebhookFilter;
-  includeBody?: boolean;
-  /** Command mode: run through the shell as a fixed string; the event goes to stdin/env/file only. */
-  exec?: string;
-  /** Localhost POST mode: signed per Standard Webhooks with `secret`. */
-  forward?: { url: string; secret: string };
-  concurrency?: number;
-  timeoutSeconds?: number;
-  maxAttempts?: number;
 }

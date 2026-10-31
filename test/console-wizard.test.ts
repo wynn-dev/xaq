@@ -6,7 +6,6 @@ import type { AgentTool } from "../shared/agent-api.ts";
 import { type AuditEntry, isMcpToolAction, type ListenerInfo, type MailEvent, type PairingRequest, type SetupState } from "../shared/types.ts";
 import { printNextSteps } from "../server/listen/connect.ts";
 import type { Profile } from "../server/listen/profile.ts";
-import { recipe } from "../server/listen/recipes.ts";
 import { grantInWords } from "../src/components/agents/grant-words.ts";
 import { deniedDescription, linkedPairing } from "../src/components/approvals/pairing-link.ts";
 import { listenerHandled } from "../src/components/agents/listener-handled.ts";
@@ -247,7 +246,7 @@ function nextSteps(tool: AgentTool, url: string): string[] {
   });
   try {
     const profile = { url, apiKey: "aib_test", agentId: "agt_1", agentName: "a", consumer: "host-default", mcpUrl: `${url}/mcp` } as unknown as Profile;
-    printNextSteps("default", profile, tool, null);
+    printNextSteps(profile, tool, null);
   } finally {
     spy.mockRestore();
   }
@@ -264,37 +263,41 @@ describe("connectCommands matches what `connect` prints", () => {
     expect(nextSteps(tool, URL_)).toContain(connectCommands(URL_, tool).skillInstall);
   });
 
-  it.each(known)("setup-mcp, listen try and service for %s", (tool) => {
-    const c = connectCommands(URL_, tool);
-    const cli = nextSteps(tool, URL_);
+  it("setup-mcp, listen try and service for claude-code", () => {
+    const c = connectCommands(URL_, "claude-code");
+    const cli = nextSteps("claude-code", URL_);
     // connect prints the command followed by a dry-run hint on the same line.
     expect(cli.some((l) => l === c.setupMcp || l.startsWith(`${c.setupMcp}  `))).toBe(true);
-    // Both name the CLI's built-in recipe: exactly the command connect prints, and connect shows what it runs.
-    expect(c.listenTry).toBe(`${NPX} listen --save --recipe ${tool}`);
+    // Both name the CLI's built-in recipe: exactly the commands connect prints.
+    expect(c.listenTry).toBe(`${NPX} listen --recipe claude-code`);
     expect(cli).toContain(c.listenTry);
-    expect(cli).toContain(`It runs: ${recipe(tool).runs}`);
-    // Hermes forwards to its gateway: both show the same route command first.
-    if (tool === "hermes") expect(cli).toContain(c.hermesRoute);
-    else expect(c.hermesRoute).toBeNull();
-    // connect prints the bare service install (after --save); the console repeats --recipe so it also works alone.
-    expect(cli).toContain(`${NPX} listen service install`);
-    expect(c.listenService).toBe(`${NPX} listen service install --recipe ${tool}`);
+    expect(c.listenService).toBe(`${NPX} listen service install --recipe claude-code`);
+    expect(cli).toContain(c.listenService);
     // Neither passes --types: listen's default (new mail only) applies, and connect says so.
     expect(c.listenTry).not.toContain("--types");
     expect(c.listenService).not.toContain("--types");
     expect(cli.some((l) => l.includes("Only new mail wakes it (message.received), not mail you send"))).toBe(true);
   });
 
+  it.each(known.filter((t) => t !== "claude-code"))("%s: no MCP setup command; listen runs the user's own script", (tool) => {
+    const c = connectCommands(URL_, tool);
+    expect(c.setupMcp).toBeNull();
+    expect(c.connect).toBe(`${NPX} connect ${URL_} --tool ${tool}`);
+    expect(c.listenService).toBe(`${NPX} listen service install --exec /path/to/handle-email.sh`);
+    expect(nextSteps(tool, URL_)).toContain(c.listenService);
+  });
+
   it.each([...known, "other" as const])("no %s command runs npx inside $(…), a pipe or a redirect (npx's install prompt would be swallowed)", (tool) => {
     const c = connectCommands("http://127.0.0.1:8425", tool);
-    const commands = [c.connect, c.setupMcp, c.skillInstall, c.listenTry, c.listenService, ...nextSteps(tool, URL_).filter((l) => l.startsWith(NPX))];
+    const commands = [c.connect, ...(c.setupMcp ? [c.setupMcp] : []), c.skillInstall, c.listenTry, c.listenService, ...nextSteps(tool, URL_).filter((l) => l.startsWith(NPX))];
     // Quoted arguments (e.g. --exec 'cat > /dev/null') are data for the CLI, not shell syntax around npx.
     for (const cmd of commands) expect(cmd.replace(/'[^']*'/g, "''"), cmd).not.toMatch(/\$\(|\||>/);
   });
 
   it("other: the service runs the same script connect suggests; the try command is a harmless test", () => {
     const c = connectCommands(URL_, "other");
-    expect(nextSteps("other", URL_)).toContain(c.listenService.replace("listen service install", "listen --save"));
+    expect(nextSteps("other", URL_)).toContain(c.listenService);
+    expect(nextSteps("other", URL_)).toContain(c.listenService.replace("listen service install", "listen"));
     expect(c.listenTry).toBe(`${NPX} listen --exec 'cat > /dev/null'`);
     expect(c.connect).toBe(`${NPX} connect ${URL_} --tool other`);
   });
@@ -308,7 +311,8 @@ describe("connectCommands matches what `connect` prints", () => {
   it("adds --insecure only after the explicit opt-in, and only for plain http off loopback/Tailscale", () => {
     expect(connectCommands("http://192.168.1.20:8425", "codex").connect).not.toContain("--insecure");
     expect(connectCommands("http://192.168.1.20:8425", "codex", true).connect).toContain("--insecure");
-    expect(connectCommands("http://192.168.1.20:8425", "codex", true).listenTry).toContain("--insecure");
+    // listen takes the transport choice from the pairing.
+    expect(connectCommands("http://192.168.1.20:8425", "codex", true).listenTry).not.toContain("--insecure");
     expect(connectCommands("http://127.0.0.1:8425", "codex", true).connect).not.toContain("--insecure");
   });
 });
