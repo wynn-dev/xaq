@@ -7,11 +7,9 @@ import { bool } from "../db/index.ts";
 import { GOOGLE_WORKSPACE_EXTENSION, workspaceConnectionAccount } from "./workspace-binding.ts";
 
 /**
- * True when `agentId` (enabled) has a grant on an enabled google-workspace connection bound to `accountId`, with
- * the broker's connections switched on (Settings.brokerUpstreams; off, connection grants give nothing).
+ * True when `agentId` (enabled) has a grant on an enabled google-workspace connection bound to `accountId`.
  */
-export function agentCanReadDrive(ctx: Pick<AppContext, "db" | "settings">, agentId: string, accountId: string): boolean {
-  if (!ctx.settings.get().brokerUpstreams) return false;
+export function agentCanReadDrive(ctx: Pick<AppContext, "db">, agentId: string, accountId: string): boolean {
   const rows = ctx.db.all<{ connection_id: string; disabled: number }>(
     `SELECT g.connection_id, a.disabled FROM connection_grants g
        JOIN connections c ON c.id = g.connection_id JOIN agents a ON a.id = g.agent_id

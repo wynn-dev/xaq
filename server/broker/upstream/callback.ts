@@ -10,14 +10,13 @@ import { CLIENT_METADATA_PATH, CONNECTION_CALLBACK_PATH, upstreams } from "./run
  * GET /oauth/connections/callback (unauthenticated, like Google's /oauth/callback, which it leaves alone):
  * finishes an upstream connection's sign-in and renders the shared result page, posting an
  * `agentinbox:connection-oauth` message to the console. GET /oauth/connections/client.json serves the client
- * ID metadata document. Both 404 while the brokerUpstreams setting is off.
+ * ID metadata document.
  */
 export function connectionOAuthRoutes(ctx: AppContext) {
   const r = router();
 
   r.get(CONNECTION_CALLBACK_PATH, async (c) => {
     const rt = upstreams(ctx);
-    if (!rt.enabled()) return c.notFound();
     const targetOrigin = ctx.config.dev ? "*" : new URL(ctx.settings.publicUrl()).origin;
     const q = new URL(c.req.url).searchParams;
     try {
@@ -56,7 +55,7 @@ export function connectionOAuthRoutes(ctx: AppContext) {
 
   r.get(CLIENT_METADATA_PATH, (c) => {
     const rt = upstreams(ctx);
-    if (!rt.enabled() || !ctx.settings.publicUrl().startsWith("https://")) return c.notFound();
+    if (!ctx.settings.publicUrl().startsWith("https://")) return c.notFound();
     c.header("Cache-Control", "public, max-age=3600");
     return c.json(rt.clientMetadataDocument());
   });

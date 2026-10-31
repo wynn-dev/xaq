@@ -1,5 +1,5 @@
 // /api/connections: the MCP broker's connections admin API (docs/MCP-BROKER.md, routes in shared/types.ts).
-// Console session + CSRF like every /api router (server/app.ts). 404 while Settings.brokerUpstreams is off.
+// Console session + CSRF like every /api router (server/app.ts).
 // Credentials never cross this boundary: a static header goes in through /connect and is never returned.
 
 import { z } from "zod";
@@ -123,14 +123,6 @@ export function connectionsApi(ctx: AppContext) {
   const approvals = new Approvals(ctx);
   const audit = (action: string, target: string, detail: Record<string, unknown> | null = null) =>
     ctx.audit.record({ ...ADMIN_ACTOR, action, target, outcome: "ok", detail });
-
-  // Everything here is the unreleased broker: invisible until the setting is on.
-  const gate = async (_c: unknown, next: () => Promise<void>) => {
-    if (!ctx.broker.enabled()) throw new HttpError(404, "not_found", "No such API route");
-    await next();
-  };
-  app.use("/connections", gate);
-  app.use("/connections/*", gate);
 
   const requireConnection = (id: string): Connection => {
     const c = getConnection(ctx, id);

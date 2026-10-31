@@ -12,36 +12,17 @@ import type {
 } from "../../shared/types.ts";
 import { AdminApiError, type AdminChannel } from "./admin.ts";
 
-/**
- * The admin connections API (server/api/connections.ts, DTOs in shared/types.ts) as the CLI uses it. While the
- * `brokerUpstreams` setting is off every /api/connections route answers 404; the CLI says so in plain words.
- */
+/** The admin connections API (server/api/connections.ts, DTOs in shared/types.ts) as the CLI uses it. */
 
 export type { ConnectionProbe, ConnectionView, PresetView, StartConnectResult };
-
-/** The routes aren't there: an older daemon, or brokerUpstreams is off. */
-export class BrokerOffError extends Error {
-  constructor() {
-    super(
-      "This xaq doesn't have connections turned on yet (the brokerUpstreams setting), or is older than this CLI. " +
-        "Update it, turn connections on in the console's Settings, then run this again.",
-    );
-    this.name = "BrokerOffError";
-  }
-}
 
 const enc = encodeURIComponent;
 
 export class ConnectionsApi {
   constructor(readonly channel: AdminChannel) {}
 
-  private async call<T>(method: string, path: string, body?: unknown): Promise<T> {
-    try {
-      return await this.channel.request<T>(method, path, body);
-    } catch (err) {
-      if (err instanceof AdminApiError && err.status === 404 && err.code === "not_found" && path.startsWith("/api/connections")) throw new BrokerOffError();
-      throw err;
-    }
+  private call<T>(method: string, path: string, body?: unknown): Promise<T> {
+    return this.channel.request<T>(method, path, body);
   }
 
   list(): Promise<ConnectionView[]> {

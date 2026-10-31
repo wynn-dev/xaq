@@ -15,17 +15,16 @@ export type RevokeReason = "agent_deleted" | "agent_disabled" | "key_rotated" | 
 
 /**
  * Why a live stream must end, or null while the key, agent and a read grant (mail or calendar) are all still valid.
- * With the broker on (`brokerOn`, the brokerUpstreams setting), any connection grant counts as a read grant too:
- * an agent with connections and no Gmail can listen for its connection events.
+ * Any connection grant counts as a read grant too: an agent with connections and no Gmail can listen for its connection events.
  */
-export function accessProblem(db: Db, agentId: string, keyHash: string, brokerOn = false): RevokeReason | null {
+export function accessProblem(db: Db, agentId: string, keyHash: string): RevokeReason | null {
   const a = db.get<{ key_hash: string; disabled: number }>("SELECT key_hash, disabled FROM agents WHERE id = ?", agentId);
   if (!a) return "agent_deleted";
   if (a.key_hash !== keyHash) return "key_rotated";
   if (bool(a.disabled)) return "agent_disabled";
   const grants = db.all<{ capabilities: string }>("SELECT capabilities FROM grants WHERE agent_id = ?", agentId);
   if (grants.some((g) => readsEvents(json.parse<string[]>(g.capabilities, [])))) return null;
-  if (visibleConnectionIds(db, brokerOn, agentId).length) return null;
+  if (visibleConnectionIds(db, agentId).length) return null;
   return "no_read_grant";
 }
 
@@ -102,7 +101,7 @@ export function newestGrantedSeq(ctx: AppContext, agentId: string): number {
     max = Math.max(max, r?.m ?? 0);
   }
   // Connection events (events.connection_id) of the connections it has a grant on.
-  for (const id of visibleConnectionIds(ctx.db, ctx.settings.get().brokerUpstreams, agentId)) {
+  for (const id of visibleConnectionIds(ctx.db, agentId)) {
     const r = ctx.db.get<{ m: number | null }>("SELECT MAX(seq) AS m FROM events WHERE connection_id = ? AND seq > 0", id);
     max = Math.max(max, r?.m ?? 0);
   }
@@ -119,7 +118,7 @@ export function newestVisibleSeq(ctx: AppContext, agentId: string): number {
     .grants(agentId)
     .filter((g) => readsEvents(g.capabilities))
     .map((g) => g.accountId);
-  const connections = visibleConnectionIds(ctx.db, ctx.settings.get().brokerUpstreams, agentId);
+  const connections = visibleConnectionIds(ctx.db, agentId);
   if (!accounts.length && !connections.length) return 0;
   const inList = (ids: string[]) => (ids.length ? ids.map(() => "?").join(", ") : "NULL");
   const sql = `${EVENT_SELECT} WHERE e.seq > 0 AND e.seq < ? AND (e.account_id IN (${inList(accounts)}) OR e.connection_id IN (${inList(connections)})) ORDER BY e.seq DESC LIMIT 200`;

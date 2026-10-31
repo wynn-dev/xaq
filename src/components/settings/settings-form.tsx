@@ -31,7 +31,6 @@ interface FormValues {
   webhookAllowlist: string[];
   attachmentDirs: string[];
   pairingEnabled: boolean;
-  brokerUpstreams: boolean;
   attachmentSaveDir: string;
 }
 
@@ -46,7 +45,6 @@ const toForm = (s: Settings): FormValues => ({
   webhookAllowlist: s.webhookAllowlist,
   attachmentDirs: s.attachmentDirs ?? [],
   pairingEnabled: s.pairingEnabled,
-  brokerUpstreams: s.brokerUpstreams,
   attachmentSaveDir: s.attachmentSaveDir,
 });
 
@@ -62,7 +60,6 @@ const fromForm = (v: FormValues): Settings => ({
   webhookAllowlist: v.webhookAllowlist,
   attachmentDirs: v.attachmentDirs,
   pairingEnabled: v.pairingEnabled,
-  brokerUpstreams: v.brokerUpstreams,
   attachmentSaveDir: v.attachmentSaveDir.trim(),
 });
 
@@ -301,33 +298,6 @@ export function SettingsForm({ settings, system }: { settings: Settings; system:
                     {field.state.value
                       ? "Requests wait under Approvals → Agent access. Nothing gets access until you approve the matching code and choose its permissions; the key goes straight to the agent's terminal."
                       : "Off: connect is refused. You can still create agents under Agents and paste their key yourself."}
-                  </FieldDescription>
-                </div>
-              </Field>
-            )}
-          </form.Field>
-        </CardContent>
-      </Card>
-
-      <Card id="mcp-broker" className="scroll-mt-20">
-        <CardHeader>
-          <CardTitle>Connections (MCP broker)</CardTitle>
-          <CardDescription>
-            Lets your agents use other MCP servers and apps, like Notion, through xaq. xaq holds every sign-in and asks you before risky
-            actions.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form.Field name="brokerUpstreams">
-            {(field) => (
-              <Field orientation="horizontal" className="items-start">
-                <Switch id={field.name} checked={field.state.value} onCheckedChange={(v) => field.handleChange(v)} className="mt-0.5" />
-                <div className="space-y-1">
-                  <FieldLabel htmlFor={field.name}>Use connections</FieldLabel>
-                  <FieldDescription>
-                    {field.state.value
-                      ? "On: the Connections page is in the sidebar, and agents see the tools of the connections you give them."
-                      : "Off: no connection's tools reach any agent and the Connections page is hidden. Your connections and their settings are kept."}
                   </FieldDescription>
                 </div>
               </Field>

@@ -1,8 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { z } from "zod";
-import type { AgentTestResult, AgentToolMode } from "../../shared/types.ts";
-import { agentSearchSettings, SEARCH_MODE_THRESHOLD, setAgentSearchSettings, type ToolMode } from "../broker/search/mode.ts";
+import type { AgentTestResult } from "../../shared/types.ts";
 import type { AppContext } from "../context.ts";
 import { buildMcpServer } from "../mcp/server.ts";
 import { grantInputSchema } from "../policy/grants.ts";
@@ -20,17 +19,6 @@ const patchSchema = z.object({
   description: z.string().nullable().optional(),
   disabled: z.boolean().optional(),
 });
-
-const toolModeSchema = z.object({ mode: z.enum(["direct", "search"]) });
-
-/** How /mcp lists this agent's tools (search mode), for the agent page. Builds the server without connecting it. */
-export function agentToolMode(ctx: AppContext, agentId: string): AgentToolMode {
-  const agent = ctx.policy.getAgent(agentId);
-  if (!agent) throw notFound("Agent");
-  let seen: { mode: ToolMode; tools: number } = { mode: "direct", tools: 0 };
-  void buildMcpServer(ctx, { agentId: agent.id, name: agent.name }, { onMode: (m) => (seen = m) });
-  return { setting: agentSearchSettings(ctx.db, agent.id).mode, mode: seen.mode, tools: seen.tools, threshold: SEARCH_MODE_THRESHOLD };
-}
 
 /** The path carries the account id; a body accountId is optional. */
 const grantSchema = grantInputSchema.extend({ accountId: z.string().optional() });
@@ -108,15 +96,6 @@ export function agentsApi(ctx: AppContext) {
   });
 
   app.post("/agents/:id/test", async (c) => c.json(await testAgentConnection(ctx, c.req.param("id"))));
-
-  app.get("/agents/:id/tool-mode", (c) => c.json(agentToolMode(ctx, c.req.param("id"))));
-
-  app.put("/agents/:id/tool-mode", async (c) => {
-    const body = await readBody(c, toolModeSchema);
-    if (!policy.getAgent(c.req.param("id"))) throw notFound("Agent");
-    setAgentSearchSettings(ctx.db, c.req.param("id"), { mode: body.mode });
-    return c.json(agentToolMode(ctx, c.req.param("id")));
-  });
 
   return app;
 }

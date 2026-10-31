@@ -155,10 +155,6 @@ export class BrokerPolicyRuntime implements BrokerCalls {
     this.recoverInterrupted();
   }
 
-  private enabled(): boolean {
-    return this.ctx.settings.get().brokerUpstreams === true;
-  }
-
   private scrubberFor(connectionId: string): Scrubber {
     return makeScrubber(connectionSecrets(this.deps.credentials, connectionId));
   }
@@ -167,7 +163,6 @@ export class BrokerPolicyRuntime implements BrokerCalls {
 
   async call(agentId: string, exposedName: string, args: Record<string, unknown>, signal: AbortSignal): Promise<ToolResult> {
     const started = Date.now();
-    if (!this.enabled()) return text("Upstream connections are turned off on this xaq.", true);
     const tool = this.deps.registry.resolve(agentId, exposedName);
     if (!tool) {
       this.ctx.audit.record({ actorType: "agent", actorId: agentId, action: "unknown_tool", outcome: "error", reason: "unknown_tool", detail: { broker: true, tool: cleanLine(exposedName).slice(0, 64) } });

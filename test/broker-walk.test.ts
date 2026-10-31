@@ -22,7 +22,6 @@ async function setup() {
   h = harness();
   agentApi(h.ctx, {});
   const cookie = await h.claim();
-  h.ctx.settings.update({ brokerUpstreams: true });
   const api = (path: string, init: RequestInit & { json?: unknown } = {}) => h!.request(`/api${path}`, { cookie, ...init, headers: { ...CSRF, ...(init.headers as object) } });
   return { h, ctx: h.ctx, api };
 }

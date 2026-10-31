@@ -1,13 +1,13 @@
 import type { Connection, ConnectionProbe, StartConnectInput } from "../shared/types.ts";
 import { type AdminChannel, openAdminChannel } from "../server/connections-cli/admin.ts";
 import { ConnectionsApi } from "../server/connections-cli/api.ts";
-import { type ConnectOutcome, createBrokerService, stubParts } from "../server/broker/service.ts";
+import { type ConnectOutcome, createBrokerService } from "../server/broker/service.ts";
 import type { IntegrationPreset } from "../server/broker/types.ts";
 import { upstreams as upstreamRuntime, type UpstreamRuntimeOptions } from "../server/broker/upstream/runtime.ts";
 import { harness, type Harness } from "./platform-helpers.ts";
 
 /**
- * A real daemon (createApp: the real /api/connections, admin auth and CSRF) with brokerUpstreams on, reached
+ * A real daemon (createApp: the real /api/connections, admin auth and CSRF) reached
  * through the CLI's real admin channel (a one-time session in its DB). Only the upstream side is fake: the
  * connector answers probes and connects from the tables below, and remembers what it was given.
  */
@@ -50,7 +50,7 @@ const NOTION: IntegrationPreset = {
  * `upstream`: the real upstream runtime (connector, credential store, remote sources) with these options (a fake DNS
  * and a `dial` to a fake MCP server on loopback) instead of the fake connector; `upstreams` is then unused.
  */
-export async function startDaemon(opts: { presets?: IntegrationPreset[]; brokerOff?: boolean; upstream?: UpstreamRuntimeOptions } = {}): Promise<Daemon> {
+export async function startDaemon(opts: { presets?: IntegrationPreset[]; upstream?: UpstreamRuntimeOptions } = {}): Promise<Daemon> {
   let giveTools: Daemon["giveTools"] = () => {};
   // What a working connect does to the row (the credential store's markActive).
   let markActive = (_id: string) => {};
@@ -99,13 +99,12 @@ export async function startDaemon(opts: { presets?: IntegrationPreset[]; brokerO
             upstreams.finish(id);
             return { status: "connected" as const, connectionId: id };
           },
-          createSource: stubParts().connector.createSource,
+          createSource: (c) => ({ connectionId: c.id, listTools: async () => ({ tools: [] }), callTool: async () => ({ isError: true, content: [] }), close: async () => {} }),
         },
       }),
   });
   await h.claim();
   markActive = (id) => h.ctx.db.run("UPDATE connections SET status = 'active', status_reason = NULL WHERE id = ? AND status <> 'disabled'", id);
-  h.ctx.settings.update({ brokerUpstreams: !opts.brokerOff });
   const hermes = h.ctx.policy.createAgent({ name: "Hermes", grants: [] }).agent.id;
   const claude = h.ctx.policy.createAgent({ name: "Claude Code on mac", grants: [] }).agent.id;
   const channel = openAdminChannel({

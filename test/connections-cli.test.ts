@@ -4,7 +4,6 @@ import type { IntegrationPreset } from "../server/broker/types.ts";
 import { SessionStore } from "../server/auth/sessions.ts";
 import { sha256 } from "../server/crypto.ts";
 import { AdminApiError, CLI_SESSION_TTL_MS, createCliSession, daemonOrigin, openAdminChannel } from "../server/connections-cli/admin.ts";
-import { ConnectionsApi } from "../server/connections-cli/api.ts";
 import { addConnection, disableConnection, listConnections, reconnectConnection, removeConnection, slugFromUrl } from "../server/connections-cli/manage.ts";
 import { checkTarget, exactOrigin } from "../server/connections-cli/private.ts";
 import { ScriptedPrompter } from "../server/connections-cli/prompt.ts";
@@ -61,7 +60,6 @@ describe("the local admin channel", () => {
     const h = harness();
     try {
       await h.claim();
-      h.ctx.settings.update({ brokerUpstreams: false });
       const ch = openAdminChannel({
         dataDir: h.ctx.config.dataDir,
         instance: { pid: 1, host: "0.0.0.0", port: 8425, startedAt: "" },
@@ -69,11 +67,9 @@ describe("the local admin channel", () => {
       });
       expect(ch.baseUrl).toBe("http://127.0.0.1:8425");
       expect(Array.isArray(await ch.request("GET", "/api/agents"))).toBe(true);
-      const err = await ch.request("POST", "/api/connections", {}).catch((e: unknown) => e);
+      const err = await ch.request("GET", "/api/no-such-route").catch((e: unknown) => e);
       expect(err).toBeInstanceOf(AdminApiError);
       expect((err as AdminApiError).status).toBe(404);
-      // Routes not mounted (brokerUpstreams off): said in plain words.
-      await expect(new ConnectionsApi(ch).list()).rejects.toThrow(/brokerUpstreams/);
       ch.close();
       expect(h.ctx.db.get("SELECT 1 AS x FROM admin_sessions WHERE ip = 'local-cli'")).toBeUndefined();
     } finally {

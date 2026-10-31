@@ -48,7 +48,7 @@ export interface Services {
   mail: MailService;
   webhooks: WebhooksService;
   calendar: CalendarService;
-  /** The MCP broker (server/broker/service.ts), inert while Settings.brokerUpstreams is off. */
+  /** The MCP broker (server/broker/service.ts). */
   broker: BrokerService;
 }
 

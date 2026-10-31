@@ -9,7 +9,7 @@ import type { ApiError } from "../shared/types.ts";
 import { agentApiRoutes } from "./agentapi/index.ts";
 import { bearer } from "./agentapi/auth.ts";
 import { CALENDAR_PUSH_PATH } from "./calendar/push.ts";
-import { CONNECTION_HOOK_BODY_LIMIT, CONNECTION_HOOKS_PREFIX, type ConnectionHookHost, brokerUpstreamsOn, connectionHookRoutes } from "./integrations/hooks.ts";
+import { CONNECTION_HOOK_BODY_LIMIT, CONNECTION_HOOKS_PREFIX, type ConnectionHookHost, connectionHookRoutes } from "./integrations/hooks.ts";
 import { accountsApi } from "./api/accounts.ts";
 import { agentsApi } from "./api/agents.ts";
 import { connectionsApi } from "./api/connections.ts";
@@ -40,7 +40,7 @@ import { HttpError, PolicyDenied } from "./util/errors.ts";
 export interface AppOptions {
   /** Built console directory. Defaults to dist/web next to the running module. */
   webDir?: string;
-  /** Inbound webhooks for native presets (POST /hooks/connections/:id); 404 without it or with brokerUpstreams off. */
+  /** Inbound webhooks for native presets (POST /hooks/connections/:id); default: the broker's. */
   connectionHooks?: ConnectionHookHost;
   /** The console's one-click update (server/update.ts); tests fake it. */
   selfUpdate?: SelfUpdateHost;
@@ -152,12 +152,12 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Hono<AppEnv> 
     return c.body(renderSkill(ctx.settings.publicUrl()));
   });
   app.route("/", oauthRoutes(ctx));
-  // Upstream connections' sign-ins (MCP broker); 404 while the brokerUpstreams setting is off.
+  // Upstream connections' sign-ins (MCP broker).
   app.route("/", connectionOAuthRoutes(ctx));
   // Google-facing: verified by channel id + X-Goog-Channel-Token, outside the admin session and CSRF guard.
   app.post(CALENDAR_PUSH_PATH, (c) => c.body(null, ctx.calendar.handlePush(c.req.raw.headers) as 204));
   // Provider-facing (WHOOP): verified by the preset's signature check, outside the admin session and CSRF guard.
-  app.route("/", connectionHookRoutes({ enabled: () => brokerUpstreamsOn(ctx.settings), host: () => opts.connectionHooks ?? ctx.broker.hooks, log: ctx.log }));
+  app.route("/", connectionHookRoutes({ host: () => opts.connectionHooks ?? ctx.broker.hooks, log: ctx.log }));
   const mcp = mcpRoutes(ctx);
   if (mcp.routes.length) withMcp.add(app);
   app.route("/", mcp);

@@ -258,7 +258,7 @@ program
 // docs/listen.md). Imported after the Node check, like everything else.
 const { registerListenCommands } = await import("./listen/commands.ts");
 registerListenCommands(program);
-// Daemon side, behind the brokerUpstreams setting: `connections …` and `import --from …` (server/connections-cli).
+// Daemon side: `connections …` and `import --from …` (server/connections-cli).
 const { registerConnectionsCommands } = await import("./connections-cli/commands.ts");
 registerConnectionsCommands(program);
 // `ext add | list | update | remove` (docs/EXTENSIONS.md), through the daemon's /api/extensions.

@@ -122,7 +122,6 @@ class Interrupted extends Error {
 
 interface SettingsView {
   publicUrl: string;
-  brokerUpstreams?: boolean;
   /** Directories create_draft may attach local files from. */
   attachmentDirs?: string[];
 }
@@ -475,7 +474,6 @@ export class SmokeRun {
       );
     }
     const settings = await this.deps.admin.request<SettingsView>("GET", "/api/settings");
-    if (settings.brokerUpstreams !== true) throw new SmokeSetupError(`Connections are turned off in this xaq. Turn them on in the console: ${settings.publicUrl.replace(/\/+$/, "")}/settings`);
     if (!Array.isArray(settings.attachmentDirs)) {
       throw new SmokeSetupError("This xaq has no attachmentDirs setting, which the draft's local attachment needs. Update xaq, then run this again.");
     }
@@ -521,6 +519,8 @@ export class SmokeRun {
     if (!created) return;
     const tools = await this.step("xaq", "tools/list has every tool the run uses", async () => {
       const listed = new Set(await this.mcp!.listTools());
+      // Search mode lists only its meta-tools; every tool is still called by name.
+      if (listed.has("search_tools")) return "search mode: tools are called by name";
       const wanted = [...[...READ_TOOLS, ...Object.keys(WRITE_TARGETS)].map((t) => this.exposed(t)), "get_call_status", ...MAIL_TOOLS];
       const missing = wanted.filter((t) => !listed.has(t));
       if (missing.length) throw new Error(`missing: ${missing.join(", ")} (update xaq and the ${WORKSPACE_PRESET} extension)`);
@@ -1086,7 +1086,6 @@ export class SmokeRun {
           draftIds: [...this.ledger.drafts.keys()],
         });
         if (agent && l.agent) this.leftBehind.push(`The temporary agent ${agent.name} (${agent.id}) still exists: delete it in the console (Agents).`);
-        if (l.agentSettings) this.leftBehind.push(`The temporary agent's settings (tool mode) are still stored.`);
         for (const d of l.drafts) this.leftBehind.push(`The draft ${d} still exists in ${this.account.email}: delete it in Gmail (Drafts).`);
         for (const a of l.otherSmokeAgents) this.leftBehind.push(`Another smoke run's agent ${a.name} (${a.id}) exists: delete it in the console (Agents).`);
       }

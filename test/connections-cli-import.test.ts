@@ -421,15 +421,6 @@ describe("import --from hermes", () => {
     await expect(runImport({ from: "hermes" }, deps(d, p))).rejects.toThrow(/pass --yes/);
     expect(rows()).toEqual([]);
   });
-
-  it("says when the daemon has connections turned off", async () => {
-    const off = await startDaemon({ brokerOff: true });
-    try {
-      await expect(runImport({ from: "hermes", yes: true }, deps(off, new ScriptedPrompter([], true)))).rejects.toThrow(/brokerUpstreams/);
-    } finally {
-      await off.dispose();
-    }
-  });
 });
 
 describe("import --from claude-code: a hostile project .mcp.json", () => {

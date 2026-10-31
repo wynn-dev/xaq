@@ -362,15 +362,6 @@ describe("attachment sources", () => {
       expect(r.isError).toBe(false);
       expect((await filesOf(me.id, lastSent(ME))).map((f) => f.filename)).toEqual(["plan.pdf"]);
     }
-
-    // With connections switched off (Settings → MCP broker), connection grants give nothing.
-    const granted = await agent("granted-off", me.id);
-    ctx.settings.update({ brokerUpstreams: false });
-    try {
-      expect((await send(granted)).text).toContain(denied);
-    } finally {
-      ctx.settings.update({ brokerUpstreams: true });
-    }
   });
 
   it("another message's attachment needs read access, the message in scope, and an id it lists", async () => {

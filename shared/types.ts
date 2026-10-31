@@ -75,7 +75,7 @@ export type NativeEventType = (typeof EVENT_TYPES)[number];
 /**
  * MCP broker events (docs/MCP-BROKER.md "Events from integrations"). They concern a connection, not an
  * account: MailEvent.connectionId is set and accountId/accountEmail are "". Visible to agents with a grant
- * on that connection, while the brokerUpstreams setting is on.
+ * on that connection.
  */
 export const BROKER_EVENT_TYPES = [
   "connection.auth_failed", // the upstream's credential stopped working; the owner must reconnect
@@ -352,11 +352,6 @@ export interface Settings {
    * Settings, `npx xaq-cli settings attachment-dirs`); no agent tool changes it.
    */
   attachmentDirs: string[];
-  /**
-   * The MCP broker's upstream connections (docs/MCP-BROKER.md): the Connections page, connection access on agents,
-   * `mcp.call` approvals and first run with Google optional. On by default since the console shipped (M1 PR 8).
-   */
-  brokerUpstreams: boolean;
   /**
    * Where get_attachment saves files it can't show (and files an agent asks for as a file): `<dir>/<message id>/<name>`.
    * Absolute path; "" (default) = `attachments/` in the data directory. Saved files are deleted after
@@ -685,18 +680,6 @@ export interface AgentTestResult {
   ok: boolean;
   tools: string[];
   message: string;
-}
-
-/** GET /api/agents/:id/tool-mode: how /mcp lists this agent's tools (docs/MCP-BROKER.md, search mode). */
-export interface AgentToolMode {
-  /** The stored choice; "auto" until the agent's first /mcp request decides it. */
-  setting: "auto" | "direct" | "search";
-  /** What /mcp serves it now (without ?mode=search). */
-  mode: "direct" | "search";
-  /** Tools the agent can use (mail, calendar and connections). */
-  tools: number;
-  /** Above this many tools a new agent starts in search mode. */
-  threshold: number;
 }
 
 /** Returned once on create and on key rotation. */
@@ -1220,8 +1203,7 @@ export interface McpCallApproval extends ApprovalCommon {
 export type Approval = GoogleApproval | McpCallApproval;
 
 // ───────────────────────────── MCP broker: connections ─────────────────────────────
-// docs/MCP-BROKER.md. Stored since migration 8; nothing serves these until the broker PRs land (behind the
-// brokerUpstreams setting). Credentials never cross the API boundary: there's no DTO for them.
+// docs/MCP-BROKER.md. Credentials never cross the API boundary: there's no DTO for them.
 // AccessLevel and ToolAnnotations mirror server/broker/types.ts: the console can't import that file (it uses
 // Node's Buffer, and tsconfig.app has no Node types). Keep them in step.
 
@@ -1652,7 +1634,7 @@ export interface ApiError {
 //   GET    /api/pairings?status                       → PairingRequest[]
 //   POST   /api/pairings/:id/approve ApprovePairingInput → Agent   (the key goes to the polling CLI, never to the console)
 //   POST   /api/pairings/:id/deny {note?}             → PairingRequest
-//   (MCP broker, 404 unless Settings.brokerUpstreams)
+//   (MCP broker)
 //   GET    /api/connections                           → ConnectionView[]
 //   POST   /api/connections CreateConnectionInput     → ConnectionView
 //   GET    /api/connections/presets                   → PresetView[]

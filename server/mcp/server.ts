@@ -3,7 +3,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { type CallToolResult, type JSONRPCMessage, ListToolsRequestSchema, type ListToolsResult, type RequestId, type ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { type Capability, EVENT_TYPES, type GmailLabel, type MailEvent } from "../../shared/types.ts";
-import { agentSearchSettings, CALL_STATUS_TOOL, chooseMode, hotToolNames, setAgentSearchSettings, type ToolMode } from "../broker/search/mode.ts";
+import { CALL_STATUS_TOOL, chooseMode } from "../broker/search/mode.ts";
 import { isMetaTool, META_TOOL_NAMES, META_TOOL_SHAPES, type NativeEntry, registerSearchTools, SEARCH_INSTRUCTIONS } from "../broker/search/tools.ts";
 import type { AgentBrokerView } from "../broker/service.ts";
 import type { AppContext } from "../context.ts";
@@ -190,15 +190,6 @@ function describeCalendarError(err: GoogleApiError): { outcome: "error"; reason:
 export interface BuildOptions {
   /** Aborted when the HTTP client disconnects (cancels wait_for_events). */
   signal?: AbortSignal;
-  /** `?mode=` on /mcp ("search" asks for search mode). Ignored while the brokerUpstreams setting is off. */
-  mode?: string;
-  /**
-   * The agent's own /mcp request: an `auto` setting is resolved once and recorded (setAgentSearchSettings), so the
-   * agent's mode never changes under it when its tools do later. Console probes leave the setting alone.
-   */
-  keepAutoMode?: boolean;
-  /** Told which mode this server got and how many tools the agent can use (the console's agent page shows it). */
-  onMode?: (m: { mode: ToolMode; tools: number }) => void;
 }
 
 /**
@@ -239,8 +230,7 @@ export const TOOL_NAMES = [
 export const CALENDAR_TOOL_NAMES: readonly ToolName[] = TOOL_NAMES.slice(TOOL_NAMES.indexOf("list_calendars"));
 export type ToolName = (typeof TOOL_NAMES)[number];
 /**
- * Fixed tools the MCP broker adds (server/mcp/broker.ts), only with Settings.brokerUpstreams on and a
- * connection grant. Upstream tools are dynamic (`<slug>__<tool>`) and audited under their exposed name.
+ * Fixed tools the MCP broker adds (server/mcp/broker.ts), only with a connection grant. Upstream tools are dynamic (`<slug>__<tool>`) and audited under their exposed name.
  */
 export const BROKER_TOOL_NAMES = ["get_call_status"] as const;
 const CATALOG: ReadonlySet<string> = new Set<string>([...TOOL_NAMES, ...BROKER_TOOL_NAMES]);
@@ -315,7 +305,7 @@ function auditRejections(
 
 /** One McpServer per request (stateless), with only the tools this agent's grants allow. */
 export function buildMcpServer(ctx: AppContext, principal: AgentPrincipal, opts: BuildOptions = {}): McpServer {
-  // The broker's part for this agent (null while Settings.brokerUpstreams is off): adds a line per connection.
+  // The broker's part for this agent: adds a line per connection.
   const broker = ctx.broker.view(principal.agentId);
   const can = abilities(ctx, principal.agentId);
   const hasConnections = !!broker?.connections.length;
@@ -795,9 +785,8 @@ interface NativeTool {
 
 /**
  * Builds the server from the captured native tools plus the broker's (upstream tools, get_call_status): every tool
- * directly (the default), or search mode (server/broker/search: search_tools, call_read_tool, call_write_tool and a
- * few hot tools). Search mode needs the broker on (brokerUpstreams), then applies for `?mode=search`, the agent's
- * setting, or above SEARCH_MODE_THRESHOLD visible tools. Search mode only trims tools/list: every tool stays
+ * directly (the default), or search mode (server/broker/search: search_tools, call_read_tool, call_write_tool and
+ * get_call_status), above SEARCH_MODE_THRESHOLD visible tools. Search mode only trims tools/list: every tool stays
  * registered, so calling one by name runs exactly what a direct-mode call runs (an unknown name is still -32602).
  */
 function exposeTools(
@@ -808,15 +797,8 @@ function exposeTools(
   natives: ReadonlyMap<string, NativeTool>,
   handled: Set<RequestId>,
 ): McpServer {
-  const prefs = broker ? agentSearchSettings(ctx.db, principal.agentId) : null;
   const brokerTools = broker?.connections.length ? broker.tools : [];
-  if (prefs?.mode === "auto" && opts.keepAutoMode) {
-    // First served under `auto`: the threshold decides now, then only the user changes it (console, agent page).
-    prefs.mode = chooseMode({ query: undefined, preference: "auto", nativeCount: natives.size, brokerCount: brokerTools.length });
-    setAgentSearchSettings(ctx.db, principal.agentId, { mode: prefs.mode });
-  }
-  const mode = prefs ? chooseMode({ query: opts.mode, preference: prefs.mode, nativeCount: natives.size, brokerCount: brokerTools.length }) : "direct";
-  opts.onMode?.({ mode, tools: natives.size + brokerTools.length });
+  const mode = chooseMode(natives.size, brokerTools.length);
 
   const instructions = INSTRUCTIONS + brokerInstructions(broker) + (mode === "search" ? `\n\n${SEARCH_INSTRUCTIONS}` : "");
   const server = new McpServer({ name: SERVER_NAME, version: ctx.config.version }, { instructions });
@@ -884,8 +866,8 @@ function exposeTools(
     registerBrokerTools(ctx, server, principal, broker, { handled, shapes, dynamic, signal: opts.signal });
     registerBrokerPassthrough(ctx, server, principal, broker, { signal: opts.signal });
   }
-  // Listed: the meta-tools, get_call_status (with connections) and the hot tools.
-  const listed = new Set<string>([...META_TOOL_NAMES, CALL_STATUS_TOOL, ...hotToolNames(brokerTools.length, prefs!.hot)]);
+  // Listed: the meta-tools and get_call_status (with connections).
+  const listed = new Set<string>([...META_TOOL_NAMES, CALL_STATUS_TOOL]);
   const list = installedHandler(server, "tools/list");
   server.server.setRequestHandler(ListToolsRequestSchema, async (request, extra) => {
     const all = (await list(request, extra)) as ListToolsResult;

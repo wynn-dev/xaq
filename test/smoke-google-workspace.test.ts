@@ -108,7 +108,6 @@ async function world(opts: { attachments?: { filename: string; mimeType: string;
   cleanup.push(() => s.close());
   await s.bootstrap({});
   const account = await connectWith(s, EMAIL, [GMAIL_SCOPE, ...IDENTITY, DRIVE_READONLY_SCOPE]);
-  await s.admin.patch("/api/settings", { brokerUpstreams: true });
   s.fake.deliver(EMAIL, {
     from: "Landlord <leasing@offices.test>",
     subject: "Lease papers",

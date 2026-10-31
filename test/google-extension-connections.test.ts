@@ -57,7 +57,6 @@ beforeEach(async () => {
   ctx.google.setClient({ ...FAKE_CLIENT, appType: "external" });
   // The store reaches only the fake GitHub on 127.0.0.1.
   extensionStore(ctx, { urls: gh.urls });
-  ctx.settings.update({ brokerUpstreams: true });
   ctx.broker.start?.();
   const app = createApp(ctx);
   let cookie = "";

@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useSyncExternalStore } from "react";
-import { useBrokerEnabled } from "@/hooks/use-broker";
 import { queries } from "@/lib/queries";
 import { BROKER_STEP_IDS, brokerStatuses, firstRunView } from "./first-run";
 import { allStepsDone, type SetupDraft, STEP_IDS, stepStatuses } from "./steps";
@@ -69,7 +68,7 @@ export function useSetupProgress() {
   const statuses = stepStatuses(query.data, draft);
   const firstTodo = STEP_IDS.find((id) => statuses[id] === "todo");
   // First run with Google optional: Notion or a custom server take the short path (first-run.ts).
-  const view = firstRunView(useBrokerEnabled(), query.data, draft);
+  const view = firstRunView(query.data, draft);
   const connections = useQuery({ ...queries.connections(), enabled: view === "broker" });
   const broker = brokerStatuses(connections.data?.length ?? 0, query.data?.agentsCreated ?? 0);
   if (view === "broker") {

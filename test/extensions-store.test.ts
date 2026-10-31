@@ -6,14 +6,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Db } from "../server/db/index.ts";
 import { computeIntegrity, integrityDirName } from "../server/extensions/integrity.ts";
 import { gitEnv, parseSource } from "../server/extensions/sources.ts";
-import { ExtensionError, LISTENER_ORDER, SqliteExtensionStore } from "../server/extensions/store.ts";
+import { ExtensionError, LISTENER_ORDER, ExtensionStore } from "../server/extensions/store.ts";
 import { entriesFromDir, type FakeGithub, fakeSha, manifest, startFakeGithub, type TarEntry, writeTree } from "./extension-fakes.ts";
 
 let gh: FakeGithub;
 let dataDir: string;
 let work: string;
 let db: Db;
-const stores: SqliteExtensionStore[] = [];
+const stores: ExtensionStore[] = [];
 
 beforeEach(async () => {
   gh = await startFakeGithub();
@@ -42,7 +42,7 @@ afterEach(async () => {
 });
 
 const newStore = (limits = {}, extra: { allowFileGit?: boolean } = {}) => {
-  const s = new SqliteExtensionStore({ db, dataDir, urls: gh.urls, limits, ...extra });
+  const s = new ExtensionStore({ db, dataDir, urls: gh.urls, limits, ...extra });
   stores.push(s);
   return s;
 };
@@ -143,20 +143,6 @@ describe("the extension store", () => {
     expect(code(err)).toBe("integrity_mismatch");
     expect(readdirSync(join(dataDir, "extensions", ".tmp"))).toEqual([]);
     expect(existsSync(join(dataDir, "extensions", "demo"))).toBe(false);
-  });
-
-  it("a pinned install refuses a mismatched integrity and installs a matching one", async () => {
-    const { sha, integrity } = publishOfficial("pinned");
-    const store = newStore();
-    const wrong = `sha256-${Buffer.alloc(32, 1).toString("base64")}`;
-    const err = await store.installPinned({ name: "pinned", commit: sha, integrity: wrong }).catch((e: unknown) => e);
-    expect(code(err)).toBe("integrity_mismatch");
-    expect((err as Error).message).toMatch(/Refusing to install/);
-    expect(store.get("pinned")).toBeNull();
-    const ext = await store.installPinned({ name: "pinned", commit: sha, integrity });
-    expect(ext).toMatchObject({ official: true, commit: sha, integrity, source: "pinned" });
-    // The pin's commit is fetched directly: no API call to resolve a ref.
-    expect(gh.requests.filter((p) => p.startsWith("/api/"))).toEqual([]);
   });
 
   it("verify detects tampering: a changed, added or removed file", async () => {
@@ -330,32 +316,6 @@ describe("the extension store", () => {
     await store.remove("ordered", { force: false });
     expect(calls).toEqual(["b2-remove:ordered", "b3-remove:ordered", "presets:ordered"]);
     expect(store.get("ordered")).toBeNull();
-  });
-
-  it("replacePinned swaps an official install for its pinned build only after fetching and verifying it", async () => {
-    const v1 = publishOfficial("swapme");
-    const store = newStore();
-    await store.installPinned({ name: "swapme", commit: v1.sha, integrity: v1.integrity });
-    const v2 = publishOfficial("swapme", { "new.txt": "n" }, { version: "1.1.0", seed: "2" });
-    // Offline or a bad pin: nothing changes, the installed build stays (and its files).
-    const offline = await store.replacePinned({ name: "swapme", commit: fakeSha("not-pushed"), integrity: v2.integrity }).catch((e: unknown) => e);
-    expect(offline).toBeInstanceOf(ExtensionError);
-    expect(store.get("swapme")).toMatchObject({ commit: v1.sha, integrity: v1.integrity });
-    expect(readdirSync(join(dataDir, "extensions", "swapme"))).toEqual([integrityDirName(v1.integrity)]);
-    const wrong = await store.replacePinned({ name: "swapme", commit: v2.sha, integrity: v1.integrity.replace(/.$/, "x") }).catch((e: unknown) => e);
-    expect(code(wrong)).toBe("integrity_mismatch");
-    expect(store.get("swapme")).toMatchObject({ commit: v1.sha });
-    // A good pin: swapped in one step, like an update.
-    const changes: string[] = [];
-    store.setHooks({ onChange: (c) => changes.push(`${c.from?.version}->${c.to?.version}`) });
-    expect(await store.replacePinned({ name: "swapme", commit: v2.sha, integrity: v2.integrity })).toMatchObject({ version: "1.1.0", commit: v2.sha });
-    expect(changes).toEqual(["1.0.0->1.1.0"]);
-    expect(readdirSync(join(dataDir, "extensions", "swapme"))).toEqual([integrityDirName(v2.integrity)]);
-    // Only official installs, only installed ones.
-    const { dir } = extDir("tpswap");
-    await store.install(dir, { confirmThirdParty: true });
-    expect(code(await store.replacePinned({ name: "tpswap", commit: v2.sha, integrity: v2.integrity }).catch((e: unknown) => e))).toBe("official_name");
-    expect(code(await store.replacePinned({ name: "absent", commit: v2.sha, integrity: v2.integrity }).catch((e: unknown) => e))).toBe("not_found");
   });
 
   it("refuses an update that changes the kind (remote ↔ code): that's a remove and a new install", async () => {

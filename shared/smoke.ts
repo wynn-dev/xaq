@@ -58,8 +58,6 @@ export interface SmokeLeftoversInput {
 export interface SmokeLeftovers {
   /** The run's agent still exists. */
   agent: boolean;
-  /** The agent's per-agent settings (tool mode) are still stored. */
-  agentSettings: boolean;
   /** Drafts (the ledger's and the audit log's) that still exist in Gmail. */
   drafts: string[];
   /** Other agents named like a smoke run (an earlier run that couldn't clean up). */

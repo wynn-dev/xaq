@@ -623,20 +623,6 @@ describe("refresh scheduling", () => {
   });
 });
 
-describe("brokerUpstreams gate", () => {
-  it("attach is a no-op while the setting is off", async () => {
-    const store = new MemoryCatalogStore();
-    let on = false;
-    const catalog = new Catalog({ store, connection: () => ({ slug: "alpha", preset: null }), connections: () => [], audit: () => {}, enabled: () => on });
-    const src = new FakeSource("con_a", [tool("a")]);
-    expect(await catalog.attach(src)).toMatchObject({ ok: false, error: "disabled" });
-    expect(src.calls).toBe(0);
-    on = true;
-    expect(await catalog.attach(src)).toMatchObject({ ok: true, pinned: ["a"] });
-    catalog.close();
-  });
-});
-
 describe("registry levels", () => {
   it("applies connection_grants.level: read lists read tools only; no grant lists nothing", async () => {
     const h = harness();

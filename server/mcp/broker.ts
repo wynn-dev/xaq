@@ -1,6 +1,5 @@
-// The MCP broker's side of /mcp (docs/MCP-BROKER.md, M1 PR 7): upstream tools listed next to the
-// native ones, called through BrokerCalls, plus get_call_status. Only with Settings.brokerUpstreams on
-// (ctx.broker.view is null otherwise); native tools, their names, behaviour and audit are untouched.
+// The MCP broker's side of /mcp (docs/MCP-BROKER.md): upstream tools listed next to the native ones, called
+// through the broker's calls, plus get_call_status. Native tools, their names, behaviour and audit are untouched.
 //
 // Upstream tools are served with their pinned JSON Schema as is. McpServer.registerTool only takes zod
 // schemas (re-serialising would change the pinned bytes), so the tools/list and tools/call handlers

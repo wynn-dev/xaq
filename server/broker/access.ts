@@ -1,6 +1,5 @@
 // Connection grants as the events side sees them (docs/MCP-BROKER.md "Events from integrations").
-// Plain reads of connection_grants (migration 8), so policy, events and the listener stream can ask
-// without depending on the broker service being wired.
+// Plain reads of connection_grants, so policy, events and the listener stream can ask without the broker service.
 
 import type { AccessLevel } from "../../shared/types.ts";
 import { bool, type Db } from "../db/index.ts";
@@ -25,9 +24,8 @@ export function connectionGrantsOf(db: Db, agentId: string): ConnectionGrantRef[
     .map((r) => ({ connectionId: r.connection_id, slug: r.slug, name: r.name, level: r.level }));
 }
 
-/** Connection events are visible to an enabled agent with a grant on the connection, while the broker is on. */
-export function canSeeConnection(db: Db, brokerOn: boolean, agentId: string, connectionId: string): boolean {
-  if (!brokerOn) return false;
+/** Connection events are visible to an enabled agent with a grant on the connection. */
+export function canSeeConnection(db: Db, agentId: string, connectionId: string): boolean {
   const r = db.get<{ disabled: number }>(
     "SELECT a.disabled FROM connection_grants g JOIN agents a ON a.id = g.agent_id WHERE g.agent_id = ? AND g.connection_id = ?",
     agentId,
@@ -43,22 +41,20 @@ export function canSeeConnection(db: Db, brokerOn: boolean, agentId: string, con
  */
 export function canSeeConnectionEvent(
   db: Db,
-  brokerOn: boolean,
   agentId: string,
   ev: { type: string; connectionId?: string | null; detail?: Record<string, unknown> | null },
   via: "feed" | "listener" | "webhook",
 ): boolean {
-  if (!brokerOn || !ev.connectionId) return false;
+  if (!ev.connectionId) return false;
   if (ev.type === "approval.requested") {
     if (via === "webhook") return true;
     const agent = db.get<{ disabled: number }>("SELECT disabled FROM agents WHERE id = ?", agentId);
     return !!agent && !bool(agent.disabled) && ev.detail?.agentId === agentId;
   }
-  return canSeeConnection(db, brokerOn, agentId, ev.connectionId);
+  return canSeeConnection(db, agentId, ev.connectionId);
 }
 
-/** Connection ids whose events the agent may see (empty while the broker is off). */
-export function visibleConnectionIds(db: Db, brokerOn: boolean, agentId: string): string[] {
-  if (!brokerOn) return [];
+/** Connection ids whose events the agent may see. */
+export function visibleConnectionIds(db: Db, agentId: string): string[] {
   return db.all<{ connection_id: string }>("SELECT connection_id FROM connection_grants WHERE agent_id = ?", agentId).map((r) => r.connection_id);
 }

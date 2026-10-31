@@ -10,7 +10,6 @@
 import { z } from "zod";
 import type { AgentWithKey } from "../../shared/types.ts";
 import { isSmokeDir, SMOKE_NAME_RE, type SmokeDraftView, type SmokeLeftovers, type SmokeSweep, smokeSubjectPrefix } from "../../shared/smoke.ts";
-import { setAgentSearchSettings } from "../broker/search/mode.ts";
 import type { AppContext } from "../context.ts";
 import { asHttpError } from "../google/http.ts";
 import { GoogleApiError } from "../google/types.ts";
@@ -96,8 +95,6 @@ export function smokeApi(ctx: AppContext) {
       },
       { inheritAllAgents: false },
     );
-    // Every tool listed (tools/list is how the run checks the tools it needs); deleteAgent removes the setting.
-    setAgentSearchSettings(ctx.db, created.agent.id, { mode: "direct" });
     ctx.audit.record({ ...ADMIN_ACTOR, action: "smoke.agent_create", accountId: account.id, target: created.agent.id, outcome: "ok", detail: { name: body.name, connectionId: body.connectionId } });
     return c.json(created, 201);
   });
@@ -162,7 +159,6 @@ export function smokeApi(ctx: AppContext) {
     for (const [draftId, accountId] of candidates) if (ctx.accounts.get(accountId) && (await draftExists(accountId, draftId))) drafts.push(draftId);
     const out: SmokeLeftovers = {
       agent: !!body.agentId && !!ctx.policy.getAgent(body.agentId),
-      agentSettings: !!body.agentId && !!ctx.db.get("SELECT 1 AS x FROM settings WHERE key = ?", `broker.search:${body.agentId}`),
       drafts,
       otherSmokeAgents: smokeAgents()
         .filter((a) => a.id !== body.agentId)

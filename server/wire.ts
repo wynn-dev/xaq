@@ -37,7 +37,7 @@ export function createAppContext(config: Config, overrides: ServiceOverrides = {
 
 export async function startServices(ctx: AppContext): Promise<void> {
   for (const key of SERVICE_ORDER) await ctx[key].start?.();
-  // The MCP broker's upstream sweep (proactive refresh, expiry warnings): a no-op while brokerUpstreams is off.
+  // The MCP broker's upstream sweep (proactive refresh, expiry warnings).
   upstreams(ctx).start();
 }
 

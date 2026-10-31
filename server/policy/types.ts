@@ -47,7 +47,7 @@ export interface PolicyService extends Lifecycle {
    * calendar.* events need `calendar.read` and the event's calendar in the grant's calendar scope.
    * Account-level events (account.auth_failed, sync.gap) need `read` or `calendar.read`.
    * Connection events (isConnectionEventType: connection.*, `<preset>.*`) need a connection grant on
-   * ev.connectionId (any level) while the brokerUpstreams setting is on. approval.requested is for the agent
+   * ev.connectionId (any level). approval.requested is for the agent
    * that asked (detail.agentId), and for any webhook subscribed to it (`via: "webhook"`; it carries no arguments).
    */
   canSeeEvent(

@@ -11,7 +11,6 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { classifyTool } from "../server/broker/catalog/classify.ts";
 import { reconnectMessage } from "../server/broker/policy/errors.ts";
-import { agentSearchSettings } from "../server/broker/search/mode.ts";
 import { type IntegrationPreset, SourceError, type ToolDef } from "../server/broker/types.ts";
 import { checkTarget, guardedFetch } from "../server/broker/upstream/fetch.ts";
 import { requireSameOrigin, UpstreamRuntime, upstreams } from "../server/broker/upstream/runtime.ts";
@@ -312,7 +311,6 @@ async function t3Like() {
 
 function runtimeEnv(dialPort: number) {
   const t = testContext();
-  t.ctx.settings.update({ brokerUpstreams: true });
   const rt = new UpstreamRuntime(t.ctx, {
     emit: () => {},
     lookup: LOOKUP,
@@ -536,7 +534,6 @@ async function apiEnv() {
   cleanup.push(() => h.dispose());
   const cookie = await h.claim();
   const api = (path: string, init: RequestInit & { json?: unknown } = {}) => h.request(`/api${path}`, { cookie, ...init, headers: { ...CSRF, ...(init.headers as object) } });
-  h.ctx.settings.update({ brokerUpstreams: true });
   return { h, ctx: h.ctx, api };
 }
 
@@ -561,11 +558,11 @@ async function connectT3(s: ApiEnv, up: FakeMcpUpstream, body: Record<string, un
   return { con, ...(await signIn(s, up, con.id)) };
 }
 
-async function agentClient(s: ApiEnv, apiKey: string, path = "/mcp") {
+async function agentClient(s: ApiEnv, apiKey: string) {
   const client = new Client({ name: "t3-e2e", version: "1" });
   const app = s.h.app;
   await client.connect(
-    new StreamableHTTPClientTransport(new URL(`http://xaq.test${path}`), {
+    new StreamableHTTPClientTransport(new URL("http://xaq.test/mcp"), {
       requestInit: { headers: { Authorization: `Bearer ${apiKey}` } },
       fetch: async (url, init) => app.request(String(url), init as RequestInit, { incoming: { socket: { remoteAddress: "127.0.0.1" } } }),
     }),
@@ -616,11 +613,6 @@ describe("T3 Code connection end to end (fake T3: DCR, PKCE, iss, no refresh, 30
     const called = () => up.requests.filter((r) => r.rpcMethod === "tools/call").map((r) => (JSON.parse(r.body) as { params: { name: string } }).params.name);
     expect(called()).not.toContain("t3_project_delete");
 
-    // Search mode: the same tools by their real names, under the same policy.
-    const search = await agentClient(s, apiKey, "/mcp?mode=search");
-    expect(text(await search.callTool({ name: "search_tools", arguments: { query: "list projects" } }))).toContain("t3-127-0-0-1__t3_project_list");
-    expect(text(await search.callTool({ name: "call_read_tool", arguments: { name: "t3-127-0-0-1__t3_project_list", arguments: {} } }))).toContain('"title":"demo"');
-    expect(text(await search.callTool({ name: "call_write_tool", arguments: { name: "t3-127-0-0-1__t3_project_delete", arguments: { projectId: "p2" } } }))).toContain("pending_approval");
     expect(called()).not.toContain("t3_project_delete");
   }, 30_000);
 
@@ -731,7 +723,7 @@ describe("T3 Code connection end to end (fake T3: DCR, PKCE, iss, no refresh, 30
     expect(after.tools.total).toBe(3);
   }, 30_000);
 
-  it("both tool modes: a direct agent stays direct after T3's many tools arrive; search mode finds and calls them by name", async () => {
+  it("search mode once T3's many tools arrive: found by search and called by their real names", async () => {
     // T3-sized: over the 30-tool threshold.
     const reads: FakeTool[] = READ.filter((n) => n !== "t3_project_list").map((name) => ({
       name,
@@ -748,21 +740,13 @@ describe("T3 Code connection end to end (fake T3: DCR, PKCE, iss, no refresh, 30
     cleanup.push(() => up.close());
     const s = await apiEnv();
     const { agent, apiKey } = s.ctx.policy.createAgent({ name: "Hermes" });
-    // The agent's first request, before T3: few tools, so `auto` settles on direct, and sticks.
+    // Before T3: few tools, every one listed.
     const early = await agentClient(s, apiKey);
     expect((await early.listTools()).tools.map((t) => t.name)).not.toContain("search_tools");
-    expect(agentSearchSettings(s.ctx.db, agent.id).mode).toBe("direct");
 
+    // Over the threshold: meta-tools listed, T3 found by search and still callable by its real name.
     await connectT3(s, up, { agentIds: [agent.id], levelDefault: "ask" });
-    const direct = await agentClient(s, apiKey);
-    const names = (await direct.listTools()).tools.map((t) => t.name);
-    expect(names.filter((n) => n.startsWith("t3-127-0-0-1__"))).toHaveLength(3 + reads.length);
-    expect(names).not.toContain("search_tools");
-    expect(agentSearchSettings(s.ctx.db, agent.id).mode).toBe("direct");
-    expect(text(await direct.callTool({ name: "t3-127-0-0-1__t3_thread_list", arguments: {} }))).toContain("ran t3_thread_list");
-
-    // Search mode (opt-in): meta-tools listed, T3 found by search and still callable by its real name.
-    const search = await agentClient(s, apiKey, "/mcp?mode=search");
+    const search = await agentClient(s, apiKey);
     const listed = (await search.listTools()).tools.map((t) => t.name);
     expect(listed).toContain("search_tools");
     expect(listed).not.toContain("t3-127-0-0-1__t3_thread_list");

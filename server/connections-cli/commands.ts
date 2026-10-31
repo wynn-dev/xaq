@@ -5,10 +5,8 @@ import { resolveDataDir } from "../config.ts";
 
 /**
  * `connections …` and `import --from …`: run on the daemon's machine, talking to its admin API through the
- * one-time local admin session (admin.ts). Listed in --help since the console (#65) shipped; while the daemon's
- * `brokerUpstreams` setting is off they say so (CONNECTIONS_VISIBLE).
+ * one-time local admin session (admin.ts).
  */
-export const CONNECTIONS_VISIBLE = true;
 const GROUP = "MCP connections (on xaq's machine):";
 
 const collect = (value: string, previous: string[] | undefined) => [...(previous ?? []), value];
@@ -48,7 +46,7 @@ async function selfOrigins(dataDir: string): Promise<string[]> {
 
 export function registerConnectionsCommands(program: Command): void {
   const connections = program
-    .command("connections", { hidden: !CONNECTIONS_VISIBLE })
+    .command("connections")
     .description("the MCP servers xaq connects agents to (Notion, T3 Code, any MCP URL, installed extensions); run on xaq's machine")
     .summary("add, list, reconnect or remove connected MCP servers")
     .helpGroup(GROUP);
@@ -127,7 +125,7 @@ Examples:
 
   dataOption(
     program
-      .command("import", { hidden: !CONNECTIONS_VISIBLE })
+      .command("import")
       .description("move an agent tool's MCP servers into xaq: one connection each, credentials moved into xaq")
       .summary("import MCP servers from Hermes, Claude Code, Cursor or Codex")
       .helpGroup(GROUP)
