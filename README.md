@@ -33,7 +33,8 @@ npx xaq-cli service install
   pinned to a commit and an integrity hash.
 - **Gmail and Google Calendar.** Search, read, draft, send and organize mail; read calendars, find free time and
   schedule. PDFs and Office files come back as text and tables.
-- **Agents.** Each agent gets one key and one endpoint, `<your server>/mcp`, and sees only what you granted it. Pair
+- **Agents.** Each agent gets one key and one endpoint, `<your server>/mcp`, and sees only what you granted it: read
+  only or full access per mailbox and connection, sends limited to the recipients you allow. Pair
   one from its own machine with `npx xaq-cli connect <url>`; you approve it in the console.
 - **Events.** New mail and calendar changes reach agents through `wait_for_events`, or wake an agent on a laptop with
   [`xaq listen`](docs/listen.md).
@@ -41,7 +42,7 @@ npx xaq-cli service install
 
 ## More
 
-- [Reference](docs/reference.md): commands, connections and extensions, Google setup, permissions, events,
+- [Reference](docs/reference.md): commands, connections and extensions, Google setup, access, events,
   attachments, running in production, security model, data and backups, development
 - [Waking local agents with `xaq listen`](docs/listen.md)
 

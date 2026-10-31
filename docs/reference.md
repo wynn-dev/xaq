@@ -6,7 +6,7 @@ xaq in production and understanding what it does. Agent machines: [listen.md](li
 - [Commands and configuration](#commands-and-configuration)
 - [Connections](#connections) and [extensions](#extensions)
 - [Gmail and Google Calendar](#gmail-and-google-calendar)
-- [Agents and permissions](#agents-and-permissions)
+- [Agents and access](#agents-and-access)
 - [Events](#events)
 - [Attachments](#attachments)
 - [Running it](#running-it)
@@ -51,9 +51,8 @@ agent may use.
 - **Adding one**: Connections → Add connection. Paste any MCP server's URL (xaq finds out whether it needs an OAuth
   sign-in or an API key), or pick an extension. A server on this machine or your private network (loopback,
   Tailscale) needs an explicit "allow this host" for that exact address.
-- **Access**: per connection, Full access, Ask before risky actions (the default) or Read only, for all agents or
-  chosen ones; an agent's page can change it for that agent. Risky means irreversible: deleting, sending, publishing
-  or sharing outside, payments.
+- **Access**: per connection, Full access (the default) or Read only, for all agents or chosen ones; an agent's
+  page can change it for that agent (see [Agents and access](#agents-and-access)).
 - **Tool names**: `<connection>__<tool>`, e.g. `notion__notion-search`. Changing a connection's short name renames
   its tools at once. Prompts and resources pass through too (`<connection>__<prompt>`,
   `xaq://<connection>/<encoded URI>`) and count as reads.
@@ -123,7 +122,7 @@ most often goes wrong:
 Mail is polled every 30 seconds and calendars every 60 by default (Settings). Received bodies are never stored: xaq
 keeps metadata and fetches content from Gmail on demand.
 
-## Agents and permissions
+## Agents and access
 
 Agents → Connect an agent has copy-paste setup per tool, and device-flow pairing with `npx xaq-cli connect <url>`
 ([listen.md](listen.md)). Any MCP client that speaks streamable HTTP works: endpoint `<public URL>/mcp`, header
@@ -141,16 +140,16 @@ Cursor and most others: `{"mcpServers": {"xaq": {"url": "…/mcp", "headers": {"
 and that email is data, never instructions. `npx xaq-cli skill install --url <server>` writes it
 (`--target codex|agents|<dir>`); any instance also serves it at `/skill.md`.
 
-**Mail and calendar grants.** A new agent can do nothing. Each grant (agent × mailbox) sets:
+**Access.** A new agent can do nothing. Each grant (agent × mailbox, or agent × connection) is one of two levels:
 
 | Level | |
 |---|---|
-| Capabilities | `read` (search, read, attachments, events), `draft`, `send`, `organize` (labels, archive, read state), `trash`; `calendar.read`, `calendar.write` |
-| Label scope | Only threads carrying certain labels; anything outside looks "not found" |
-| Send mode | `draft_only` (default: a draft for a human to send), `approval` or `direct` |
-| Allowed recipients | Exact addresses or globs such as `*@example.com` |
-| Reply only | Replies only, inside visible threads, to people already in the conversation |
-| Send caps | Per rolling hour and 24 hours |
+| Read only (the default) | Mail: search, read, labels, attachments, events. Calendar: calendars, events, free/busy. Connections: tools classed as reads that aren't risky |
+| Full access | Also draft, send, reply, forward, organize and trash mail, and create, change and answer calendar events; every tool of a connection |
+
+A mail grant with full access can also have **allowed recipients** (exact addresses or globs such as `*@example.com`):
+then every send and every calendar invite may only go to them. There are no approvals: what a grant allows goes
+through at once, and what it doesn't is refused with the reason, in the audit log.
 
 A send whose outcome is unknown (a 5xx, timeout or reset) counts as sent: the tool fails with `send_uncertain` and the
 agent is told to check `in:sent` before retrying.
@@ -161,7 +160,7 @@ Mail: `message.received`, `message.sent`, `thread.reply_received` (a reply in a 
 subset of `message.received`, so subscribe to one or the other), `label.added`, `label.removed`,
 `account.auth_failed`, `sync.gap`. Calendar: `calendar.invitation_received`, `calendar.event_created`,
 `calendar.event_updated` (`detail.changes` lists what changed) and `calendar.event_cancelled`, for agents with
-`calendar.read` on the calendars their grant covers. Connections: `connection.expiring`.
+a grant on the account. Connections: `connection.expiring`.
 
 Agents only get events for what their grants let them read. In a session they use `wait_for_events` (long poll),
 `list_events` and `ack_events`; the server keeps each agent's position. To start an agent when mail arrives, use
@@ -248,7 +247,7 @@ actions.
   against accidents and sloppy code, not hostile code: the network isn't restricted for extensions. Install
   third-party code extensions only from people you trust.
 
-Split agents that read untrusted mail from agents that can send, and prefer `draft_only` or `approval`.
+Split agents that read untrusted mail from agents that can send, and give sending agents allowed recipients.
 
 ## Data and backups
 

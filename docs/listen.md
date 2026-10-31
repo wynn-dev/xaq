@@ -34,11 +34,11 @@ the mail matters, otherwise reply `[SILENT]`. Its reply only lands in the listen
 
 ```
 xaq connect <daemon-url> [--name <name>] [--tool claude-code|codex|cursor|hermes|other] [--account <email>]…
-            [--capabilities read,draft,calendar.read] [--reason <text>] [--setup-mcp] [--log <file>] [--insecure] [--force]
+            [--reason <text>] [--setup-mcp] [--log <file>] [--insecure] [--force]
 ```
 
 It shows a short code and a console link; someone with console access checks the code and approves, choosing the
-mailboxes, capabilities and send mode (`--account` and `--capabilities` are only a request). The key is handed over
+mailboxes and the access, read only or full (`--account` is only a request). The key is handed over
 once, written to `~/.config/xaq/profiles/default.json` (0600) and never printed; `connect` then prints the access
 actually granted and the next steps for `--tool`. `--force` replaces the pairing and keeps the listener settings and
 cursor. `--log` also writes the output to a file (created 0600). Exit codes: 0 approved, 2 denied, 3 expired, 4
