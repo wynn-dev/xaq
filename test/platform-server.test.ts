@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { type BannerEnv, bannerLines, sameLoopbackServer, startServer, tunnelCommand } from "../server/server.ts";
+import { type BannerEnv, bannerLines, KEEP_ALIVE_TIMEOUT_MS, sameLoopbackServer, startServer, tunnelCommand } from "../server/server.ts";
 import { fakeIngest, harness, json, testConfig } from "./helpers.ts";
 import { fakeGoogle } from "./fake-google.ts";
 
@@ -21,6 +21,9 @@ describe("startServer", () => {
       const res = await fetch(`${running.url}/api/health`);
       expect(res.status).toBe(200);
       expect((await json(res)).version).toBe("0.0.0-test");
+      // Idle connections outlive a reverse proxy's 60 s upstream keep-alive (Node's default is 5 s).
+      expect(res.headers.get("keep-alive")).toBe(`timeout=${KEEP_ALIVE_TIMEOUT_MS / 1000}`);
+      expect(KEEP_ALIVE_TIMEOUT_MS).toBeGreaterThan(60_000);
       expect(running.ctx.settings.publicUrl()).toBe(`http://localhost:${config.port}`);
     } finally {
       await running.close();
