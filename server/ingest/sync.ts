@@ -23,15 +23,51 @@ const RESYNC_QUERY = "newer_than:2d";
 const RESYNC_MAX = 100;
 
 const isNotFound = (err: unknown) => err instanceof GoogleApiError && err.status === 404;
+/**
+ * Messages (and their threads' labels) fetched at once ahead of the in-order processing: a page of new mail
+ * costs about one round trip per this many messages instead of two per message.
+ */
+const PREFETCH_CONCURRENCY = 8;
+
+/**
+ * The messages processRecord fetches for `records`, given the messages added earlier in the pass. It only
+ * decides what is fetched early, never what is emitted: a miss just means an in-order fetch.
+ */
+function fetchesFor(records: GmailHistoryRecord[], addedBefore: ReadonlySet<string>): string[] {
+  const added = new Set(addedBefore);
+  const ids: string[] = [];
+  for (const r of records) {
+    for (const { message } of r.messagesAdded ?? []) {
+      added.add(message.id);
+      if (!message.labelIds?.some((l) => SKIP_NEW.includes(l))) ids.push(message.id);
+    }
+    for (const [type, changes] of [
+      ["added", r.labelsAdded],
+      ["removed", r.labelsRemoved],
+    ] as const) {
+      for (const { message, labelIds } of changes ?? []) {
+        if (added.has(message.id)) continue;
+        const sent = type === "added" && labelIds.includes("SENT");
+        if (sent || (labelIds.some((l) => !skipLabelChange(l)) && !message.labelIds?.includes("DRAFT"))) ids.push(message.id);
+      }
+    }
+  }
+  return ids;
+}
 
 /**
  * One sync pass over an account: turns Gmail history records (or a list of recent messages) into
- * events. Thread label unions are cached for the pass.
+ * events. Messages and thread label unions are fetched once per pass, ahead of time with prefetch;
+ * events are still emitted in history order.
  */
 export class SyncPass {
   emitted = 0;
   private readonly gmail: GmailClient;
+  private readonly messages = new Map<string, Promise<GmailMessage | null>>();
   private readonly threadLabels = new Map<string, Promise<string[]>>();
+  /** Message ids to prefetch, and the prefetch workers running. */
+  private readonly queue: string[] = [];
+  private workers = 0;
   private readonly seen = new Set<string>();
   /** Messages added during this pass: their labels are already in message.received. */
   private readonly added = new Set<string>();
@@ -44,6 +80,34 @@ export class SyncPass {
     private readonly account: AccountRow,
   ) {
     this.gmail = ctx.google.gmail(account.id);
+  }
+
+  /** Starts fetching what processRecord will need for a page of records. */
+  prefetchRecords(records: GmailHistoryRecord[]): void {
+    this.prefetch(fetchesFor(records, this.added));
+  }
+
+  /** Starts fetching `ids` and their threads' labels, at most PREFETCH_CONCURRENCY at a time; fetch then answers from the pass's cache. */
+  prefetch(ids: string[]): void {
+    this.queue.push(...ids);
+    const start = Math.min(PREFETCH_CONCURRENCY - this.workers, this.queue.length);
+    for (let i = 0; i < start; i++) {
+      this.workers++;
+      void this.work().finally(() => this.workers--);
+    }
+  }
+
+  /** Drops prefetches not started yet: call when the pass ends (done, failed or stopped). */
+  close(): void {
+    this.queue.length = 0;
+  }
+
+  private async work(): Promise<void> {
+    // Failures are left in the cache: the in-order processing meets them where it did without the prefetch.
+    for (let id = this.queue.shift(); id !== undefined; id = this.queue.shift()) {
+      const meta = await this.fetch(id).catch(() => null);
+      if (meta && !meta.labelIds?.some((l) => SKIP_NEW.includes(l))) await this.threadLabelIds(meta).catch(() => {});
+    }
   }
 
   async processRecord(r: GmailHistoryRecord): Promise<void> {
@@ -113,21 +177,26 @@ export class SyncPass {
     if (sentInto) this.emit("thread.reply_received", msg, threadLabels, `${msg.id}:thread.reply_received`);
   }
 
-  /** format=metadata; null when the message was deleted meanwhile. */
-  async fetch(id: string): Promise<GmailMessage | null> {
-    try {
-      return await this.gmail.getMessage(id, "metadata", METADATA_HEADERS);
-    } catch (err) {
-      if (isNotFound(err)) return null;
-      throw err;
+  /** format=metadata, once per pass; null when the message was deleted meanwhile. */
+  fetch(id: string): Promise<GmailMessage | null> {
+    let p = this.messages.get(id);
+    if (!p) {
+      p = this.gmail.getMessage(id, "metadata", METADATA_HEADERS).catch((err: unknown) => {
+        if (isNotFound(err)) return null;
+        throw err;
+      });
+      // A prefetched message the pass never gets to (it failed or stopped first) isn't an unhandled rejection.
+      p.catch(() => {});
+      this.messages.set(id, p);
     }
+    return p;
   }
 
   /** Union of labels across the message's thread (label filters are thread-level). */
   threadLabelIds(msg: GmailMessage): Promise<string[]> {
     let p = this.threadLabels.get(msg.threadId);
     if (!p) {
-      p = this.gmail.getThread(msg.threadId, "minimal").then(
+      p = this.gmail.getThread(msg.threadId, "minimal", undefined, "messages/labelIds").then(
         (t) => [...new Set([...(msg.labelIds ?? []), ...(t.messages ?? []).flatMap((m) => m.labelIds ?? [])])],
         (err: unknown) => {
           if (isNotFound(err)) return msg.labelIds ?? [];
@@ -188,6 +257,7 @@ export async function syncHistory(ctx: AppContext, account: AccountRow, signal?:
   try {
     do {
       const page = await gmail.listHistory({ startHistoryId: start, pageToken, maxResults: 500, historyTypes: HISTORY_TYPES });
+      pass.prefetchRecords(page.history);
       for (const r of page.history) {
         if (signal?.aborted) throw aborted();
         await pass.processRecord(r);
@@ -199,6 +269,7 @@ export async function syncHistory(ctx: AppContext, account: AccountRow, signal?:
       if (!pageToken) save(page.historyId);
     } while (pageToken);
   } finally {
+    pass.close();
     if (done) save(done);
   }
   updateRow(ctx, account.id, { last_sync_at: now() }, pass.emitted > 0);
@@ -226,10 +297,16 @@ export async function boundedResync(
     pageToken = page.nextPageToken ?? undefined;
   } while (pageToken && ids.length < RESYNC_MAX);
   const pass = new SyncPass(ctx, account);
-  for (const id of ids.reverse()) {
-    if (signal?.aborted) throw aborted();
-    const meta = await pass.fetch(id);
-    if (meta) await pass.newMessage(meta);
+  ids.reverse();
+  pass.prefetch(ids);
+  try {
+    for (const id of ids) {
+      if (signal?.aborted) throw aborted();
+      const meta = await pass.fetch(id);
+      if (meta) await pass.newMessage(meta);
+    }
+  } finally {
+    pass.close();
   }
   ctx.events.emit({
     type: "sync.gap",

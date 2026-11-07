@@ -109,8 +109,8 @@ export function isRetryable(err: GoogleApiError): boolean {
   return err.status === 403 && (err.details.reasons ?? []).some((r) => RATE_REASONS.has(r));
 }
 
-/** Connection-level failures where the request never reached Google. */
-const NOT_SENT = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH"]);
+/** Connection-level failures where the request never reached Google (undici's connect timeout: no connection was made). */
+const NOT_SENT = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT"]);
 
 export function networkError(e: unknown, host: string): GoogleApiError {
   const code = (e as { cause?: { code?: unknown } })?.cause?.code;
