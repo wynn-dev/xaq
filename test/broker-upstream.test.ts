@@ -1,14 +1,14 @@
 // Broker M1 PRs 3/4: the upstream manager and the credential store, against the fake upstream
 // (test/fake-mcp-upstream.ts). Offline and deterministic: every server listens on 127.0.0.1, DNS is a fake lookup.
 import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { type AddressInfo, connect as netConnect } from "node:net";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../server/app.ts";
 import { expiryNotice } from "../server/broker/credentials/expiry.ts";
 import { Refresher } from "../server/broker/credentials/refresher.ts";
 import { scrubText } from "../server/broker/credentials/scrub.ts";
 import { discoverAuthServer, fetchJsonDoc } from "../server/broker/upstream/discovery.ts";
-import { allowFromColumn, canonicalPrivateTarget, checkTarget, guardedFetch } from "../server/broker/upstream/fetch.ts";
+import { allowFromColumn, canonicalPrivateTarget, checkTarget, guardedFetch, proxyFor } from "../server/broker/upstream/fetch.ts";
 import { exchangeCode } from "../server/broker/upstream/oauth.ts";
 import { HTTPS_LOCALHOST_REDIRECT, UpstreamRuntime } from "../server/broker/upstream/runtime.ts";
 import { type RefreshFn, SourceError, type StoredTokens, type ToolCallContext } from "../server/broker/types.ts";
@@ -180,6 +180,144 @@ describe("guarded fetch: SSRF guard and the private-target allow", () => {
     expect(((await f(`${a.origin}/declared`).catch((x: unknown) => x)) as SourceError).message).toContain("over the");
     const streamed = await f(`${a.origin}/streamed`);
     await expect(streamed.text()).rejects.toBeTruthy();
+  });
+
+  /** A public name answered round-robin (as many CDNs do), every answer dialed to one loopback server without TLS. */
+  async function publicHost() {
+    let lookups = 0;
+    let connections = 0;
+    const bodies: string[] = [];
+    const s: Server = createServer((req, res) => {
+      let b = "";
+      req.on("data", (c: Buffer) => (b += c.toString()));
+      req.on("end", () => {
+        bodies.push(b);
+        res.end(`ok ${req.headers.host}`);
+      });
+    });
+    s.on("connection", () => connections++);
+    await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
+    cleanup.push(() => new Promise((r) => s.close(() => r(undefined))));
+    const port = (s.address() as AddressInfo).port;
+    const lookup: LookupFn = async () => {
+      const first = lookups++ % 2 === 0 ? "93.184.216.34" : "93.184.216.35";
+      return [first, first === "93.184.216.34" ? "93.184.216.35" : "93.184.216.34"].map((address) => ({ address, family: 4 }));
+    };
+    return { port, lookup, bodies, lookups: () => lookups, connections: () => connections };
+  }
+
+  /** A port nothing listens on. */
+  async function closedPort(): Promise<number> {
+    const s = createServer();
+    await new Promise<void>((r) => s.listen(0, "127.0.0.1", r));
+    const port = (s.address() as AddressInfo).port;
+    await new Promise((r) => s.close(r));
+    return port;
+  }
+
+  it("reuses a checked address: one DNS lookup and one keep-alive connection for a run of requests", async () => {
+    const h = await publicHost();
+    const f = guardedFetch({ lookup: h.lookup, dial: () => ({ address: "127.0.0.1", port: h.port, plain: true }), env: {} });
+    cleanup.push(() => f.close());
+    const post = async () => expect(await (await f("https://pub.test/mcp", { method: "POST", body: "{}" })).text()).toBe("ok pub.test");
+    // undici opens a second socket once (the first isn't back in the pool when the next request starts); then no more.
+    for (let i = 0; i < 2; i++) await post();
+    const warm = h.connections();
+    for (let i = 0; i < 8; i++) await post();
+    // Before: a lookup per request, and a new pool (new TCP and TLS handshakes) each time the DNS answer rotated.
+    expect(h.lookups()).toBe(1);
+    expect(h.connections()).toBe(warm);
+  });
+
+  it("retries a request whose connection never opened, resolving again; gives up after the backoff", async () => {
+    const h = await publicHost();
+    const dead = await closedPort();
+    let dials = 0;
+    const f = guardedFetch({ lookup: h.lookup, dial: () => ({ address: "127.0.0.1", port: ++dials <= 2 ? dead : h.port, plain: true }), env: {} });
+    cleanup.push(() => f.close());
+    const res = await f("https://pub.test/mcp", { method: "POST", body: '{"id":1}' });
+    expect(await res.text()).toBe("ok pub.test");
+    expect(h.bodies).toEqual(['{"id":1}']); // sent once: the refused attempts never carried it
+    expect(h.lookups()).toBe(3);
+
+    // A DNS lookup that fails for now (EAI_AGAIN: wifi waking up) is retried too.
+    let flaky = 0;
+    const lookup: LookupFn = async (host) => {
+      if (flaky++ === 0) throw Object.assign(new Error(`getaddrinfo EAI_AGAIN ${host}`), { code: "EAI_AGAIN" });
+      return h.lookup(host);
+    };
+    const g = guardedFetch({ lookup, dial: () => ({ address: "127.0.0.1", port: h.port, plain: true }), env: {} });
+    cleanup.push(() => g.close());
+    expect(await (await g("https://pub.test/mcp")).text()).toBe("ok pub.test");
+    expect(flaky).toBe(2);
+
+    const never = guardedFetch({ lookup: h.lookup, dial: () => ({ address: "127.0.0.1", port: dead, plain: true }), env: {} });
+    cleanup.push(() => never.close());
+    const started = Date.now();
+    const err = await never("https://pub.test/mcp", { method: "POST", body: "{}" }).catch((x: unknown) => x);
+    expect(String((err as Error).cause ?? err)).toContain("ECONNREFUSED");
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1_200);
+    // A caller's abort ends the backoff at once.
+    const ac = new AbortController();
+    const p = never("https://pub.test/mcp", { signal: ac.signal }).catch((x: unknown) => x);
+    setTimeout(() => ac.abort(), 50);
+    expect((await p) as Error).toMatchObject({ name: "AbortError" });
+  });
+
+  it("tunnels https through HTTPS_PROXY to the checked address, never the hostname; NO_PROXY and private allows go direct", async () => {
+    const h = await publicHost();
+    const tunnels: { to: string; auth?: string }[] = [];
+    const proxy = createServer((_req, res) => res.writeHead(405).end());
+    proxy.on("connect", (req, sock, head) => {
+      tunnels.push({ to: req.url!, auth: req.headers["proxy-authorization"] });
+      const up = netConnect(h.port, "127.0.0.1", () => {
+        sock.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        up.write(head);
+        up.pipe(sock);
+        sock.pipe(up);
+      });
+      up.on("error", () => sock.destroy());
+      sock.on("error", () => up.destroy());
+    });
+    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+    cleanup.push(() => new Promise((r) => proxy.close(() => r(undefined))));
+    const proxyUrl = `http://u%40x:p@127.0.0.1:${(proxy.address() as AddressInfo).port}`;
+    let direct = 0;
+    const f = guardedFetch({
+      lookup: h.lookup,
+      dial: () => (direct++, { address: "127.0.0.1", port: h.port, plain: true }),
+      env: { HTTPS_PROXY: proxyUrl, NO_PROXY: "localhost, .corp.test" },
+    });
+    cleanup.push(() => f.close());
+    expect(await (await f("https://pub.test/mcp")).text()).toBe("ok pub.test");
+    expect(tunnels).toEqual([{ to: "93.184.216.34:443", auth: `Basic ${Buffer.from("u@x:p").toString("base64")}` }]);
+    const dialsViaProxy = direct;
+    expect(await (await f("https://mcp.corp.test/mcp")).text()).toBe("ok mcp.corp.test");
+    expect(tunnels).toHaveLength(1);
+    expect(direct).toBeGreaterThan(dialsViaProxy);
+
+    // An allowed private origin is never sent to the proxy.
+    const a = await server((_req, res) => res.end("private"));
+    const g = guardedFetch({ allow: { origin: a.origin }, env: { HTTPS_PROXY: proxyUrl, HTTP_PROXY: proxyUrl } });
+    cleanup.push(() => g.close());
+    expect(await (await g(`${a.origin}/`)).text()).toBe("private");
+    expect(tunnels).toHaveLength(1);
+  });
+
+  it("reads the proxy variables as curl and undici do", () => {
+    const u = (s: string) => new URL(s);
+    expect(proxyFor(u("https://a.test/"), {})).toBeNull();
+    expect(proxyFor(u("https://a.test/"), { HTTP_PROXY: "http://p:1" })).toBe("http://p:1");
+    expect(proxyFor(u("https://a.test/"), { https_proxy: "http://s:1", HTTP_PROXY: "http://p:1" })).toBe("http://s:1");
+    expect(proxyFor(u("http://a.test/"), { HTTPS_PROXY: "http://p:1" })).toBeNull();
+    const env = { HTTPS_PROXY: "http://p:1", NO_PROXY: "b.test,*.c.test d.test:8443" };
+    expect(proxyFor(u("https://b.test/"), env)).toBeNull();
+    expect(proxyFor(u("https://x.b.test/"), env)).toBeNull();
+    expect(proxyFor(u("https://xb.test/"), env)).toBe("http://p:1");
+    expect(proxyFor(u("https://y.c.test/"), env)).toBeNull();
+    expect(proxyFor(u("https://d.test/"), env)).toBe("http://p:1");
+    expect(proxyFor(u("https://d.test:8443/"), env)).toBeNull();
+    expect(proxyFor(u("https://any.test/"), { HTTPS_PROXY: "http://p:1", no_proxy: "*" })).toBeNull();
   });
 
   it("private_target must be canonical scheme://host:port", () => {
@@ -548,6 +686,29 @@ describe("credential store and refresher", () => {
     // Not due: no refresh.
     await r.accessToken(id, refresh, AbortSignal.timeout(5000));
     expect(calls).toBe(1);
+  });
+
+  it("the background sweep refreshes connections in parallel: a hanging token endpoint doesn't hold up the rest", async () => {
+    const e = env();
+    const issued = Date.now() - 3500_000;
+    const ids = [0, 1, 2].map(() => addConnection(e.ctx, { url: "https://example.com/mcp", auth: "oauth", privateTarget: null }));
+    for (const id of ids) e.rt.store.saveTokens(id, { accessToken: "a0", refreshToken: `r-${id}`, expiresAt: issued + 3600_000, issuedAt: issued, scope: null, issuer: null });
+    let release!: () => void;
+    const hung = new Promise<void>((r) => (release = r));
+    const refreshed: string[] = [];
+    const r = new Refresher(e.rt.store, { log: e.ctx.log });
+    for (const id of ids) {
+      r.track(id, async (cur) => {
+        if (id === ids[0]) await hung;
+        refreshed.push(id);
+        return { accessToken: `a-${id}`, refreshToken: cur.refreshToken, expiresAt: Date.now() + 3600_000, scope: null, issuer: null, issuedAt: Date.now() };
+      });
+    }
+    const sweep = r.sweep();
+    await vi.waitFor(() => expect(refreshed).toEqual([ids[1], ids[2]]));
+    release();
+    await sweep;
+    expect(refreshed).toHaveLength(3);
   });
 
   it("scrubs secrets from stored text", () => {

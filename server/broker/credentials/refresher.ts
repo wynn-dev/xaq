@@ -110,19 +110,24 @@ export class Refresher {
     this.tracked.delete(connectionId);
   }
 
-  /** One sweep: refreshes every tracked connection that is due. Errors are logged (needs_reauth is already recorded). */
+  /**
+   * One sweep: refreshes every tracked connection that is due, in parallel (an unreachable token endpoint doesn't hold
+   * up the others for its timeout). Errors are logged (needs_reauth is already recorded).
+   */
   async sweep(): Promise<void> {
-    for (const [id, fn] of [...this.tracked]) {
-      const t = this.store.tokens(id);
-      const due = t ? refreshDueAt(t) : null;
-      if (!t?.refreshToken || due === null || this.now() < due) continue;
-      try {
-        await this.accessToken(id, fn, AbortSignal.timeout(REFRESH_TIMEOUT_MS));
-      } catch (err) {
-        if (err instanceof SourceError && err.code === "needs_reauth") this.untrack(id);
-        else this.opts.log.child("broker").warn("Background token refresh failed", { connectionId: id, error: errorMessage(err) });
-      }
-    }
+    await Promise.all(
+      [...this.tracked].map(async ([id, fn]) => {
+        const t = this.store.tokens(id);
+        const due = t ? refreshDueAt(t) : null;
+        if (!t?.refreshToken || due === null || this.now() < due) return;
+        try {
+          await this.accessToken(id, fn, AbortSignal.timeout(REFRESH_TIMEOUT_MS));
+        } catch (err) {
+          if (err instanceof SourceError && err.code === "needs_reauth") this.untrack(id);
+          else this.opts.log.child("broker").warn("Background token refresh failed", { connectionId: id, error: errorMessage(err) });
+        }
+      }),
+    );
   }
 
   start(): void {

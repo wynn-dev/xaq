@@ -1,6 +1,7 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP, type LookupFunction } from "node:net";
-import { Agent, buildConnector, fetch as undiciFetch } from "undici";
+import { setTimeout as sleep } from "node:timers/promises";
+import { Agent, buildConnector, type Dispatcher, Pool, ProxyAgent, fetch as undiciFetch } from "undici";
 import { type LookupFn, normalizeIp, resolveTarget, type ResolvedTarget, SsrfError, type TargetMessages, urlHost } from "../../util/ssrf.ts";
 import { SourceError } from "../types.ts";
 
@@ -10,7 +11,10 @@ import { SourceError } from "../types.ts";
  *   address (an undici Agent whose `connect.lookup` only ever answers that address: no DNS rebinding);
  * - redirects are manual, re-checked at every hop, at most MAX_REDIRECTS; credentials are dropped when a
  *   redirect leaves the origin;
- * - response bodies are capped (`maxBytes`), streamed bodies included.
+ * - response bodies are capped (`maxBytes`), streamed bodies included;
+ * - a checked address is reused for TARGET_TTL_MS (no DNS lookup per request, one keep-alive pool per origin);
+ * - a request whose connection never opened is retried with backoff (nothing was sent, so any method is safe);
+ * - https goes through HTTPS_PROXY (NO_PROXY honoured, as curl reads them) with CONNECT to the checked address.
  *
  * Private targets are refused unless the connection has a private-target allow (`PrivateTargetAllow`): it
  * is pinned to one exact origin and unlocks loopback, RFC 1918, CGNAT and ULA there, plus plain http on
@@ -131,6 +135,8 @@ export interface GuardedFetchOptions {
    * public https server, listening without TLS on loopback).
    */
   dial?: (target: ResolvedTarget, url: URL) => { address: string; port: number; plain?: boolean };
+  /** Where HTTPS_PROXY/NO_PROXY are read (tests); process.env by default. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export type GuardedFetch = ((input: string | URL, init?: RequestInit) => Promise<Response>) & {
@@ -189,13 +195,67 @@ function capped(body: ReadableStream<Uint8Array>, max: number): ReadableStream<U
   );
 }
 
+/** How long a checked address is reused for its origin before it is resolved and checked again. */
+export const TARGET_TTL_MS = 60_000;
+/** Backoff before each retry of a request whose connection never opened. */
+export const CONNECT_RETRY_MS = [250, 1_000];
+/** Errors raised before a connection exists: the request never left, so it can be sent again whatever its method. */
+const NOT_CONNECTED = new Set(["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "UND_ERR_CONNECT_TIMEOUT"]);
+
+function notConnected(err: unknown): boolean {
+  for (let e: unknown = err, i = 0; e && i < 4; e = (e as { cause?: unknown }).cause, i++) {
+    if (NOT_CONNECTED.has((e as { code?: string }).code ?? "")) return true;
+  }
+  return false;
+}
+
+/** A body that can be sent again (a redirect or a retry); a stream can't. */
+const replayable = (body: unknown): boolean => body === null || typeof body === "string" || body instanceof URLSearchParams || body instanceof Uint8Array;
+
+/**
+ * The proxy for an https URL: https_proxy/HTTPS_PROXY (else http_proxy/HTTP_PROXY) unless no_proxy/NO_PROXY names the
+ * host (exact, or a parent domain; `*` for all; `host:port` for one port), as undici's EnvHttpProxyAgent reads them.
+ */
+export function proxyFor(url: URL, env: NodeJS.ProcessEnv): string | null {
+  if (url.protocol !== "https:") return null;
+  const proxy = env.https_proxy || env.HTTPS_PROXY || env.http_proxy || env.HTTP_PROXY;
+  if (!proxy) return null;
+  const host = url.hostname.toLowerCase();
+  const port = Number(url.port || 443);
+  for (const entry of (env.no_proxy ?? env.NO_PROXY ?? "").split(/[,\s]/)) {
+    if (!entry) continue;
+    if (entry === "*") return null;
+    const m = /^(.+):(\d+)$/.exec(entry);
+    if (m && Number(m[2]) !== port) continue;
+    const name = (m ? m[1]! : entry).replace(/^\*?\./, "").toLowerCase();
+    if (host === name || host.endsWith(`.${name}`)) return null;
+  }
+  return proxy;
+}
+
 /** Builds the guarded fetch for one connection. */
 export function guardedFetch(opts: GuardedFetchOptions = {}): GuardedFetch {
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
-  const agents = new Map<string, Agent>();
+  const env = opts.env ?? process.env;
+  const agents = new Map<string, Dispatcher>();
+  const targets = new Map<string, { target: ResolvedTarget; until: number }>();
 
-  const agentFor = (url: URL, target: ResolvedTarget): Agent => {
-    const key = `${originKey(url)}|${target.address}`;
+  /** The checked address for the URL's origin, resolved again once it is TARGET_TTL_MS old. */
+  const resolve = async (url: URL): Promise<ResolvedTarget> => {
+    const key = originKey(url);
+    const hit = targets.get(key);
+    if (hit && Date.now() < hit.until) return hit.target;
+    const target = await checkTarget(url, opts);
+    targets.delete(key);
+    if (targets.size >= 16) targets.delete(targets.keys().next().value!);
+    targets.set(key, { target, until: Date.now() + TARGET_TTL_MS });
+    return target;
+  };
+
+  const agentFor = (url: URL, target: ResolvedTarget): Dispatcher => {
+    // A private allow's host is on this machine or its network: never sent to a proxy.
+    const proxy = opts.allow && originKey(url) === opts.allow.origin ? null : proxyFor(url, env);
+    const key = `${originKey(url)}|${target.address}|${proxy ?? ""}`;
     let agent = agents.get(key);
     if (!agent) {
       const lookup: LookupFunction = (_hostname, options, cb) => {
@@ -203,7 +263,25 @@ export function guardedFetch(opts: GuardedFetchOptions = {}): GuardedFetch {
         else cb(null, target.address, target.family);
       };
       const dial = opts.dial;
-      if (dial) {
+      if (proxy) {
+        // The tunnel is opened to the checked address, never the hostname: the proxy can't resolve it elsewhere.
+        // TLS still names the hostname. (Tests: `dial(...).plain` skips TLS inside the tunnel.)
+        const authority = target.family === 6 ? `[${target.address}]` : target.address;
+        agent = new ProxyAgent({
+          uri: proxy,
+          keepAliveTimeout: 30_000,
+          factory: (origin, o: Pool.Options) =>
+            new Pool(origin, {
+              ...o,
+              connect: (c, cb) => {
+                const plain = dial?.(target, url).plain;
+                const port = c.port || "443";
+                const servername = c.servername || (isIP(urlHost(url)) ? undefined : urlHost(url));
+                (o.connect as buildConnector.connector)({ ...c, host: `${authority}:${port}`, port, servername, ...(plain ? { protocol: "http:" } : {}) }, cb);
+              },
+            }),
+        });
+      } else if (dial) {
         const connector = buildConnector({});
         agent = new Agent({
           connect: (o, cb) => {
@@ -214,13 +292,30 @@ export function guardedFetch(opts: GuardedFetchOptions = {}): GuardedFetch {
         });
       } else agent = new Agent({ connect: { lookup }, keepAliveTimeout: 30_000 });
       if (agents.size >= 16) {
-        const [oldKey, old] = agents.entries().next().value as [string, Agent];
+        const [oldKey, old] = agents.entries().next().value as [string, Dispatcher];
         agents.delete(oldKey);
         void old.close().catch(() => {});
       }
       agents.set(key, agent);
     }
     return agent;
+  };
+
+  /** One hop: checked, pinned, and retried while its connection can't be opened. */
+  const send = async (url: URL, init: RequestInit, retry: boolean) => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const target = await resolve(url);
+        // undici's own fetch and Agent (the global fetch may come from another undici version).
+        return await undiciFetch(url, { ...(init as object), redirect: "manual", dispatcher: agentFor(url, target) });
+      } catch (err) {
+        // A DNS failure (SourceError "unavailable" from the guard) or a connection that never opened.
+        const transient = err instanceof SourceError ? err.code === "unavailable" : notConnected(err);
+        if (!retry || !transient || attempt >= CONNECT_RETRY_MS.length || init.signal?.aborted) throw err;
+        targets.delete(originKey(url)); // the host may have moved
+        await sleep(CONNECT_RETRY_MS[attempt]!, undefined, { signal: init.signal ?? undefined });
+      }
+    }
   };
 
   const run = async (input: string | URL, init: RequestInit = {}): Promise<Response> => {
@@ -230,16 +325,8 @@ export function guardedFetch(opts: GuardedFetchOptions = {}): GuardedFetch {
     let body = init.body ?? null;
     const headers = new Headers(init.headers);
     for (let hop = 0; ; hop++) {
-      const target = await checkTarget(url, opts);
-      // undici's own fetch and Agent (the global fetch may come from another undici version).
-      const res = await undiciFetch(url, {
-        method,
-        headers: headers as never,
-        body: body as never,
-        redirect: "manual",
-        signal: init.signal ?? undefined,
-        dispatcher: agentFor(url, target),
-      });
+      if (url.username || url.password) throw new SourceError("blocked_target", "Upstream URLs can't carry credentials");
+      const res = await send(url, { method, headers, body, signal: init.signal }, replayable(body));
       // A caller that handles redirects itself (the SDK's same-origin policy) gets the 3xx; its next hop is checked again.
       if (REDIRECT.has(res.status) && res.headers.get("location") && init.redirect !== "manual") {
         await res.body?.cancel().catch(() => {});
@@ -256,7 +343,7 @@ export function guardedFetch(opts: GuardedFetchOptions = {}): GuardedFetch {
           body = null;
           headers.delete("content-type");
           headers.delete("content-length");
-        } else if (body !== null && typeof body !== "string" && !(body instanceof URLSearchParams) && !(body instanceof Uint8Array)) {
+        } else if (!replayable(body)) {
           throw new SourceError("protocol", "Upstream redirected a streamed request");
         }
         url = next;
@@ -281,6 +368,7 @@ export function guardedFetch(opts: GuardedFetchOptions = {}): GuardedFetch {
     async close() {
       const all = [...agents.values()];
       agents.clear();
+      targets.clear();
       await Promise.all(all.map((a) => a.close().catch(() => {})));
     },
   });
