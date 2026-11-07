@@ -1,9 +1,9 @@
 import type { Agent, ConsoleStreamMessage, SetupState } from "@shared/types";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { type LiveStreamHandlers, openLiveStream, type StreamState } from "./live-stream";
 import { keys } from "./queries";
 
-export type StreamState = "connecting" | "open" | "reconnecting" | "offline";
 type Listener = (msg: ConsoleStreamMessage) => void;
 
 interface StreamContextValue {
@@ -57,10 +57,9 @@ function isMessage(v: unknown): v is ConsoleStreamMessage {
 }
 
 /**
- * Holds the console's single EventSource on /api/events/stream. Each message refreshes the queries
- * it affects (batched) and is handed to subscribers (the live events page, the OAuth connect flow).
- * EventSource retries dropped connections itself; when the server refuses outright (CLOSED), we retry
- * with backoff. After any reconnect, everything stream-fed is refetched since messages may have been missed.
+ * Holds the console's single live stream on /api/events/stream (openLiveStream keeps it open). Each message
+ * refreshes the queries it affects (batched) and is handed to subscribers (the live events page, the OAuth
+ * connect flow). After any reconnect, everything stream-fed is refetched since messages may have been missed.
  */
 export function StreamProvider({ children }: { children: React.ReactNode }) {
   const qc = useQueryClient();
@@ -68,12 +67,7 @@ export function StreamProvider({ children }: { children: React.ReactNode }) {
   const listeners = useRef(new Set<Listener>());
 
   useEffect(() => {
-    let es: EventSource | null = null;
-    let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let flushTimer: ReturnType<typeof setTimeout> | undefined;
-    let attempt = 0;
-    let everOpened = false;
-    let disposed = false;
     const pending = new Map<string, readonly string[]>();
 
     const invalidate = (roots: readonly (readonly string[])[]) => {
@@ -85,20 +79,15 @@ export function StreamProvider({ children }: { children: React.ReactNode }) {
       }, 300);
     };
 
-    const connect = () => {
-      if (disposed) return;
-      es?.close();
-      es = new EventSource("/api/events/stream", { withCredentials: true });
-      es.onopen = () => {
-        if (everOpened) invalidate(ALL_STALE);
-        everOpened = true;
-        attempt = 0;
-        setState("open");
-      };
-      es.onmessage = (e: MessageEvent<string>) => {
+    const handlers: LiveStreamHandlers = {
+      state: setState,
+      open: (resumed) => {
+        if (resumed) invalidate(ALL_STALE);
+      },
+      message: (data) => {
         let msg: unknown;
         try {
-          msg = JSON.parse(e.data);
+          msg = JSON.parse(data);
         } catch {
           return;
         }
@@ -106,36 +95,12 @@ export function StreamProvider({ children }: { children: React.ReactNode }) {
         if (msg.kind === "agent") applyAgent(qc, msg.data);
         invalidate(STALE[msg.kind] ?? []);
         for (const l of listeners.current) l(msg);
-      };
-      es.onerror = () => {
-        if (!es || es.readyState !== EventSource.CLOSED) {
-          setState("reconnecting");
-          return;
-        }
-        es.close();
-        setState(everOpened ? "reconnecting" : "offline");
-        const delay = Math.min(30_000, 1000 * 2 ** attempt++);
-        clearTimeout(retryTimer);
-        retryTimer = setTimeout(connect, delay);
-      };
+      },
     };
-
-    const onVisible = () => {
-      if (document.visibilityState === "visible" && (!es || es.readyState === EventSource.CLOSED)) {
-        clearTimeout(retryTimer);
-        attempt = 0;
-        connect();
-      }
-    };
-
-    connect();
-    document.addEventListener("visibilitychange", onVisible);
+    const close = openLiveStream("/api/events/stream", handlers, { EventSource, window, document });
     return () => {
-      disposed = true;
-      document.removeEventListener("visibilitychange", onVisible);
-      clearTimeout(retryTimer);
+      close();
       clearTimeout(flushTimer);
-      es?.close();
     };
   }, [qc]);
 

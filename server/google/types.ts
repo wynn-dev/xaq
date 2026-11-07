@@ -178,7 +178,8 @@ export interface GmailClient {
   listMessages(p: ListParams): Promise<{ messages: { id: string; threadId: string }[]; nextPageToken: string | null; resultSizeEstimate: number }>;
   listThreads(p: ListParams): Promise<{ threads: { id: string; snippet: string; historyId: string }[]; nextPageToken: string | null; resultSizeEstimate: number }>;
   getMessage(id: string, format?: GmailFormat, metadataHeaders?: string[]): Promise<GmailMessage>;
-  getThread(id: string, format?: Exclude<GmailFormat, "raw">, metadataHeaders?: string[]): Promise<GmailThread>;
+  /** `fields`: a partial response (Gmail's `fields` parameter), e.g. "messages/labelIds"; the rest is left out. */
+  getThread(id: string, format?: Exclude<GmailFormat, "raw">, metadataHeaders?: string[], fields?: string): Promise<GmailThread>;
   /** Returns base64url data. `maxBytes`: refuse (ResponseTooLargeError) an attachment larger than this without buffering it. */
   getAttachment(messageId: string, attachmentId: string, opts?: { maxBytes?: number }): Promise<{ data: string; size: number }>;
   listLabels(): Promise<GmailLabelRaw[]>;

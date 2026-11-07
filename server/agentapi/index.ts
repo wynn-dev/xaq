@@ -17,7 +17,7 @@ import { agentRequestGuard, isLocalAddress } from "./guard.ts";
 import { ackListener, newestGrantedSeq, parseConsumer } from "./listeners.ts";
 import { createPairingService, type PairingOptions, type PairingService, pairingStartSchema, pollSchema } from "./pairing.ts";
 import { OncePer, RateLimiter, tooManyRequests } from "./ratelimit.ts";
-import { streamEvents } from "./stream.ts";
+import { type OpenStream, streamEvents } from "./stream.ts";
 
 export interface AgentApiOptions extends PairingOptions {
   /** Stream heartbeat (`: ping` + access re-check). Default 15 s. */
@@ -46,7 +46,7 @@ export interface AgentApiState {
   /** Audits a repeated refusal (per reason and source) once per window. */
   auditOnce: OncePer;
   /** Open streams per agent. */
-  streams: Map<string, number>;
+  streams: Map<string, Set<OpenStream>>;
 }
 
 const states = new WeakMap<AppContext, AgentApiState>();

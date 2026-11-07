@@ -130,8 +130,8 @@ export function createGmailClient(ctx: AppContext, accountId: string): GmailClie
     },
     getMessage: (messageId: string, format: GmailFormat = "full", metadataHeaders?: string[]) =>
       call<GmailMessage>("messages.get", `/messages/${id(messageId)}`, { query: { format, metadataHeaders } }),
-    getThread: (threadId: string, format: Exclude<GmailFormat, "raw"> = "full", metadataHeaders?: string[]) =>
-      call<GmailThread>("threads.get", `/threads/${id(threadId)}`, { query: { format, metadataHeaders } }),
+    getThread: (threadId: string, format: Exclude<GmailFormat, "raw"> = "full", metadataHeaders?: string[], fields?: string) =>
+      call<GmailThread>("threads.get", `/threads/${id(threadId)}`, { query: { format, metadataHeaders, fields } }),
     async getAttachment(messageId, attachmentId, opts = {}) {
       // The JSON carries the bytes base64url-encoded (4/3 of them) next to a few small fields.
       const maxResponseBytes = opts.maxBytes === undefined ? undefined : Math.ceil(opts.maxBytes / 3) * 4 + 1024;

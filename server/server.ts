@@ -124,9 +124,16 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
   return { url: loopbackUrl(config.host, config.port), ctx, server, close };
 }
 
+/**
+ * How long an idle keep-alive connection stays open. Node's 5 s default makes a console clicked a few seconds apart
+ * reconnect each time (a round trip, more over TLS), and a reverse proxy that keeps upstream connections for 60 s
+ * (nginx, AWS ALB) races the close and answers 502. Longer than those proxies, as they recommend.
+ */
+export const KEEP_ALIVE_TIMEOUT_MS = 65_000;
+
 function listen(fetch: Parameters<typeof serve>[0]["fetch"], hostname: string, port: number): Promise<ServerType> {
   return new Promise((resolve, reject) => {
-    const server = serve({ fetch, hostname, port }, () => {
+    const server = serve({ fetch, hostname, port, serverOptions: { keepAliveTimeout: KEEP_ALIVE_TIMEOUT_MS } }, () => {
       server.off("error", reject);
       resolve(server);
     });

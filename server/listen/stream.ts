@@ -1,3 +1,4 @@
+import { networkInterfaces } from "node:os";
 import type { EventType } from "../../shared/types.ts";
 import { abortable } from "./abortable.ts";
 import { apiError, clientHeader, describeFetchError, userAgent } from "./api.ts";
@@ -59,8 +60,21 @@ export interface StreamOptions {
   maxBackoffMs?: number;
   /** Tests: the fetch implementation (default: global fetch). */
   fetch?: typeof fetch;
+  /** Tests: this machine's network addresses (default: localAddresses). */
+  addresses?: () => string;
 }
 
+/**
+ * This machine's routable addresses. When they change (another wifi, a VPN, a cable, the network coming
+ * back), the open connection is stranded or a backoff wait is pointless: reconnect instead of waiting for the stall.
+ */
+export const localAddresses = (): string =>
+  Object.values(networkInterfaces())
+    .flat()
+    .filter((a) => a && !a.internal && !a.address.startsWith("fe80:"))
+    .map((a) => a!.address)
+    .sort()
+    .join(",");
 
 class Stalled extends Error {}
 class Paused extends Error {}
@@ -71,7 +85,8 @@ const sleepJump = 20_000;
 /**
  * Holds the outbound event stream open forever: reconnects with jittered exponential backoff,
  * resumes with Last-Event-ID (the server also resumes from the consumer's acked cursor), treats
- * ~45 s of silence as a dead connection, and reconnects at once after the machine wakes from sleep.
+ * ~45 s of silence as a dead connection, and reconnects at once after the machine wakes from sleep or
+ * its network addresses change.
  * Only permanent revocation (401, or `event: revoked` for a deleted agent or replaced key) and
  * unrecoverable request errors end it; a disabled agent or a missing read grant just waits.
  */
@@ -130,10 +145,14 @@ export class EventStream {
   async run(): Promise<StreamEnd> {
     // Laptop sleep: timers stall while suspended, so a big jump in wall-clock time means we just woke up.
     let lastTick = Date.now();
+    const addresses = this.o.addresses ?? localAddresses;
+    let lastAddresses = addresses();
     const sleepWatch = setInterval(() => {
       const now = Date.now();
-      if (now - lastTick > sleepJump) this.reconnect();
+      const current = addresses();
+      if (now - lastTick > sleepJump || current !== lastAddresses) this.reconnect();
       lastTick = now;
+      lastAddresses = current;
     }, 5000);
     sleepWatch.unref();
     try {

@@ -407,6 +407,26 @@ describe("stream hardening", () => {
     expect(s.ctx.policy.getAgent(s.agent.id)!.listeners.map((l) => l.consumer)).toEqual(["b", "c", "d"]);
   });
 
+  it("at the cap, a listener's reconnect replaces its own stale stream instead of being refused", async () => {
+    const s = await setup({ maxStreams: 2 });
+    const host = (hostname: string) => ({ "x-agentinbox-client": JSON.stringify({ hostname }) });
+    // The laptop's stream went half-open when it changed networks; another machine has the second slot.
+    const stale = await s.open("?consumer=laptop", host("laptop"));
+    const other = await s.open("?consumer=desk", host("desk"));
+    const refused = async (consumer: string, hostname: string) => (await fetch(`${s.url}/agent/v1/events/stream?consumer=${consumer}`, { headers: { authorization: `Bearer ${s.apiKey}`, ...host(hostname) } })).status;
+    // Same consumer from another host, or another consumer from the same host: still refused.
+    expect(await refused("laptop", "intruder")).toBe(429);
+    expect(await refused("laptop-2", "laptop")).toBe(429);
+
+    const fresh = await s.open("?consumer=laptop", host("laptop"));
+    await stale.end().catch(() => {}); // Dropped: an error or a clean end.
+    emitMessage(s.ctx, "acc_a", "after-replace");
+    await fresh.until(() => fresh.mail().length > 0);
+    await other.until(() => other.mail().length > 0);
+    const listeners = s.ctx.policy.getAgent(s.agent.id)!.listeners;
+    expect(Object.fromEntries(listeners.map((l) => [l.consumer, l.connected]))).toEqual({ laptop: true, desk: true });
+  });
+
   it("refuses browser requests on the stream", async () => {
     const s = await setup();
     const res = await fetch(`${s.url}/agent/v1/events/stream`, { headers: { authorization: `Bearer ${s.apiKey}`, origin: "http://evil.example" } });

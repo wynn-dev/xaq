@@ -69,7 +69,9 @@ export function eventsApi(ctx: AppContext, opts: { heartbeatMs?: number; maxPend
           ctx.bus.on(channel as keyof typeof CHANNELS, listener);
           return () => ctx.bus.off(channel as keyof typeof CHANNELS, listener);
         });
-        const heartbeat = setInterval(() => enqueue(() => stream.write(": ping\n\n")), heartbeatMs);
+        // An event rather than a comment, which EventSource never shows the page: the console uses these pings to
+        // spot a connection that died silently (src/lib/live-stream.ts). Older consoles ignore the event type.
+        const heartbeat = setInterval(() => enqueue(() => stream.writeSSE({ event: "ping", data: "ping" })), heartbeatMs);
 
         await new Promise<void>((resolve) => {
           if (stream.aborted || c.req.raw.signal.aborted) return resolve();
