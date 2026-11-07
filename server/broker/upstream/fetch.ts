@@ -2,6 +2,7 @@ import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP, type LookupFunction } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 import { Agent, buildConnector, type Dispatcher, Pool, ProxyAgent, fetch as undiciFetch } from "undici";
+import { NOT_CONNECTED } from "../../util/errors.ts";
 import { type LookupFn, normalizeIp, resolveTarget, type ResolvedTarget, SsrfError, type TargetMessages, urlHost } from "../../util/ssrf.ts";
 import { SourceError } from "../types.ts";
 
@@ -199,9 +200,6 @@ function capped(body: ReadableStream<Uint8Array>, max: number): ReadableStream<U
 export const TARGET_TTL_MS = 60_000;
 /** Backoff before each retry of a request whose connection never opened. */
 export const CONNECT_RETRY_MS = [250, 1_000];
-/** Errors raised before a connection exists: the request never left, so it can be sent again whatever its method. */
-const NOT_CONNECTED = new Set(["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "ENETDOWN", "UND_ERR_CONNECT_TIMEOUT"]);
-
 function notConnected(err: unknown): boolean {
   for (let e: unknown = err, i = 0; e && i < 4; e = (e as { cause?: unknown }).cause, i++) {
     if (NOT_CONNECTED.has((e as { code?: string }).code ?? "")) return true;

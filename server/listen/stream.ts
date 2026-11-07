@@ -76,7 +76,6 @@ export const localAddresses = (): string =>
     .sort()
     .join(",");
 
-
 class Stalled extends Error {}
 class Paused extends Error {}
 class Reconnect extends Error {}

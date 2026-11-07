@@ -1,4 +1,4 @@
-import { HttpError } from "../util/errors.ts";
+import { HttpError, NOT_CONNECTED } from "../util/errors.ts";
 import { AccountNeedsReauthError, GoogleApiError, type GoogleErrorDetails } from "./types.ts";
 
 /** Per-attempt timeout for Google API calls. */
@@ -109,9 +109,6 @@ export function isRetryable(err: GoogleApiError): boolean {
   return err.status === 403 && (err.details.reasons ?? []).some((r) => RATE_REASONS.has(r));
 }
 
-/** Connection-level failures where the request never reached Google (undici's connect timeout: no connection was made). */
-const NOT_SENT = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT"]);
-
 export function networkError(e: unknown, host: string): GoogleApiError {
   const code = (e as { cause?: { code?: unknown } })?.cause?.code;
   const cause = typeof code === "string" ? code : null;
@@ -125,7 +122,7 @@ export function networkError(e: unknown, host: string): GoogleApiError {
  */
 export function rejectedBeforeProcessing(err: GoogleApiError): boolean {
   if (err.status === 429) return true;
-  if (err.status === 0) return (err.details.reasons ?? []).some((r) => NOT_SENT.has(r));
+  if (err.status === 0) return (err.details.reasons ?? []).some((r) => NOT_CONNECTED.has(r));
   return err.status === 403 && (err.details.reasons ?? []).some((r) => RATE_REASONS.has(r));
 }
 

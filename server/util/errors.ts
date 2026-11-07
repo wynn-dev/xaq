@@ -33,3 +33,9 @@ export class PolicyDenied extends Error {
 export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
+
+/**
+ * Network error codes raised before a connection existed (DNS failure, refused, unreachable, undici's connect
+ * timeout): the request never left this machine, so sending it again is safe whatever its method.
+ */
+export const NOT_CONNECTED = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "ENETDOWN", "EHOSTUNREACH", "UND_ERR_CONNECT_TIMEOUT"]);
