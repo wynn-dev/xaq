@@ -547,6 +547,27 @@ describe("Gmail client", () => {
     await expect(gmail.getProfile()).resolves.toMatchObject({ emailAddress: "quinn@example.com" });
   });
 
+  it("re-sends after a connect timeout (no connection was made), not after a reset", async () => {
+    const gmail = ctx.google.gmail(accountId);
+    const raw = await ctx.google.mime.compose({ from: { name: null, email: "quinn@example.com" }, to: [{ name: null, email: "x@y.test" }], subject: "Once", text: "x" });
+    const realFetch = globalThis.fetch;
+    const failOnce = (code: string) =>
+      vi.spyOn(globalThis, "fetch").mockImplementationOnce(() => Promise.reject(new TypeError("fetch failed", { cause: Object.assign(new Error(code), { code }) })));
+    try {
+      failOnce("UND_ERR_CONNECT_TIMEOUT");
+      await gmail.send(raw);
+      expect(fake.sent("quinn@example.com")).toHaveLength(1);
+
+      failOnce("ECONNRESET");
+      const err = (await gmail.send(raw).catch((e: unknown) => e)) as GoogleApiError;
+      expect(err.message).toMatch(/may have been sent/);
+      expect(fake.sent("quinn@example.com")).toHaveLength(1);
+    } finally {
+      vi.restoreAllMocks();
+      expect(globalThis.fetch).toBe(realFetch);
+    }
+  });
+
   it("lists labels for the console, cached briefly", async () => {
     const id = fake.addLabel("quinn@example.com", "Clients/Acme");
     const labels = await ctx.google.labels(accountId);

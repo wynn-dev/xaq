@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Account } from "../shared/types.ts";
 import { accountsApi } from "../server/api/accounts.ts";
 import type { AppContext } from "../server/context.ts";
@@ -189,6 +189,54 @@ describe("history sync", () => {
     expect(subjects("message.received")).toEqual(["First", "Second"]);
     expect(fetchesOfFirst()).toBe(n);
     expect(ctx.accounts.get(accountId)!.historyId).toBe((await ctx.google.gmail(accountId).getProfile()).historyId);
+  });
+
+  it("fetches a page's messages a few at a time, once each, and still emits in order", async () => {
+    const subjectsIn = Array.from({ length: 24 }, (_, i) => `Mail ${i}`);
+    for (const subject of subjectsIn) fake.deliver(ME, { from: CLIENT, subject, text: "x" });
+    fake.delayMs = 20;
+    const realFetch = globalThis.fetch;
+    const urls: URL[] = [];
+    let inFlight = 0;
+    let maxInFlight = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      urls.push(new URL(String(input)));
+      maxInFlight = Math.max(maxInFlight, ++inFlight);
+      try {
+        return await realFetch(input, init);
+      } finally {
+        inFlight--;
+      }
+    });
+    try {
+      await sync();
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(subjects("message.received")).toEqual(subjectsIn);
+    expect(maxInFlight).toBeGreaterThan(1);
+    expect(maxInFlight).toBeLessThanOrEqual(8);
+    const gets = urls.filter((u) => /\/messages\/[^/]+$/.test(u.pathname));
+    expect(gets).toHaveLength(24);
+    const threads = urls.filter((u) => u.pathname.includes("/threads/"));
+    expect(threads).toHaveLength(24);
+    // Only the labels of a thread's messages come back (Gmail's partial response).
+    for (const u of threads) expect(u.searchParams.get("fields")).toBe("messages/labelIds");
+  });
+
+  it("fetches a message once per pass however many label changes it had", async () => {
+    const msg = fake.deliver(ME, { from: CLIENT, subject: "Busy", text: "x" });
+    await sync();
+    const a = fake.addLabel(ME, "A");
+    const b = fake.addLabel(ME, "B");
+    fake.setLabels(ME, msg.id, [a], []);
+    fake.setLabels(ME, msg.id, [b], []);
+    fake.setLabels(ME, msg.id, [], [a]);
+    const before = fake.requests.length;
+    await sync();
+    expect(rec.ofType("label.added").map((e) => e.labelIds)).toEqual([[a], [b]]);
+    expect(rec.ofType("label.removed").map((e) => e.labelIds)).toEqual([[a]]);
+    expect(fake.requests.slice(before).filter((r) => r.path.endsWith(`/messages/${msg.id}`))).toHaveLength(1);
   });
 
   it("ignores drafts, then reports the sent draft once", async () => {
