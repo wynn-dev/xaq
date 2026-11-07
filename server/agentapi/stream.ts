@@ -22,8 +22,15 @@ export interface StreamOptions {
   maxStreams?: number;
   /** Consumer cursors per agent. Default 20. */
   maxConsumers?: number;
-  /** Open streams per agent id (shared per context). */
-  open: Map<string, number>;
+  /** Open streams per agent id, oldest first (shared per context). */
+  open: Map<string, Set<OpenStream>>;
+}
+
+export interface OpenStream {
+  consumer: string;
+  hostname?: string;
+  /** Ends the stream and drops its connection. */
+  end: () => void;
 }
 
 const short = (v: unknown, max = 100) => {
@@ -100,13 +107,22 @@ export function streamEvents(ctx: AppContext, c: Context<AgentApiEnv>, opts: Str
   const heartbeatMs = opts.heartbeatMs ?? HEARTBEAT_MS;
   const problem = accessProblem(ctx.db, agentId, keyHash);
   if (problem) throw new HttpError(403, problem, ...OPEN_REFUSALS[problem]);
-  const maxStreams = opts.maxStreams ?? 5;
-  if ((opts.open.get(agentId) ?? 0) >= maxStreams) {
-    throw new HttpError(429, "too_many_streams", `This agent already has ${maxStreams} open streams`, "Stop a running `xaq listen` first.");
-  }
-
+  const client = clientInfo(c);
   const { db } = ctx;
   const log = ctx.log.child("listen");
+  const maxStreams = opts.maxStreams ?? 5;
+  const open = opts.open.get(agentId) ?? new Set<OpenStream>();
+  if (open.size >= maxStreams) {
+    // A listener that moved to another network leaves its old connection half-open here until TCP gives up
+    // (up to ~15 min), and a few moves would lock it out. Only one listener runs per machine and consumer,
+    // so an older stream of the same consumer from the same host is that dead one: replace it.
+    const stale = [...open].find((s) => s.consumer === consumer && s.hostname === client.hostname);
+    if (!stale) throw new HttpError(429, "too_many_streams", `This agent already has ${maxStreams} open streams`, "Stop a running `xaq listen` first.");
+    log.info("Replacing a stale stream of the same listener", { agent: agentId, consumer });
+    open.delete(stale);
+    stale.end();
+  }
+
   ensureConsumerSlot(ctx, agentId, consumer, opts.maxConsumers ?? 20);
   const touch = (delta: number) =>
     db.run(
@@ -132,11 +148,13 @@ export function streamEvents(ctx: AppContext, c: Context<AgentApiEnv>, opts: Str
     startAt,
     // What this stream asked for, so the console only counts events of these types as delivered.
     // No types param means every type, including ones added later: stored as "all".
-    json.str({ ...clientInfo(c), types: types ?? "all" }),
+    json.str({ ...client, types: types ?? "all" }),
     t,
     t,
   );
-  opts.open.set(agentId, (opts.open.get(agentId) ?? 0) + 1);
+  let replaced = false;
+  const entry: OpenStream = { consumer, hostname: client.hostname, end: () => (replaced = true) };
+  opts.open.set(agentId, open.add(entry));
   ctx.policy.publishAgent(agentId);
   // Client-supplied positions can't point past what this agent can see (that would skip future events).
   let cursor = Math.max(Math.min(after, newest), Math.min(lastEventId, newest), ackedSeq(db, agentId, consumer));
@@ -249,6 +267,8 @@ export function streamEvents(ctx: AppContext, c: Context<AgentApiEnv>, opts: Str
     stream.onAbort(close);
     c.req.raw.signal.addEventListener("abort", close, { once: true });
     if (stream.aborted || c.req.raw.signal.aborted) close();
+    entry.end = destroy;
+    if (replaced) destroy();
 
     try {
       await write(() => stream.write(": connected\n\n"));
@@ -258,9 +278,8 @@ export function streamEvents(ctx: AppContext, c: Context<AgentApiEnv>, opts: Str
       clearInterval(heartbeat);
       ctx.bus.off("event", onEvent);
       ctx.bus.off("agent", onAgent);
-      const n = (opts.open.get(agentId) ?? 1) - 1;
-      if (n > 0) opts.open.set(agentId, n);
-      else opts.open.delete(agentId);
+      open.delete(entry);
+      if (!open.size && opts.open.get(agentId) === open) opts.open.delete(agentId);
       try {
         touch(-1);
         ctx.policy.publishAgent(agentId);

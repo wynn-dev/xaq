@@ -164,6 +164,44 @@ describe("abort always wins (undici may not settle on abort under load)", () => 
     expect(reasons[0]).toMatch(/stream stalled/);
   });
 
+  it("reconnects within one 5 s tick when the machine's addresses change, connected or backing off", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      let ip = "192.168.1.20";
+      const reasons: string[] = [];
+      let calls = 0;
+      let up = true;
+      const fetchImpl = (async () => {
+        calls++;
+        if (!up) throw new TypeError("fetch failed", { cause: { code: "ENETUNREACH" } });
+        return stuckResponse();
+      }) as typeof fetch;
+      // Backoff and stall far beyond the test: only the address watch can trigger a new attempt.
+      const s = new EventStream({ ...base, minBackoffMs: 600_000, maxBackoffMs: 600_000, stallMs: 600_000, addresses: () => ip, fetch: fetchImpl, onOpen: () => {}, onDisconnect: (r) => reasons.push(r) });
+      const run = s.run();
+      await waitFor(() => calls === 1, 2000, "first connect");
+      vi.advanceTimersByTime(5000);
+      expect(calls).toBe(1); // Same addresses: the healthy connection stays.
+
+      // Another wifi: the open connection is stranded.
+      up = false;
+      ip = "10.0.0.7";
+      vi.advanceTimersByTime(5000);
+      await waitFor(() => calls === 2, 2000, "reconnect after the address change");
+      expect(reasons[0]).toMatch(/network change/);
+      await waitFor(() => reasons.length === 2, 2000, "failed attempt");
+      // Network back (a new address): the 10-minute backoff wait is cut short.
+      up = true;
+      ip = "10.0.0.8";
+      vi.advanceTimersByTime(5000);
+      await waitFor(() => calls === 3, 2000, "retry when the network comes back");
+      s.stop();
+      await run;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("API calls time out even when fetch never settles", async () => {
     vi.stubGlobal("fetch", () => never());
     try {
