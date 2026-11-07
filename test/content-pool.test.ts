@@ -148,6 +148,11 @@ describe("review inputs finish well inside the deadline", () => {
   });
   workerOnly("all of them through the pool, without fallbacks", async () => {
     const p = pool();
+    // The first job's deadline also pays the pool's cold start: starting the worker, then unoptimized code (a
+    // first deep tree or table runs 2-3x slower). On a slow CI runner the two together have passed it, so warm
+    // the worker on the same paths with small inputs first (they can't time out, which would replace the worker).
+    await p.content(message("<div>".repeat(2_000) + "x"), OPTS);
+    await p.content(message(`<table>${'<tr><td><a href="https://x.io">1</a></td><td>2</td></tr>'.repeat(500)}</table>`), OPTS);
     for (const [name, html] of Object.entries(big)) {
       const m = await measure(() => p.content(message(html, "text"), OPTS));
       // No deadline fallback is the real assertion; lag only has to show the loop never blocked.
