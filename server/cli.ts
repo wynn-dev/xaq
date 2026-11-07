@@ -11,6 +11,14 @@ const { default: pc } = await import("picocolors");
 
 process.title = "xaq";
 
+// HTTPS_PROXY / HTTP_PROXY / NO_PROXY (any case, as curl reads them) for every fetch; loopback never goes through it.
+// The broker's upstream fetch has its own pinned agents and reads them itself (server/broker/upstream/fetch.ts).
+if (process.env.https_proxy || process.env.HTTPS_PROXY || process.env.http_proxy || process.env.HTTP_PROXY) {
+  const { EnvHttpProxyAgent, setGlobalDispatcher } = await import("undici");
+  const noProxy = [process.env.no_proxy ?? process.env.NO_PROXY, "localhost", "127.0.0.1", "[::1]"].filter(Boolean).join(",");
+  setGlobalDispatcher(new EnvHttpProxyAgent({ noProxy }));
+}
+
 // node:sqlite is stable enough for us but still warns on Node 22. This runs before any server
 // module loads: everything that touches node:sqlite is imported dynamically below.
 const emitWarning = process.emitWarning.bind(process);
