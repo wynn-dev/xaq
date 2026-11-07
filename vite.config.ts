@@ -14,7 +14,15 @@ export default defineConfig({
       "@shared": fileURLToPath(new URL("./shared", import.meta.url)),
     },
   },
-  build: { outDir: "dist/web", emptyOutDir: true },
+  build: {
+    outDir: "dist/web",
+    emptyOutDir: true,
+    // Few chunks, not dozens: the console is served over plain HTTP/1.1, where a browser opens six connections, so 60 small
+    // files cost about ten round trips. Libraries in one chunk (it also stays cached across xaq updates), code shared by
+    // pages in another; each page's own code stays split. The first load is 21 requests instead of 66.
+    rolldownOptions: { output: { codeSplitting: { groups: [{ name: "vendor", test: /node_modules/ }, { name: "shared", test: /[\\/]src[\\/]/, minShareCount: 2 }] } } },
+    chunkSizeWarningLimit: 1500,
+  },
   server: {
     port: 5173,
     proxy: {

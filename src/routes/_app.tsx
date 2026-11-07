@@ -16,7 +16,9 @@ import { forgetAllKeys } from "@/lib/revealed-keys";
 import { StreamProvider } from "@/lib/stream";
 
 export const Route = createFileRoute("/_app")({
-  beforeLoad: async ({ context, location }) => {
+  // A loader, not beforeLoad: the router waits for beforeLoad before it fetches any page code, while loaders run
+  // alongside it, so on a first load the code downloads during this request instead of after it.
+  loader: async ({ context, location }) => {
     // Cached briefly so in-app navigation doesn't hit the server each time; a 401 anywhere
     // sends the user to /login regardless.
     const status = await context.queryClient.fetchQuery({ ...queries.setupStatus(), staleTime: 60_000 });

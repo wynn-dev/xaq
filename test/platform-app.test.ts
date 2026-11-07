@@ -275,6 +275,48 @@ describe("console", () => {
     }
   });
 
+  it("gzips the console and JSON for clients that accept it, but never the live stream", async () => {
+    writeFileSync(join(webDir, "assets", "big-abc123.js"), "export const x = 1;\n".repeat(2000));
+    h = harness({}, { webDir });
+    const cookie = await h.claim();
+    const gzip = { "accept-encoding": "gzip, deflate" };
+
+    let res = await h.request("/assets/big-abc123.js", { headers: gzip });
+    expect(res.headers.get("content-encoding")).toBe("gzip");
+    expect(res.headers.get("vary")).toMatch(/accept-encoding/i);
+    expect(res.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+    const zipped = new Uint8Array(await res.arrayBuffer()).byteLength;
+    res = await h.request("/assets/big-abc123.js");
+    expect(res.headers.get("content-encoding")).toBeNull();
+    const plain = (await res.text()).length;
+    expect(plain).toBe(40_000);
+    expect(zipped).toBeLessThan(plain / 10);
+
+    addAccount("acc_1", "active");
+    for (let i = 0; i < 50; i++) {
+      h.ctx.db.run(
+        `INSERT INTO events (id, type, account_id, gmail_message_id, label_ids, message, dedupe_key, created_at)
+         VALUES (?, 'message.received', 'acc_1', ?, '["INBOX"]', ?, ?, ?)`,
+        `evt_${i}`,
+        `m${i}`,
+        JSON.stringify({ id: `m${i}` }),
+        `acc_1:m${i}`,
+        new Date().toISOString(),
+      );
+    }
+    res = await h.request("/api/events", { cookie, headers: gzip });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-encoding")).toBe("gzip");
+    const body = (await new Response(res.body!.pipeThrough(new DecompressionStream("gzip"))).json()) as { items: unknown[] };
+    expect(body.items).toHaveLength(50);
+
+    // SSE goes out as it is written: compressing would hold messages back in the gzip buffer.
+    res = await h.request("/api/events/stream", { cookie, headers: gzip });
+    expect(res.headers.get("content-type")).toMatch(/text\/event-stream/);
+    expect(res.headers.get("content-encoding")).toBeNull();
+    await res.body?.cancel();
+  });
+
   it("explains how to build when the console is missing", async () => {
     h = harness({}, { webDir: join(webDir, "does-not-exist") });
     const res = await h.request("/");

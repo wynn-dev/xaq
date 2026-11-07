@@ -81,6 +81,7 @@ describe("GET /api/events/stream", () => {
         const frames = buffer.split("\n\n");
         buffer = frames.pop()!;
         for (const f of frames) {
+          if (f.startsWith("event: ")) continue;
           const data = f
             .split("\n")
             .filter((l) => l.startsWith("data: "))
@@ -105,9 +106,10 @@ describe("GET /api/events/stream", () => {
     expect(messages[0]!.data).toEqual({ ...ev, threadLabelIds: [] });
     expect(messages[2]!.data).toEqual({ id: "agt_1", name: "Hermes" });
 
-    // Heartbeat comments keep proxies from closing the connection.
+    // Heartbeats keep proxies from closing the connection, and let the console spot one that died silently:
+    // a named event, which EventSource shows the page (comments it never does) and onmessage leaves alone.
     const chunks: string[] = [];
-    while (!chunks.join("").includes(": ping")) {
+    while (!chunks.join("").includes("event: ping\ndata: ping\n\n")) {
       const { value } = await reader.read();
       chunks.push(decoder.decode(value));
     }

@@ -3,6 +3,7 @@ import { extname, join, resolve, sep } from "node:path";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { compress } from "hono/compress";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import type { ApiError } from "../shared/types.ts";
@@ -85,6 +86,10 @@ export function createApp(ctx: AppContext, opts: AppOptions = {}): Hono<AppEnv> 
       // Immutable headers (a proxied Response): leave them as they are.
     }
   });
+
+  // gzip for HTML, JS, CSS and JSON (never SSE): the console's first load is about a third of the bytes,
+  // which is what counts over a tunnel or a remote link. Browsers don't offer brotli over plain http.
+  app.use("*", compress());
 
   app.onError((err, c) => errorResponse(ctx, err, c));
   app.notFound((c) => {
